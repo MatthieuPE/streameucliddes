@@ -16,11 +16,24 @@ on:
       - ".github/workflows/docs.yml"
   workflow_dispatch:
 
-# Installs the "docs" dependency group plus the package with its runtime
-# dependencies, so autodoc can import every module. If those dependencies
-# ever get heavy (torch, survey-data packages, ...), switch to the lean
-# approach used in streamgoggles: install with `--no-deps` and list the
-# expensive imports in `autodoc_mock_imports` in docs/source/conf.py.
+# Deliberately lean install -- NOT `uv sync` (which pulls this project's
+# full dependency graph; `hyrax` alone drags in mlflow/chromadb/onnxruntime
+# and more just to get torch, several minutes even cached). A docs build
+# only needs sphinx + its plugins, plus whichever streameucliddes modules'
+# own imports autodoc actually needs to read their docstrings -- so this
+# installs exactly that: the "docs" dependency group, and
+# numpy/pandas/healpy/pyyaml (small, fast). `docs/source/conf.py`'s
+# STREAMEUCLIDDES_DOCS_LEAN branch (set below) mocks the rest
+# (torch/streamobs/ugali/gala/astropy/scipy/matplotlib/hyrax) instead of
+# installing them -- both because they're the genuinely expensive/slow
+# ones, and because streamobs/ugali need real external survey/isochrone
+# data for anything beyond a bare import, which this workflow has no
+# reason to set up just to read docstrings.
+#
+# Known gap from mocking rather than installing: a module whose signatures
+# use a bare `torch.Tensor | None`-style annotation ends up with an empty
+# API page in CI (Sphinx's mock objects have no `|` support). Describe such
+# modules in the narrative pages too, or install the real package here.
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -41,9 +54,12 @@ jobs:
       - name: Install dependencies
         run: |
           uv venv
-          uv pip install --group docs -e .
+          uv pip install --group docs numpy pandas healpy pyyaml
+          uv pip install --no-deps -e .
 
       - name: Build docs
+        env:
+          STREAMEUCLIDDES_DOCS_LEAN: "1"
         run: .venv/bin/sphinx-build -b html docs/source docs/_build/html
 
       - name: Upload build artifact (PR preview)
