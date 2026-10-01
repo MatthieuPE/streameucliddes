@@ -6,9 +6,32 @@ readme = "README.md"
 authors = [
     { name = "MatthieuPe", email = "matthieupelissier01@gmail.com" }
 ]
-requires-python = ">=3.12"
+requires-python = ">=3.11"
 dependencies = []
 
 [build-system]
 requires = ["uv_build>=0.12.10,<0.13.0"]
 build-backend = "uv_build"
+
+[tool.uv.build]
+packages = [{include = "streameucliddes", from = "src"}]
+
+[dependency-groups]
+test = [
+    "pytest>=8.4",
+    "pytest-cov>=7.1.0",
+    "pytest-emoji>=0.2.0",
+]
+docs = [
+    "sphinx>=8.2",
+    "furo>=2024.8.6",
+    "myst-parser>=4.0",
+    "sphinx-autodoc-typehints>=3.0",
+    "sphinxcontrib-mermaid>=1.0",
+]
+
+[tool.pytest.ini_options]
+addopts = ["--verbose", "--emoji", "--strict-markers"]
+testpaths = ["tests"]
+# One marker per module, e.g. "config: config.py (...)", added as modules land.
+markers = []
