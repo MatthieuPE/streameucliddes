@@ -1,0 +1,57 @@
+import matplotlib.pyplot as plt
+
+plt_params = {
+    "figure.figsize": [3.5, 2.625],  # Single column width, 4:3 aspect ratio
+    "figure.dpi": 100,
+    "text.usetex": False,
+    "font.family": "serif",
+    "font.serif": ["cmr10"],
+    "axes.labelsize": 9,
+    "axes.titlesize": 10,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "legend.fontsize": 8,
+    "legend.title_fontsize": 9,
+    "axes.linewidth": 0.8,
+    "xtick.major.width": 0.8,
+    "ytick.major.width": 0.8,
+    "xtick.minor.width": 0.6,
+    "ytick.minor.width": 0.6,
+    "xtick.major.size": 4,
+    "ytick.major.size": 4,
+    "xtick.minor.size": 2.5,
+    "ytick.minor.size": 2.5,
+    "xtick.direction": "in",
+    "ytick.direction": "in",
+    "xtick.top": True,
+    "ytick.right": True,
+    "ytick.color": "black",
+    "axes.labelcolor": "black",
+    "axes.edgecolor": "black",
+    "xtick.color": "black",
+    "axes.formatter.use_mathtext": True,
+    "mathtext.fontset": "cm",
+    "font.size": 9,
+    "figure.constrained_layout.use": True,
+    "figure.constrained_layout.h_pad": 0.005,
+    "figure.constrained_layout.w_pad": 0.005,
+    "figure.constrained_layout.hspace": 0.005,
+    "figure.constrained_layout.wspace": 0.005,
+    "axes.prop_cycle": plt.cycler(
+        "color",
+        [
+            "#E69F00",
+            "#56B4E9",
+            "#009E73",
+            "#0072B2",
+            "#D55E00",
+            "#CC79A7",
+            "#F0E442",
+            "#000000",
+        ],
+    ),
+    #"legend.frameon": False,
+}
+
+
+plt.rcParams.update(plt_params)
