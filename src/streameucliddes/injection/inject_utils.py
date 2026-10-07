@@ -2,20 +2,18 @@ import numpy as np
 import ugali.isochrone
 from streameucliddes.utils import magToFlux, fluxToMag
 
-def convert_N_SurfaceBrightness(N, mag_bounds = (None, 24), surface=None, stream_length=None, stream_width = None, isochrone_config_path =None,
-                                band='r',isochrone_params = None, verbose=False):
-    if isochrone_params is None:
+def convert_N_to_SurfaceBrightness(N, mag_bounds = (None, 24), surface=None, stream_length=None, stream_width = None, isochrone_config_path =None,
+                                band='r',isochrone = None, verbose=False, distance_modulus=None, **kwargs):
+    if isochrone is None:
         if isochrone_config_path is None:
-            raise ValueError("Either isochrone_config_path or isochrone_params must be provided.")
+            raise ValueError("Either isochrone_config_path or isochrone must be provided.")
         import yaml
         with open(isochrone_config_path, 'r') as f:
-            isochrone_params = yaml.safe_load(f)
+            isochrone = yaml.safe_load(f)
 
-    iso_sub_params = isochrone_params.get('isochrone', {})
-
-    isochrone = ugali.isochrone.factory(**iso_sub_params)
-    distance_modulus = isochrone_params.get('distance_modulus', {})['center']['value']
-    isochrone.distance_modulus = distance_modulus
+    isochrone_ugali = ugali.isochrone.factory(**isochrone)
+    distance_modulus = distance_modulus['center']['value'] if distance_modulus is not None else isochrone.get('distance_modulus', {})['center']['value']
+    isochrone_ugali.distance_modulus = distance_modulus
 
     # Surface estimation
     if surface is None:
@@ -35,7 +33,7 @@ def convert_N_SurfaceBrightness(N, mag_bounds = (None, 24), surface=None, stream
     
 
     N_in_surface = int(N*0.68) # 68% of stars are within 1 sigma of the gaussian profile of the stream
-    tot_magnitude = convert_N_to_luminosity(N_in_surface, isochrone=isochrone, mag_bounds=mag_bounds,verbose=verbose, band=band)
+    tot_magnitude = convert_N_to_luminosity(N_in_surface, isochrone_ugali=isochrone_ugali, mag_bounds=mag_bounds,verbose=verbose, band=band, **kwargs)
     surface_brightness = tot_magnitude + 2.5 * np.log10(surface) # Surface brightness in mag/arcdeg^2
 
     if verbose:
@@ -44,9 +42,9 @@ def convert_N_SurfaceBrightness(N, mag_bounds = (None, 24), surface=None, stream
     return surface_brightness
 
 
-def convert_N_to_luminosity(N, isochrone, mag_bounds= (None,24),verbose=False, band= 'r'):
-    mass_init, mass_pdf, mass_act, mag_g, mag_r = isochrone.sample(mass_steps=10000)
-    mag_g, mag_r = mag_g + isochrone.distance_modulus, mag_r + isochrone.distance_modulus
+def convert_N_to_luminosity(N, isochrone_ugali, mag_bounds= (None,24),verbose=False, band= 'r', **kwargs):
+    mass_init, mass_pdf, mass_act, mag_g, mag_r = isochrone_ugali.sample(mass_steps=10000)
+    mag_g, mag_r = mag_g + isochrone_ugali.distance_modulus, mag_r + isochrone_ugali.distance_modulus
     if band == 'g':
         mag1 = mag_g
     elif band == 'r':
@@ -77,7 +75,7 @@ def convert_N_to_luminosity(N, isochrone, mag_bounds= (None,24),verbose=False, b
 
 def convert_SurfaceBrightness_to_N(target_surface_brightness, mag_bounds=(None, 24), surface=None,
                                     stream_length=None, stream_width=None, isochrone_config_path=None,
-                                    band='r', isochrone_params=None, n_bracket=(10, 1e8), verbose=False):
+                                    band='r', isochrone=None, n_bracket=(10, 1e8), verbose=False, distance_modulus=None, **kwargs):
     """
     Numeric inverse of convert_N_SurfaceBrightness: the number of stars N whose
     stream (with the given isochrone/surface parameters) has the requested
@@ -95,7 +93,7 @@ def convert_SurfaceBrightness_to_N(target_surface_brightness, mag_bounds=(None, 
         Desired surface brightness, mag/arcsec^2 (same convention as
         convert_N_SurfaceBrightness's return value).
     mag_bounds, surface, stream_length, stream_width, isochrone_config_path,
-    band, isochrone_params, verbose : see convert_N_SurfaceBrightness.
+    band, isochrone, verbose : see convert_N_SurfaceBrightness.
     n_bracket : tuple (N_min, N_max)
         Bracket searched in log10(N) space. Widen this if brentq raises a
         sign-mismatch error (the target surface brightness falls outside what
@@ -110,10 +108,10 @@ def convert_SurfaceBrightness_to_N(target_surface_brightness, mag_bounds=(None, 
 
     def _residual(log10_N):
         N = 10 ** log10_N
-        sb = convert_N_SurfaceBrightness(
+        sb = convert_N_to_SurfaceBrightness(
             N, mag_bounds=mag_bounds, surface=surface, stream_length=stream_length,
             stream_width=stream_width, isochrone_config_path=isochrone_config_path,
-            band=band, isochrone_params=isochrone_params, verbose=False,
+            band=band, isochrone=isochrone, verbose=False, distance_modulus=distance_modulus
         )
         return sb - target_surface_brightness
 
@@ -123,4 +121,4 @@ def convert_SurfaceBrightness_to_N(target_surface_brightness, mag_bounds=(None, 
     if verbose:
         print(f"N={N:.1f} gives surface brightness {target_surface_brightness:.2f} mag/arcsec^2")
 
-    return N
+    return int(N)
