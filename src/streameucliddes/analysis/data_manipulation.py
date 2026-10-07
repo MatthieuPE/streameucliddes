@@ -78,7 +78,6 @@ def get_healpy_data_from_table(data, columns=("ra", "dec"), nside=512, smoothing
     dec = dec[valid]
     
     # Build HEALPix count map
-    import healpy as hp
     npix = hp.nside2npix(nside)
     pix_idx = hp.ang2pix(nside, ra, dec, lonlat=True, nest=False)
     hp_map = np.bincount(pix_idx, minlength=npix).astype(np.float32)
