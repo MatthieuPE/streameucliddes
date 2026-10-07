@@ -5,10 +5,11 @@ import gc
 
 import numpy as np
 
-from streameucliddes.analysis import data_manipulation, fit, match_filter, units
-from streameucliddes.analysis.animated_gif import make_gif
-from streameucliddes.plotting.plotting import plot_results_find_stream
+from streameucliddes.analysis import data_manipulation, fit
+from streameucliddes.plotting.plotting import plot_results_find_stream, make_gif
 from streameucliddes.plotting import plot_style
+from streamobs import match_filter
+from streameucliddes.utils import convert_DM_to_kpc
 
 DEFAULT_MODEL_TYPE_FIT = {"polynomial": {"degree": 5}}
 
@@ -209,7 +210,7 @@ def find_stream(
         "faint_mag_cut": faint_mag_cut,
         "match_filter_parameters": dict(match_filter_parameters),
         "distance_modulus": distance_modulus,
-        "distance_kpc": units.convert_DM_to_kpc(distance_modulus),
+        "distance_kpc": convert_DM_to_kpc(distance_modulus),
         "polygon_vertices": polygon_vertices,
         "selection_flag": selection_flag,
         "n_selected": n_selected,

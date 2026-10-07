@@ -1,58 +1,37 @@
 import numpy as np
+import pandas as pd
+import skyproj
 import healpy as hp
-from astropy.coordinates import Distance
-import astropy.units as u
+import os
 
-def magToFlux(mag):
+def apply_magnitude_cut(data, mag_col="mag_g", mag_bounds=(None, None)):
     """
-    Convert from AB magnitude to flux.
+    Return a boolean mask selecting rows within magnitude bounds.
 
     Parameters
     ----------
-    mag : float or np.ndarray
-        AB magnitude(s).
+    data : pandas.DataFrame or astropy.table.Table
+    mag_col : str
+        Name of magnitude column
+    mag_bounds : tuple (min, max)
+        Bounds on magnitude. Use None for open bound.
 
     Returns
     -------
-    float or np.ndarray
-        Flux in Janskys (Jy).
+    mask : array-like (bool)
+        True for rows داخل bounds
     """
-    return 3631.0 * 10 ** (-0.4 * mag)
+    mag = data[mag_col]
 
-def fluxToMag(flux):
-    """
-    Convert from flux to AB magnitude.
+    mask = np.ones(len(mag), dtype=bool)
 
-    Parameters
-    ----------
-    flux : float or np.ndarray
-        Flux in Janskys (Jy).
+    if mag_bounds[0] is not None:
+        mask &= mag >= mag_bounds[0]
 
-    Returns
-    -------
-    float or np.ndarray
-        AB magnitude(s).
-    """
-    return -2.5 * np.log10(flux / 3631.0)
+    if mag_bounds[1] is not None:
+        mask &= mag <= mag_bounds[1]
 
-def convert_DM_to_kpc(distance_modulus):
-    return Distance(distmod=distance_modulus).to(u.kpc)
-
-def convert_kpc_to_DM(distance_kpc):
-    return Distance(distance_kpc, unit=u.kpc).distmod
-
-def convert_FeH_to_z(feh):
-    # Function coming from github.com/DarkEnergySurvey/ugali/blob/e4aa0a26e9d245d489ccb6b4cdb149386fdcb45b/ugali/isochrone/parsec.py#L190
-    # Taken from Table 3 and Section 3 of Bressan et al. 2012
-    # Confirmed in Section 2.1 of Marigo et al. 2017
-    Y_p     = 0.2485           # Primordial He abundance
-    c       = 1.78             # He enrichment ratio
-
-    Z_solar = 0.01524          # Solar metal abundance
-    Y_solar = 0.2485           # Solar He abundance
-    X_solar = 1 - Y_solar - Z_solar
-
-    return (1 - Y_p)/( (1 + c) + X_solar/Z_solar * 10**(-feh))
+    return mask
 
 
 def get_healpy_data_from_table(data, columns=("ra", "dec"), nside=512, smoothing=False, smoothing_scale_degrees=0.3, footprint_mask=None):
@@ -99,6 +78,7 @@ def get_healpy_data_from_table(data, columns=("ra", "dec"), nside=512, smoothing
     dec = dec[valid]
     
     # Build HEALPix count map
+    import healpy as hp
     npix = hp.nside2npix(nside)
     pix_idx = hp.ang2pix(nside, ra, dec, lonlat=True, nest=False)
     hp_map = np.bincount(pix_idx, minlength=npix).astype(np.float32)
