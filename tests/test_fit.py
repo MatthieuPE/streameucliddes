@@ -4,8 +4,8 @@ import pytest
 
 from streameucliddes.analysis import fit
 
-
 # The mock sky (projection, footprint, polynomial background) is defined in conftest.py.
+
 
 def fit_background(data, degree, fit_log_space, **kwargs):
     """Run the polyfit2d fit and return the background map, with masked pixels as NaN."""
@@ -22,10 +22,13 @@ def fit_background(data, degree, fit_log_space, **kwargs):
 # Test fit_background_model_polyfit2d
 # ===================================================
 
+
 # A density that is exactly a polynomial of the fitted degree must be recovered
 @pytest.mark.parametrize("fit_log_space", [False, True], ids=["linear", "log"])
 @pytest.mark.parametrize("degree", [0, 1, 2, 3, 5])
-def test_polynomial_density_is_recovered(proj, nside, in_extent, background_map, degree, fit_log_space):
+def test_polynomial_density_is_recovered(
+    proj, nside, in_extent, background_map, degree, fit_log_space
+):
     truth = background_map(degree, log_space=fit_log_space)
 
     bkg = fit_background(truth, degree, fit_log_space, proj=proj, nside=nside)
@@ -57,7 +60,9 @@ def test_partial_footprint_is_recovered(proj, nside, footprint, background_map, 
     truth = background_map(degree, log_space=True)
     data, kwargs = hide_outside(truth, footprint, how)
 
-    bkg = fit_background(data, degree, fit_log_space=True, proj=proj, nside=nside, **kwargs)
+    bkg = fit_background(
+        data, degree, fit_log_space=True, proj=proj, nside=nside, **kwargs
+    )
 
     # The footprint includes its outer and inner (hole) edges.
     np.testing.assert_allclose(bkg[footprint], truth[footprint], rtol=1e-6)

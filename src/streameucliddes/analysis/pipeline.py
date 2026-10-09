@@ -1,14 +1,14 @@
-"""Wrapper for the full match-filter / background-fit pipeline.
-"""
+"""Wrapper for the full match-filter / background-fit pipeline."""
 
 import gc
 
 import numpy as np
+from streamobs import match_filter
 
 from streameucliddes.analysis import data_manipulation, fit
-from streameucliddes.plotting.plotting import plot_results_find_stream, make_gif
 from streameucliddes.plotting import plot_style
-from streamobs import match_filter
+from streameucliddes.plotting.plotting import (make_gif,
+                                               plot_results_find_stream)
 from streameucliddes.utils import convert_DM_to_kpc
 
 DEFAULT_MODEL_TYPE_FIT = {"polynomial": {"degree": 5}}
@@ -40,12 +40,16 @@ def _resolve_mag_columns(data, mag_cols, use_dust_corrected):
             resolved.append(corrected)
         else:
             if use_dust_corrected:
-                print(f"Warning: requested dust-corrected column '{corrected}' not found in data; using '{col}' instead.")
+                print(
+                    f"Warning: requested dust-corrected column '{corrected}' not found in data; using '{col}' instead."
+                )
             resolved.append(col)
     return resolved
 
 
-def _ensure_dust_corrected(data, mag_cols, ra_col, dec_col, dust_correction_kwargs=None, verbose=False):
+def _ensure_dust_corrected(
+    data, mag_cols, ra_col, dec_col, dust_correction_kwargs=None, verbose=False
+):
     """Compute missing '<col>_corrected' columns in place via data_manipulation.correct_dust_map."""
     missing = [col for col in mag_cols if f"{col}_corrected" not in data.columns]
     if not missing:
@@ -54,7 +58,10 @@ def _ensure_dust_corrected(data, mag_cols, ra_col, dec_col, dust_correction_kwar
     if verbose:
         print(f"Applying dust correction for: {missing}")
     data_manipulation.correct_dust_map(
-        data, mag_cols=list(mag_cols), pos_columns=[ra_col, dec_col], **dict(dust_correction_kwargs or {})
+        data,
+        mag_cols=list(mag_cols),
+        pos_columns=[ra_col, dec_col],
+        **dict(dust_correction_kwargs or {}),
     )
 
 
@@ -134,7 +141,9 @@ def find_stream(
     fit_kwargs = dict(fit_kwargs or {})
 
     if use_dust_corrected and ensure_dust_correction:
-        _ensure_dust_corrected(data, mag_cols, ra_col, dec_col, dust_correction_kwargs, verbose=verbose)
+        _ensure_dust_corrected(
+            data, mag_cols, ra_col, dec_col, dust_correction_kwargs, verbose=verbose
+        )
 
     mag_to_use = _resolve_mag_columns(data, mag_cols, use_dust_corrected)
     if verbose:
@@ -143,7 +152,10 @@ def find_stream(
     # --- Match filter + magnitude cut ---
     polygon_vertices = match_filter.build_match_filter(**match_filter_parameters)
     flag_match = match_filter.is_in_match_filter(
-        data[mag_to_use[0]], data[mag_to_use[1]], polygon_vertices=polygon_vertices, verbose=verbose,
+        data[mag_to_use[0]],
+        data[mag_to_use[1]],
+        polygon_vertices=polygon_vertices,
+        verbose=verbose,
     )
     if flag_mag is None:
         flag_mag = data_manipulation.apply_magnitude_cut(
@@ -159,7 +171,9 @@ def find_stream(
     n_selected = int(ra_values.size)
 
     if verbose:
-        print(f"Selected {n_selected}/{len(data)} stars in match filter + magnitude cut")
+        print(
+            f"Selected {n_selected}/{len(data)} stars in match filter + magnitude cut"
+        )
 
     if footprint_bounds is None:
         ra_min = float(np.min(ra_values))
@@ -297,7 +311,12 @@ def scan_find_stream(
 
     if use_dust_corrected:
         _ensure_dust_corrected(
-            data, mag_cols, ra_col, dec_col, find_stream_kwargs.get("dust_correction_kwargs"), verbose=verbose,
+            data,
+            mag_cols,
+            ra_col,
+            dec_col,
+            find_stream_kwargs.get("dust_correction_kwargs"),
+            verbose=verbose,
         )
     find_stream_kwargs["ensure_dust_correction"] = False
 
@@ -307,7 +326,9 @@ def scan_find_stream(
         data, mag_col=mag_to_use[0], mag_bounds=(None, faint_mag_cut)
     )
     if verbose:
-        print(f"Precomputed dust correction + magnitude cut once for the scan (mag columns: {mag_to_use}).")
+        print(
+            f"Precomputed dust correction + magnitude cut once for the scan (mag columns: {mag_to_use})."
+        )
 
     results_by_dm = {}
     for dm in distance_modulus_array:
@@ -322,7 +343,11 @@ def scan_find_stream(
         fname_path = None
         if plot or save_figures:
             _, _, fname_path = plot_results_find_stream(
-                results, save=save_figures, show=plot, fig_folder=fig_folder, **plot_kwargs,
+                results,
+                save=save_figures,
+                show=plot,
+                fig_folder=fig_folder,
+                **plot_kwargs,
             )
 
         if keep_results:

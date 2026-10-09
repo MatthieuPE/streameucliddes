@@ -24,7 +24,6 @@ import numpy as np
 import pandas as pd
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
-
 from streamobs.surveys import Survey
 
 from streameucliddes.utils import fluxToMag
@@ -48,16 +47,28 @@ DES_NAMESPACE = "des_yr6"
 # Photometry per band, as used for the streamobs Euclid q1 / DES yr6 surveys.
 # BDF_MAG_<B>_CORRECTED_des: DES bulge+disk model magnitude, dereddened by DES (SFD98);
 # BDF_MAG_ERR_<B>_des: its error.
-DES_MAG_COLUMNS = {b: (f"BDF_MAG_{b.upper()}_CORRECTED_des", f"BDF_MAG_ERR_{b.upper()}_des") for b in "griz"}
+DES_MAG_COLUMNS = {
+    b: (f"BDF_MAG_{b.upper()}_CORRECTED_des", f"BDF_MAG_ERR_{b.upper()}_des")
+    for b in "griz"
+}
 # Euclid fluxes and errors, in micro-Jansky. There is no FLUX_VIS_TEMPLFIT: the template
 # fitting measures the other bands using the VIS image as prior, VIS being measured by
 # PSF fitting (FLUX_VIS_TO_<band>_TEMPLFIT are VIS fluxes on PSF-matched images, meant
 # for colours, and are not in this crossmatch).
 EUCLID_FLUX_COLUMNS = {
     "VIS": ("FLUX_VIS_PSF_euclid", "FLUXERR_VIS_PSF_euclid"),  # VIS PSF-fitting flux
-    "Y": ("FLUX_Y_TEMPLFIT_euclid", "FLUXERR_Y_TEMPLFIT_euclid"),  # NISP Y template-fitting flux
-    "J": ("FLUX_J_TEMPLFIT_euclid", "FLUXERR_J_TEMPLFIT_euclid"),  # NISP J template-fitting flux
-    "H": ("FLUX_H_TEMPLFIT_euclid", "FLUXERR_H_TEMPLFIT_euclid"),  # NISP H template-fitting flux
+    "Y": (
+        "FLUX_Y_TEMPLFIT_euclid",
+        "FLUXERR_Y_TEMPLFIT_euclid",
+    ),  # NISP Y template-fitting flux
+    "J": (
+        "FLUX_J_TEMPLFIT_euclid",
+        "FLUXERR_J_TEMPLFIT_euclid",
+    ),  # NISP J template-fitting flux
+    "H": (
+        "FLUX_H_TEMPLFIT_euclid",
+        "FLUXERR_H_TEMPLFIT_euclid",
+    ),  # NISP H template-fitting flux
 }
 # The streamobs extinction coefficients are A_band / E(B-V)_SFD: they apply to the SFD98
 # reddening, not to the Euclid GAL_EBV column (Planck map, ~1.45x larger here).
@@ -102,7 +113,10 @@ DES_STAR_CUTS = {"EXT_XGB_des": (0, 1)}  # high-confidence or likely stars
 EUCLID_STAR_CUTS = {
     "POINT_LIKE_PROB_euclid": (0.5, None),  # point-like
     "SPURIOUS_FLAG_euclid": 0,  # not spurious
-    f"{EUCLID_NAMESPACE}_VIS_obs": (EUCLID_VIS_SATURATION, None),  # fainter than the VIS saturation
+    f"{EUCLID_NAMESPACE}_VIS_obs": (
+        EUCLID_VIS_SATURATION,
+        None,
+    ),  # fainter than the VIS saturation
 }
 DEFAULT_STAR_CUTS = {**DES_QUALITY_CUTS, **DES_STAR_CUTS, **EUCLID_STAR_CUTS}
 
@@ -111,6 +125,7 @@ DEFAULT_STAR_CUTS = {**DES_QUALITY_CUTS, **DES_STAR_CUTS, **EUCLID_STAR_CUTS}
 # Reading
 # ===================================================
 
+
 def _dataset_dir(data_path):
     """Return the ``dataset`` directory of the HATS catalog found under ``data_path``."""
     data_path = Path(data_path)
@@ -118,7 +133,9 @@ def _dataset_dir(data_path):
         return data_path / "dataset"
     properties = sorted(data_path.rglob("hats.properties"))
     if not properties:
-        raise FileNotFoundError(f"No HATS catalog (hats.properties) found under {data_path}")
+        raise FileNotFoundError(
+            f"No HATS catalog (hats.properties) found under {data_path}"
+        )
     return properties[0].parent / "dataset"
 
 
@@ -182,14 +199,18 @@ def _cut_expression(column, spec):
         if low is not None:
             expression = field >= low
         if high is not None:
-            expression = field <= high if expression is None else expression & (field <= high)
+            expression = (
+                field <= high if expression is None else expression & (field <= high)
+            )
         return expression
     if isinstance(spec, (list, set)):
         return field.isin(list(spec))
     return field == spec
 
 
-def open_eucliddes_data(columns=None, data_path=DEFAULT_DATA_PATH, cuts=None, verbose=True):
+def open_eucliddes_data(
+    columns=None, data_path=DEFAULT_DATA_PATH, cuts=None, verbose=True
+):
     """
     Read the Euclid Q1 x DES Y6 Gold crossmatched catalog.
 
@@ -213,8 +234,12 @@ def open_eucliddes_data(columns=None, data_path=DEFAULT_DATA_PATH, cuts=None, ve
     """
     dataset_dir = _dataset_dir(data_path)
     _check_partitions(dataset_dir)
-    dataset = ds.dataset(dataset_dir, format="parquet", partitioning="hive", exclude_invalid_files=True)
-    catalog_columns = [c for c in dataset.schema.names if c not in ("Norder", "Dir", "Npix")]
+    dataset = ds.dataset(
+        dataset_dir, format="parquet", partitioning="hive", exclude_invalid_files=True
+    )
+    catalog_columns = [
+        c for c in dataset.schema.names if c not in ("Norder", "Dir", "Npix")
+    ]
 
     if columns is None:
         columns = DEFAULT_COLUMNS
@@ -223,7 +248,9 @@ def open_eucliddes_data(columns=None, data_path=DEFAULT_DATA_PATH, cuts=None, ve
     cuts = cuts or {}
     missing = [c for c in list(columns) + list(cuts) if c not in catalog_columns]
     if missing:
-        raise KeyError(f"Column(s) not in the catalog: {missing}. See available_columns().")
+        raise KeyError(
+            f"Column(s) not in the catalog: {missing}. See available_columns()."
+        )
 
     expression = None
     for column, spec in cuts.items():
@@ -232,7 +259,9 @@ def open_eucliddes_data(columns=None, data_path=DEFAULT_DATA_PATH, cuts=None, ve
 
     data = dataset.to_table(columns=list(columns), filter=expression).to_pandas()
     if verbose:
-        print(f"Read {len(data):,} rows x {len(data.columns)} columns from {dataset_dir.parent.name}")
+        print(
+            f"Read {len(data):,} rows x {len(data.columns)} columns from {dataset_dir.parent.name}"
+        )
     return data
 
 
@@ -240,7 +269,10 @@ def open_eucliddes_data(columns=None, data_path=DEFAULT_DATA_PATH, cuts=None, ve
 # Magnitudes
 # ===================================================
 
-def add_magnitudes(data, des_bands=tuple(DES_MAG_COLUMNS), euclid_bands=tuple(EUCLID_FLUX_COLUMNS)):
+
+def add_magnitudes(
+    data, des_bands=tuple(DES_MAG_COLUMNS), euclid_bands=tuple(EUCLID_FLUX_COLUMNS)
+):
     """
     Add harmonised, dereddened magnitudes and ``ra``/``dec`` columns, in place.
 
@@ -265,10 +297,14 @@ def add_magnitudes(data, des_bands=tuple(DES_MAG_COLUMNS), euclid_bands=tuple(EU
     needed = [RA_COLUMN, DEC_COLUMN]
     needed += [c for b in des_bands for c in DES_MAG_COLUMNS[b]]
     if euclid_bands:
-        needed += [c for b in euclid_bands for c in EUCLID_FLUX_COLUMNS[b]] + [EBV_COLUMN]
+        needed += [c for b in euclid_bands for c in EUCLID_FLUX_COLUMNS[b]] + [
+            EBV_COLUMN
+        ]
     missing = [c for c in needed if c not in data.columns]
     if missing:
-        raise KeyError(f"Column(s) needed to compute the magnitudes are missing: {missing}")
+        raise KeyError(
+            f"Column(s) needed to compute the magnitudes are missing: {missing}"
+        )
 
     data["ra"] = data[RA_COLUMN]
     data["dec"] = data[DEC_COLUMN]
@@ -288,7 +324,9 @@ def add_magnitudes(data, des_bands=tuple(DES_MAG_COLUMNS), euclid_bands=tuple(EU
         with np.errstate(divide="ignore", invalid="ignore"):
             mag = fluxToMag(np.where(valid, flux, np.nan) * 1e-6)  # micro-Jy -> Jy
             mag_err = 2.5 / np.log(10) * flux_err / flux
-        extinction = EUCLID_SURVEY.coeff_extinc[band] * data[EBV_COLUMN].to_numpy(dtype=float)
+        extinction = EUCLID_SURVEY.coeff_extinc[band] * data[EBV_COLUMN].to_numpy(
+            dtype=float
+        )
         data[f"{EUCLID_NAMESPACE}_{band}_obs"] = mag - extinction
         data[f"{EUCLID_NAMESPACE}_{band}_err"] = np.where(valid, mag_err, np.nan)
 
@@ -298,6 +336,7 @@ def add_magnitudes(data, des_bands=tuple(DES_MAG_COLUMNS), euclid_bands=tuple(EU
 # ===================================================
 # Cuts
 # ===================================================
+
 
 def get_cut_mask(data, cuts):
     """
@@ -343,13 +382,21 @@ def cut_flow(data, cuts):
     for column, spec in cuts.items():
         cut = _cut_mask(data[column], spec)
         mask &= cut
-        rows.append({"cut": f"{column}: {spec}", "n_alone": int(cut.sum()), "n_remaining": int(mask.sum())})
+        rows.append(
+            {
+                "cut": f"{column}: {spec}",
+                "n_alone": int(cut.sum()),
+                "n_remaining": int(mask.sum()),
+            }
+        )
     flow = pd.DataFrame(rows)
     flow["fraction_remaining"] = flow["n_remaining"] / max(len(data), 1)
     return flow
 
 
-def get_eucliddes_stars(data=None, cuts=None, columns=None, data_path=DEFAULT_DATA_PATH, verbose=True):
+def get_eucliddes_stars(
+    data=None, cuts=None, columns=None, data_path=DEFAULT_DATA_PATH, verbose=True
+):
     """
     Get the stars of the Euclid Q1 x DES Y6 Gold catalog, with harmonised magnitudes.
 
@@ -380,7 +427,9 @@ def get_eucliddes_stars(data=None, cuts=None, columns=None, data_path=DEFAULT_DA
         catalog_columns = set(available_columns(data_path))
         read_cuts = {c: s for c, s in cuts.items() if c in catalog_columns}
         cuts = {c: s for c, s in cuts.items() if c not in catalog_columns}
-        data = open_eucliddes_data(columns=columns, data_path=data_path, cuts=read_cuts, verbose=verbose)
+        data = open_eucliddes_data(
+            columns=columns, data_path=data_path, cuts=read_cuts, verbose=verbose
+        )
         n_input = None
     else:
         n_input = len(data)

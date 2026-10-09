@@ -3,8 +3,8 @@ from types import SimpleNamespace
 
 import healpy as hp
 import numpy as np
-from numpy.polynomial import polynomial
 import pandas as pd
+from numpy.polynomial import polynomial
 
 try:
     from scipy.optimize import minimize
@@ -14,7 +14,10 @@ except Exception:  # pragma: no cover - optional dependency at runtime
 
 LOGGER = logging.getLogger(__name__)
 
-def fit_background_model(data, method="likelihood", model_type={"polynomial": {"degree": 5}}, **kwargs):
+
+def fit_background_model(
+    data, method="likelihood", model_type={"polynomial": {"degree": 5}}, **kwargs
+):
     """
     Fit background with either Poisson likelihood (default) or polyfit2d least-squares.
     """
@@ -50,17 +53,18 @@ def polyfit2d(x, y, f, deg):
     f = np.asarray(f)
     deg = np.asarray(deg)
     vander = polynomial.polyvander2d(x, y, deg)
-    vander = vander.reshape((-1,vander.shape[-1]))
+    vander = vander.reshape((-1, vander.shape[-1]))
     f = f.reshape((vander.shape[0],))
     c = np.linalg.lstsq(vander, f)[0]
-    return c.reshape(deg+1)
+    return c.reshape(deg + 1)
 
 
-
-def fit_background_model_polyfit2d(data, model_type={"polynomial": {"degree": 5}}, **kwargs):
+def fit_background_model_polyfit2d(
+    data, model_type={"polynomial": {"degree": 5}}, **kwargs
+):
     """
     Fit background with 2D polynomial least-squares using polyfit2d.
-    
+
     Parameters
     ----------
     data : np.ndarray, np.ma.MaskedArray, pd.DataFrame, or dict
@@ -87,7 +91,7 @@ def fit_background_model_polyfit2d(data, model_type={"polynomial": {"degree": 5}
             Whether to fit log-transformed values (default: True).
         fit_log_eps : float
             Epsilon for log clipping (default: 1e-9).
-    
+
     Returns
     -------
     params_fit : np.ndarray
@@ -109,7 +113,9 @@ def fit_background_model_polyfit2d(data, model_type={"polynomial": {"degree": 5}
     kwargs_local.pop("fit_log_space", None)
     kwargs_local.pop("fit_log_eps", None)
 
-    prepared_poly = process_data_polyfit2d(data, proj=proj, sigma=sigma, percent=percent, **kwargs_local)
+    prepared_poly = process_data_polyfit2d(
+        data, proj=proj, sigma=sigma, percent=percent, **kwargs_local
+    )
 
     cfg = _extract_polynomial_config(model_type)
     deg_x = int(cfg["deg_x"])
@@ -145,7 +151,9 @@ def fit_background_model_polyfit2d(data, model_type={"polynomial": {"degree": 5}
             )
         deg_x = deg_y = max_deg
 
-    coeff_2d = polyfit2d(prepared_poly["x_fit"], prepared_poly["y_fit"], target_fit, [deg_x, deg_y])
+    coeff_2d = polyfit2d(
+        prepared_poly["x_fit"], prepared_poly["y_fit"], target_fit, [deg_x, deg_y]
+    )
 
     # Enforce triangular support for total-degree models.
     if degree_mode == "total":
@@ -154,9 +162,11 @@ def fit_background_model_polyfit2d(data, model_type={"polynomial": {"degree": 5}
                 if i + j > total_degree:
                     coeff_2d[i, j] = 0.0
 
-    model_plane_all = polynomial.polyval2d(prepared_poly["x_all"], prepared_poly["y_all"], coeff_2d)
+    model_plane_all = polynomial.polyval2d(
+        prepared_poly["x_all"], prepared_poly["y_all"], coeff_2d
+    )
     if fit_log_space:
-        #bkg = np.exp(model_plane_all)
+        # bkg = np.exp(model_plane_all)
         # fix the fact that exp(710) is above float range
         model_plane_all_clipped = np.clip(model_plane_all, -700, 700)
         bkg = np.exp(model_plane_all_clipped)
@@ -165,7 +175,9 @@ def fit_background_model_polyfit2d(data, model_type={"polynomial": {"degree": 5}
 
     bkg = np.ma.array(bkg, mask=prepared_poly["mask"], fill_value=np.nan)
 
-    model_plane_fit = polynomial.polyval2d(prepared_poly["x_fit"], prepared_poly["y_fit"], coeff_2d)
+    model_plane_fit = polynomial.polyval2d(
+        prepared_poly["x_fit"], prepared_poly["y_fit"], coeff_2d
+    )
     if fit_log_space:
         pred_fit = np.exp(model_plane_fit)
     else:
@@ -191,7 +203,6 @@ def fit_background_model_polyfit2d(data, model_type={"polynomial": {"degree": 5}
     return params_fit, solver_res, prepared_poly
 
 
-
 ############################################################################################################
 ############################## Data preparation for polyfit2d #######################################
 ############################################################################################################
@@ -200,7 +211,7 @@ def fit_background_model_polyfit2d(data, model_type={"polynomial": {"degree": 5}
 def process_data(data, **kwargs):
     """
     Convert input data to a prepared data bundle for fitting.
-    
+
     Parameters
     ----------
     data : np.ndarray or pd.DataFrame
@@ -210,7 +221,7 @@ def process_data(data, **kwargs):
         nside (int): HEALPix NSIDE (default 64).
         nest (bool): HEALPix ordering scheme (default False = RING).
         mask (array-like of bool, optional): footprint mask for HEALPix maps.
-    
+
     Returns
     -------
     dict with keys:
@@ -257,7 +268,9 @@ def process_data(data, **kwargs):
         mask = np.zeros(npix, dtype=bool)
     else:
         if not (isinstance(data, np.ndarray) or isinstance(data, np.ma.MaskedArray)):
-            raise ValueError("Data format not recognized. Provide a HEALPix map or a DataFrame with 'ra'/'dec'.")
+            raise ValueError(
+                "Data format not recognized. Provide a HEALPix map or a DataFrame with 'ra'/'dec'."
+            )
 
     if user_mask is not None:
         mask = mask | _coerce_mask(user_mask, data_map.shape)
@@ -267,14 +280,18 @@ def process_data(data, **kwargs):
     mask = mask | ~np.isfinite(data_map) | hp.mask_bad(data_map)
 
     if data_map.size != npix:
-        raise ValueError(f"Input map size={data_map.size} is inconsistent with nside={nside} (expected npix={npix}).")
+        raise ValueError(
+            f"Input map size={data_map.size} is inconsistent with nside={nside} (expected npix={npix})."
+        )
 
     lon, lat = hp.pix2ang(nside, np.arange(npix), lonlat=True, nest=nest)
     x = _normalize_to_minus_one_plus_one(lon)
     y = _normalize_to_minus_one_plus_one(lat)
 
     selection = (~mask) & np.isfinite(x) & np.isfinite(y)
-    fit_idx = np.where(selection)[0] # Indices of pixels used for fitting (unmasked and valid coordinates)
+    fit_idx = np.where(selection)[
+        0
+    ]  # Indices of pixels used for fitting (unmasked and valid coordinates)
     # We will evaluate the likelihood only on these selected pixels to avoid
     # issues with masked/invalid data. This is better than selection mask, because it gives us the actual indices
     #  to index into the full data_map when computing expected counts, and avoid
@@ -291,7 +308,6 @@ def process_data(data, **kwargs):
         "nside": nside,
         "npix": npix,
     }
-
 
 
 def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **kwargs):
@@ -336,7 +352,9 @@ def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **k
 
     if sigma is not None and float(sigma) > 0:
         fill_med = float(np.ma.median(data_ma))
-        smoothed = hp.smoothing(data_ma.filled(fill_med), sigma=np.radians(float(sigma)))
+        smoothed = hp.smoothing(
+            data_ma.filled(fill_med), sigma=np.radians(float(sigma))
+        )
         data_ma = np.ma.array(smoothed, mask=mask)
 
     lon, lat = hp.pix2ang(nside, np.arange(npix), lonlat=True)
@@ -355,14 +373,23 @@ def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **k
     if hasattr(proj, "get_extent"):
         xmin, xmax, ymin, ymax = proj.get_extent()
         # Use inclusive bounds to avoid dropping pixels that lie exactly on the edge.
-        extent_mask = (x_sel >= xmin) & (x_sel <= xmax) & (y_sel >= ymin) & (y_sel <= ymax)
+        extent_mask = (
+            (x_sel >= xmin) & (x_sel <= xmax) & (y_sel >= ymin) & (y_sel <= ymax)
+        )
         extent_count = int(np.count_nonzero(extent_mask))
         sel2 &= extent_mask
 
     if debug:
         print("[process_data_polyfit2d debug] sel_count:", int(np.count_nonzero(sel)))
-        print("[process_data_polyfit2d debug] proj finite x/y:", int(np.count_nonzero(np.isfinite(x_sel))), int(np.count_nonzero(np.isfinite(y_sel))))
-        print("[process_data_polyfit2d debug] v_sel finite:", int(np.count_nonzero(np.isfinite(v_sel))))
+        print(
+            "[process_data_polyfit2d debug] proj finite x/y:",
+            int(np.count_nonzero(np.isfinite(x_sel))),
+            int(np.count_nonzero(np.isfinite(y_sel))),
+        )
+        print(
+            "[process_data_polyfit2d debug] v_sel finite:",
+            int(np.count_nonzero(np.isfinite(v_sel))),
+        )
         if extent_count is not None:
             print("[process_data_polyfit2d debug] extent_count:", extent_count)
         print("[process_data_polyfit2d debug] sel2_count:", int(np.count_nonzero(sel2)))
@@ -377,7 +404,12 @@ def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **k
 
     # Debug logging to help trace empty-fit issues
     try:
-        LOGGER.debug("process_data_polyfit2d: sel_count=%d, sel2_count=%d, mask_sum=%d", np.count_nonzero(sel), np.count_nonzero(sel2), np.sum(data_ma.mask))
+        LOGGER.debug(
+            "process_data_polyfit2d: sel_count=%d, sel2_count=%d, mask_sum=%d",
+            np.count_nonzero(sel),
+            np.count_nonzero(sel2),
+            np.sum(data_ma.mask),
+        )
     except Exception:
         pass
 
@@ -386,11 +418,15 @@ def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **k
     finite_y_all = np.isfinite(y_all)
 
     if np.any(finite_x_all):
-        x_min, x_max = float(np.nanmin(x_all[finite_x_all])), float(np.nanmax(x_all[finite_x_all]))
+        x_min, x_max = float(np.nanmin(x_all[finite_x_all])), float(
+            np.nanmax(x_all[finite_x_all])
+        )
     else:
         x_min, x_max = -1.0, 1.0
     if np.any(finite_y_all):
-        y_min, y_max = float(np.nanmin(y_all[finite_y_all])), float(np.nanmax(y_all[finite_y_all]))
+        y_min, y_max = float(np.nanmin(y_all[finite_y_all])), float(
+            np.nanmax(y_all[finite_y_all])
+        )
     else:
         y_min, y_max = -1.0, 1.0
 
@@ -425,11 +461,10 @@ def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **k
     }
 
 
-
-
 ############################################################################################################
 ############################## Utils #######################################
 ############################################################################################################
+
 
 def _normalize_to_minus_one_plus_one(arr):
     """Normalize array to [-1, +1] range."""
@@ -445,7 +480,6 @@ def _validate_nside(nside):
     """Check that nside is a valid HEALPix resolution (power of 2)."""
     if not hp.isnsideok(nside):
         raise ValueError(f"Invalid nside={nside}. nside must be a power of 2.")
-
 
 
 def _extract_polynomial_config(model_type):
@@ -492,7 +526,6 @@ def _polynomial_exponents(model_type):
                 continue
             exponents.append((i, j))
     return exponents
-
 
 
 def polynomial_formula(params, model_type, precision=5):

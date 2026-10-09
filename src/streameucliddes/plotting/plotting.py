@@ -1,56 +1,78 @@
+import glob
 import os
 import re
 
-import numpy as np
-import matplotlib.pyplot as plt
-import pandas as pd
 import astropy.units as u
-from matplotlib.colors import LogNorm
-import skyproj
 import healpy as hp
-
-import glob
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+import skyproj
+from matplotlib.colors import LogNorm
 from PIL import Image
 
-    
-def plot_CMD(data, fig=None, ax=None, mag_cols =['mag_g', 'mag_r'], ylim=(15,28), xlim = (0.1, 1.2), xlabel = rf"$g-r$", ylabel = rf"$g$", color = None,  cmap='cividis', norm = 'log', bins_colors=None, bins_mag=None):
+
+def plot_CMD(
+    data,
+    fig=None,
+    ax=None,
+    mag_cols=["mag_g", "mag_r"],
+    ylim=(15, 28),
+    xlim=(0.1, 1.2),
+    xlabel=rf"$g-r$",
+    ylabel=rf"$g$",
+    color=None,
+    cmap="cividis",
+    norm="log",
+    bins_colors=None,
+    bins_mag=None,
+):
     """
     To plot 2D hist in the CMD
 
     data must be data frame of dict.
     """
-    
-    if fig is None or ax is None:
-        fig, ax = plt.subplots(1, 1, figsize=(8,4))
 
-    mag1 = pd.to_numeric(data[mag_cols[0]], errors='coerce')
-    mag2 = pd.to_numeric(data[mag_cols[1]], errors='coerce')
+    if fig is None or ax is None:
+        fig, ax = plt.subplots(1, 1, figsize=(8, 4))
+
+    mag1 = pd.to_numeric(data[mag_cols[0]], errors="coerce")
+    mag2 = pd.to_numeric(data[mag_cols[1]], errors="coerce")
 
     if bins_colors is None:
         bins_colors = np.arange(xlim[0], xlim[1], 0.01)
     if bins_mag is None:
         bins_mag = np.arange(ylim[0], ylim[1], 0.1)
-        
-    counts, xedges, yedges = np.histogram2d(mag1 - mag2, mag1, bins=[bins_colors, bins_mag])
+
+    counts, xedges, yedges = np.histogram2d(
+        mag1 - mag2, mag1, bins=[bins_colors, bins_mag]
+    )
     if norm is None:
-        label = 'N'
-    elif norm == 'log':
+        label = "N"
+    elif norm == "log":
         norm = LogNorm()
-        label = 'log10(N)'
+        label = "log10(N)"
     else:
         raise ValueError(f"Invalid norm: {norm}. Use None or 'log'.")
 
-    im = ax.imshow(counts.T, origin='lower', aspect='auto', extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]], cmap=cmap, norm=norm)
-    #plt.colorbar(im, ax=ax, label=label)
-    #plt.colorbar(im, ax=ax)
+    im = ax.imshow(
+        counts.T,
+        origin="lower",
+        aspect="auto",
+        extent=[xedges[0], xedges[-1], yedges[0], yedges[-1]],
+        cmap=cmap,
+        norm=norm,
+    )
+    # plt.colorbar(im, ax=ax, label=label)
+    # plt.colorbar(im, ax=ax)
     cbar = plt.colorbar(im, ax=ax)
-    #cbar.set_label(label)
+    # cbar.set_label(label)
 
-    #cbar.ax.yaxis.set_label_coords(0.5, 1.05)
-    #cbar = plt.colorbar(im, ax=ax)
-    cbar.set_label(label, loc='top')
+    # cbar.ax.yaxis.set_label_coords(0.5, 1.05)
+    # cbar = plt.colorbar(im, ax=ax)
+    cbar.set_label(label, loc="top")
 
-    ax.set_xlabel(f'{mag_cols[0]} - {mag_cols[1]}')
+    ax.set_xlabel(f"{mag_cols[0]} - {mag_cols[1]}")
     ax.set_xlim(xlim)
     ax.set_ylim(ylim)
     ax.set_ylabel(mag_cols[0])
@@ -60,7 +82,7 @@ def plot_CMD(data, fig=None, ax=None, mag_cols =['mag_g', 'mag_r'], ylim=(15,28)
         ax.set_ylabel(ylabel)
     if ax.get_legend():
         ax.legend()
-    
+
     ax.invert_yaxis()
     return fig, ax
 
@@ -79,9 +101,9 @@ def plot_2D_density(
     vmin=None,
     vmax=None,
     add_colorbar=True,
-    smoothing= False,
-    smoothing_scale_degrees=0.3
-    ):
+    smoothing=False,
+    smoothing_scale_degrees=0.3,
+):
     """
     Plot a 2D stellar density map on the sky using skyproj + HEALPix.
 
@@ -129,7 +151,7 @@ def plot_2D_density(
     pix_idx = hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)
     hp_map = np.bincount(pix_idx, minlength=npix).astype(np.float32)
     # convert degrees in radian
-    smoothing_scale_radian = 2*np.pi/360.*smoothing_scale_degrees
+    smoothing_scale_radian = 2 * np.pi / 360.0 * smoothing_scale_degrees
     if smoothing:
         hp_map = hp.sphtfunc.smoothing(hp_map, sigma=smoothing_scale_radian)
     # Build projection
@@ -169,9 +191,9 @@ def get_hp_map(
     title=None,
     vmin=None,
     vmax=None,
-    smoothing= False,
-    smoothing_scale_degrees=0.3
-    ):
+    smoothing=False,
+    smoothing_scale_degrees=0.3,
+):
     """
 
     Parameters
@@ -207,11 +229,11 @@ def get_hp_map(
     pix_idx = hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)
     hp_map = np.bincount(pix_idx, minlength=npix).astype(np.float32)
     # convert degrees in radian
-    smoothing_scale_radian = 2*np.pi/360.*smoothing_scale_degrees
+    smoothing_scale_radian = 2 * np.pi / 360.0 * smoothing_scale_degrees
     if smoothing:
         hp_map = hp.sphtfunc.smoothing(hp_map, sigma=smoothing_scale_radian)
     # Build projection
-    #sp = skyproj.McBrydeSkyproj(ax=ax)
+    # sp = skyproj.McBrydeSkyproj(ax=ax)
 
     return hp_map
 
@@ -231,7 +253,7 @@ def plot_2D_density_from_hp(
     label_fontsize=14,
     title_fontsize=14,
     tick_labelsize=None,
-    ):
+):
     """
     Plot a 2D stellar density map on the sky directly from HEALPix map
 
@@ -295,9 +317,7 @@ def plot_2D_density_from_hp(
     return fig, sp.ax
 
 
-
 # ================================ Plotting functions for 2D polynomial fitting =====================================
-
 
 
 def plot_results_find_stream(
@@ -355,7 +375,9 @@ def plot_results_find_stream(
     dm = results["distance_modulus"]
 
     figsize1 = plt.rcParams["figure.figsize"]
-    fig, ax = plt.subplots(2, 2, figsize=(2.5 * figsize1[0], 2.5 * figsize1[1]), constrained_layout=True)
+    fig, ax = plt.subplots(
+        2, 2, figsize=(2.5 * figsize1[0], 2.5 * figsize1[1]), constrained_layout=True
+    )
     ax = ax.ravel()
 
     # skyproj lays out its own ticks/labels/colorbars rather than following
@@ -365,22 +387,48 @@ def plot_results_find_stream(
     # smaller fonts so the panels stop bleeding into each other.
     w_pad, h_pad, wspace, hspace = 0.05, 0.05, 0.15, 0.15
     try:
-        #print(f"1 - Applying w_pad={w_pad}, h_pad={h_pad}, wspace={wspace}, hspace = {hspace}")
-        fig.get_layout_engine().set(w_pad=w_pad, h_pad=h_pad, wspace=wspace, hspace=hspace)
+        # print(f"1 - Applying w_pad={w_pad}, h_pad={h_pad}, wspace={wspace}, hspace = {hspace}")
+        fig.get_layout_engine().set(
+            w_pad=w_pad, h_pad=h_pad, wspace=wspace, hspace=hspace
+        )
     except AttributeError:
-        #print(f"2 - Applying w_pad={w_pad}, h_pad={h_pad}, wspace={wspace}, hspace = {hspace}")
-        fig.set_constrained_layout_pads(w_pad=w_pad, h_pad=h_pad, wspace=wspace, hspace=hspace)
+        # print(f"2 - Applying w_pad={w_pad}, h_pad={h_pad}, wspace={wspace}, hspace = {hspace}")
+        fig.set_constrained_layout_pads(
+            w_pad=w_pad, h_pad=h_pad, wspace=wspace, hspace=hspace
+        )
 
     fig, ax[0] = plot_CMD(
-        data, fig=fig, ax=ax[0], mag_cols=mag_to_use, ylim=mag_bounds, xlim=color_bounds, cmap=cmap,
+        data,
+        fig=fig,
+        ax=ax[0],
+        mag_cols=mag_to_use,
+        ylim=mag_bounds,
+        xlim=color_bounds,
+        cmap=cmap,
     )
-    ax[0].plot(polygon_vertices[:, 0], polygon_vertices[:, 1], color="C0", lw=2, label="Match filter")
+    ax[0].plot(
+        polygon_vertices[:, 0],
+        polygon_vertices[:, 1],
+        color="C0",
+        lw=2,
+        label="Match filter",
+    )
     if faint_mag_cut is not None:
-        ax[0].axhline(faint_mag_cut, color="C1", lw=1.5, ls="dashed", label=f"Magnitude cut ({faint_mag_cut:g})")
+        ax[0].axhline(
+            faint_mag_cut,
+            color="C1",
+            lw=1.5,
+            ls="dashed",
+            label=f"Magnitude cut ({faint_mag_cut:g})",
+        )
     ax[0].legend(fontsize=8)
     ax[0].set_title("Match filter", fontsize=11)
 
-    panels = [("data_map", "Data map"), ("fit_map", "Fit map"), ("residual_map", "Residual map")]
+    panels = [
+        ("data_map", "Data map"),
+        ("fit_map", "Fit map"),
+        ("residual_map", "Residual map"),
+    ]
     for i, (key, panel_title) in enumerate(panels, start=1):
         fig, ax[i] = plot_2D_density_from_hp(
             results[key],
@@ -402,13 +450,20 @@ def plot_results_find_stream(
             # Every crossing stream, all three object types collapsed to one
             # "type" legend entry each.
             overlap_kwargs.setdefault("stream_kwargs", {"label_mode": "type"})
-            plot_overlapped_objects(fig=fig, ax=ax[1], plot_footprint=False, **overlap_kwargs)
+            plot_overlapped_objects(
+                fig=fig, ax=ax[1], plot_footprint=False, **overlap_kwargs
+            )
         else:
             # Just GCs + dwarves (plot_overlapped_objects' own defaults already
             # collapse these to one "type" entry each) plus the one target stream,
             # individually labeled, combined into a single legend.
-            plot_overlapped_objects(fig=fig, ax=ax[1], object_to_plot=("gc", "dwarf"),
-                                     plot_footprint=False, **overlap_kwargs)
+            plot_overlapped_objects(
+                fig=fig,
+                ax=ax[1],
+                object_to_plot=("gc", "dwarf"),
+                plot_footprint=False,
+                **overlap_kwargs,
+            )
             plot_single_stream_track(stream_name, fig=fig, ax=ax[1], show_legend=False)
             handles, labels = ax[1].get_legend_handles_labels()
             if handles:
@@ -428,8 +483,6 @@ def plot_results_find_stream(
         plt.close(fig)
 
     return fig, ax, fname_path
-
-
 
 
 def make_gif(
@@ -468,9 +521,12 @@ def make_gif(
     """
     files = glob.glob(os.path.join(figures_folder, pattern))
     if not files:
-        raise FileNotFoundError(f"No files matching '{pattern}' found in '{figures_folder}'.")
+        raise FileNotFoundError(
+            f"No files matching '{pattern}' found in '{figures_folder}'."
+        )
 
     if sort_numeric:
+
         def _sort_key(path):
             match = re.search(r"[-+]?\d*\.?\d+", os.path.basename(path))
             return float(match.group()) if match else path
@@ -481,7 +537,9 @@ def make_gif(
 
     dither_mode = Image.Dither.FLOYDSTEINBERG if dither else Image.Dither.NONE
     frames = [
-        Image.open(f).convert("RGB").quantize(colors=256, method=Image.Quantize.FASTOCTREE, dither=dither_mode)
+        Image.open(f)
+        .convert("RGB")
+        .quantize(colors=256, method=Image.Quantize.FASTOCTREE, dither=dither_mode)
         for f in files
     ]
 

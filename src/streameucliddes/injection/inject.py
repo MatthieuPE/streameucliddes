@@ -1,9 +1,13 @@
 # Module for stream injection using streamobs
 
-from .generate import generate_stream_catalog
 from streamobs.observed import StreamInjector
 
-def inject_stream(stream_catalog=None, stream_config=None, seed=None, rng=None,**kwargs):
+from .generate import generate_stream_catalog
+
+
+def inject_stream(
+    stream_catalog=None, stream_config=None, seed=None, rng=None, **kwargs
+):
     """
     Inject a stream into a survey using the streamobs package.
 
@@ -42,23 +46,40 @@ def inject_stream(stream_catalog=None, stream_config=None, seed=None, rng=None,*
             raise ValueError("Either stream_catalog or stream_config must be provided.")
         else:
             # kwargs are injection options (survey, bands, ...), not generation ones
-            stream_catalog = generate_stream_catalog(stream_config=stream_config, seed=seed, rng=rng)
+            stream_catalog = generate_stream_catalog(
+                stream_config=stream_config, seed=seed, rng=rng
+            )
 
-    injected_catalog = inject_stream_catalog(stream_catalog, stream_config=stream_config, seed=seed, rng=rng, **kwargs)
+    injected_catalog = inject_stream_catalog(
+        stream_catalog, stream_config=stream_config, seed=seed, rng=rng, **kwargs
+    )
 
     return injected_catalog
 
 
-def inject_stream_catalog(stream_catalog, stream_config=None, seed=None,gc_frame=None,survey = [
-        {"survey": "des",  "release": "yr6"},
+def inject_stream_catalog(
+    stream_catalog,
+    stream_config=None,
+    seed=None,
+    gc_frame=None,
+    survey=[
+        {"survey": "des", "release": "yr6"},
         {"survey": "euclid", "release": "q1"},
-    ],bands={"des_yr6": ['g', 'r', 'i'], "euclid_q1": ['VIS', 'Y', 'J']},**kwargs):
+    ],
+    bands={"des_yr6": ["g", "r", "i"], "euclid_q1": ["VIS", "Y", "J"]},
+    **kwargs,
+):
 
     injector = StreamInjector(survey=survey)
-    stream = injector.inject(stream_catalog, stream_config=stream_config, gc_frame=gc_frame, seed=seed,bands=bands,**kwargs)
+    stream = injector.inject(
+        stream_catalog,
+        stream_config=stream_config,
+        gc_frame=gc_frame,
+        seed=seed,
+        bands=bands,
+        **kwargs,
+    )
 
-    metadata = {"gc_frame":injector._last_gc_frame, "seed":seed}
+    metadata = {"gc_frame": injector._last_gc_frame, "seed": seed}
 
     return stream, metadata
-
-

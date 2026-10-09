@@ -50,7 +50,7 @@ plt_params = {
             "#000000",
         ],
     ),
-    #"legend.frameon": False,
+    # "legend.frameon": False,
 }
 
 

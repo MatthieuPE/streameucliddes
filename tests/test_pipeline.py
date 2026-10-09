@@ -2,10 +2,10 @@ import healpy as hp
 
 from streameucliddes.analysis import pipeline
 
-
 # ===================================================
 # Test find_stream
 # ===================================================
+
 
 # Smoke test: the full pipeline runs on the mock catalog (see conftest.py)
 def test_pipeline_runs_without_error(sample_sky_catalog, nside):
