@@ -189,3 +189,6 @@ plots/
 
 # Sphinx autosummary output (regenerated on every build)
 docs/source/generated/
+
+# Notebooks (kept locally, not tracked)
+notebooks/

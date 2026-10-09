@@ -4,7 +4,7 @@ import ugali.isochrone
 from streameucliddes.utils import fluxToMag, magToFlux
 
 
-def _set_isochrone_for_ugali(isochrone):
+def _set_isochrone_for_ugali(isochrone, verbose=False):
     """
     Set the survey for the ugali isochrone.
 
@@ -22,7 +22,8 @@ def _set_isochrone_for_ugali(isochrone):
             )
         if len(surveys) > 0:
             iso["survey"] = surveys[0]  # Return the first survey found
-            print(f"Setting survey for ugali isochrone to {iso['survey']}.")
+            if verbose:
+                print(f"Setting survey for ugali isochrone to {iso['survey']}.")
             iso.pop("surveys", None)  # Remove the surveys key to avoid confusion
 
     return iso
