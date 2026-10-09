@@ -52,7 +52,7 @@ def inject_stream(stream_catalog=None, stream_config=None, seed=None, rng=None,*
 def inject_stream_catalog(stream_catalog, stream_config=None, seed=None,gc_frame=None,survey = [
         {"survey": "des",  "release": "yr6"},
         {"survey": "euclid", "release": "q1"},
-    ],bands={"des_yr6": ['g', 'r',], "euclid_q1": ['VIS', 'Y']},**kwargs):
+    ],bands={"des_yr6": ['g', 'r', 'i'], "euclid_q1": ['VIS', 'Y', 'J']},**kwargs):
 
     injector = StreamInjector(survey=survey)
     stream = injector.inject(stream_catalog, stream_config=stream_config, gc_frame=gc_frame, seed=seed,bands=bands,**kwargs)

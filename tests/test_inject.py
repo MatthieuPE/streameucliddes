@@ -142,4 +142,26 @@ def test_inject_stream():
     assert metadata["seed"] == metadata_2["seed"], "Metadata seeds should match."
     assert metadata["gc_frame"] == metadata_2["gc_frame"], "Metadata gc_frame should match."
 
+def test_inject_stream_output_content():
+    survey = [
+        {"survey": "des",  "release": "yr6"},
+        {"survey": "euclid", "release": "q1"},
+    ]
+    bands={"des_yr6": ['g', 'r', 'i'], "euclid_q1": ['VIS', 'Y', 'J']}
+    injected_catalog, metadata = inject.inject_stream(stream_config=STREAM_CONFIG, seed=42, survey=survey, bands=bands)
+
+    # Verify that the injected catalog contains the expected columns for each survey
+    expected_columns = ['phi1', 'phi2']
+    for survey_spec in survey:
+        survey_name = survey_spec["survey"]
+        release = survey_spec["release"]
+        namespace = f"{survey_name}_{release}"
+        for band in bands[namespace]:
+            expected_columns.append(f"{namespace}_{band}_obs")
+            expected_columns.append(f"{namespace}_{band}_err")
+            expected_columns.append(f"{survey_name}_{band}_true")
+        expected_columns.append(f"{namespace}_flag_observed")
+
+    for col in expected_columns:
+        assert col in injected_catalog, f"Expected column {col} is missing from the injected catalog."
 
