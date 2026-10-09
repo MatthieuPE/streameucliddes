@@ -2,6 +2,23 @@ import numpy as np
 import ugali.isochrone
 from streameucliddes.utils import magToFlux, fluxToMag
 
+def _set_isochrone_for_ugali(isochrone):
+    """
+    Set the survey for the ugali isochrone.
+
+    """
+    # Set survey for ugali isochrone
+    iso = isochrone.copy()
+    if "surveys" in isochrone:
+        surveys = list(isochrone["surveys"].keys())
+        if len(surveys) > 0:
+            iso['survey']= surveys[0]  # Return the first survey found
+            print(f"Setting survey for ugali isochrone to {iso['survey']}.")
+            iso.pop("surveys", None)  # Remove the surveys key to avoid confusion
+
+    return iso
+
+
 def convert_N_to_SurfaceBrightness(N, mag_bounds = (None, 24), surface=None, stream_length=None, stream_width = None, isochrone_config_path =None,
                                 band='r',isochrone = None, verbose=False, distance_modulus=None, **kwargs):
     if isochrone is None:
@@ -10,6 +27,8 @@ def convert_N_to_SurfaceBrightness(N, mag_bounds = (None, 24), surface=None, str
         import yaml
         with open(isochrone_config_path, 'r') as f:
             isochrone = yaml.safe_load(f)
+    
+    isochrone = _set_isochrone_for_ugali(isochrone)
 
     isochrone_ugali = ugali.isochrone.factory(**isochrone)
     distance_modulus = distance_modulus['center']['value'] if distance_modulus is not None else isochrone.get('distance_modulus', {})['center']['value']
