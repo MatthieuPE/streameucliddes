@@ -129,6 +129,8 @@ def test_compute_snr():
     assert data_manipulation._compute_SNR(0, 4) == 0
     # No background left: infinite SNR rather than a division by zero
     assert data_manipulation._compute_SNR(3, 0) == np.inf
+    # Nothing selected at all: no detection, not an infinite SNR
+    assert data_manipulation._compute_SNR(0, 0) == 0
 
 
 # ===================================================
