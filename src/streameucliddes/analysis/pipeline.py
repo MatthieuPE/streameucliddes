@@ -6,6 +6,7 @@ import numpy as np
 from streamobs import match_filter
 
 from streameucliddes.analysis import data_manipulation, fit
+from streameucliddes.analysis.utils import get_cut_mask
 from streameucliddes.plotting import plot_style
 from streameucliddes.plotting.plotting import (make_gif,
                                                plot_results_find_stream)
@@ -72,8 +73,8 @@ def find_stream(
     use_dust_corrected=True,
     dust_correction_kwargs=None,
     ensure_dust_correction=True,
-    faint_mag_cut=24.0,
-    flag_mag=None,
+    cuts=None,
+    flag_cuts=None,
     nside=512,
     smoothing=True,
     smoothing_scale_degrees=0.3,
@@ -87,8 +88,8 @@ def find_stream(
 ):
     """
     Run the full pipeline for a single distance modulus: dust correction,
-    match filter, magnitude cut, smoothed HEALPix map, polynomial background
-    fit, residual.
+    match filter, cuts, smoothed HEALPix map, polynomial background fit,
+    residual.
 
     Parameters
     ----------
@@ -110,21 +111,24 @@ def find_stream(
         '<col>_corrected' columns in place before resolving magnitude columns.
         Set to False when the correction has already been applied upfront
         (e.g. by scan_find_stream) to skip the per-call existence check.
-    faint_mag_cut : float
-        Faint-end magnitude cut applied on mag_cols[0]. Ignored if `flag_mag`
-        is provided.
-    flag_mag : array-like of bool, optional
-        Precomputed magnitude-cut mask (same length as `data`). If provided,
-        the internal call to data_manipulation.apply_magnitude_cut is skipped
-        -- useful when scanning several distance moduli, since the magnitude
-        cut does not depend on distance modulus and only needs computing once.
+    cuts : dict, optional
+        Selection applied on top of the match filter, as ``{column: spec}``
+        (see utils.get_cut_mask), e.g. ``{"mag_g_corrected": (None, 24.0)}``
+        for a faint-end magnitude cut. Column names are used as is: name the
+        '<col>_corrected' column to cut on a dust-corrected magnitude.
+        Ignored if `flag_cuts` is provided. Default: no cuts.
+    flag_cuts : array-like of bool, optional
+        Precomputed mask of `cuts` (same length as `data`). If provided,
+        the internal call to utils.get_cut_mask is skipped
+        -- useful when scanning several distance moduli, since the cuts
+        do not depend on distance modulus and only need computing once.
     nside, smoothing, smoothing_scale_degrees : HEALPix map parameters.
     model_type_fit : dict
         Passed to fit.fit_background_model (default: degree-5 polynomial).
     fit_method : str
         Passed to fit.fit_background_model (default: "polyfit2d").
     footprint_bounds : tuple (ra_min, ra_max, dec_min, dec_max), optional
-        If None, inferred from the match-filtered + magnitude-cut selection.
+        If None, inferred from the match-filtered + cut selection.
 
     Returns
     -------
@@ -149,7 +153,7 @@ def find_stream(
     if verbose:
         print(f"Magnitudes used for cut and match filter: {mag_to_use}")
 
-    # --- Match filter + magnitude cut ---
+    # --- Match filter + cuts ---
     polygon_vertices = match_filter.build_match_filter(**match_filter_parameters)
     flag_match = match_filter.is_in_match_filter(
         data[mag_to_use[0]],
@@ -157,12 +161,10 @@ def find_stream(
         polygon_vertices=polygon_vertices,
         verbose=verbose,
     )
-    if flag_mag is None:
-        flag_mag = data_manipulation.apply_magnitude_cut(
-            data, mag_col=mag_to_use[0], mag_bounds=(None, faint_mag_cut)
-        )
-    selection_flag = flag_match & flag_mag
-    del flag_match, flag_mag
+    if flag_cuts is None:
+        flag_cuts = get_cut_mask(data, cuts or {})
+    selection_flag = flag_match & flag_cuts
+    del flag_match, flag_cuts
 
     # Only pull the two coordinate columns for the selected rows, instead of a
     # full-row copy of (potentially very wide) `data` via `data.loc[mask]`.
@@ -171,9 +173,7 @@ def find_stream(
     n_selected = int(ra_values.size)
 
     if verbose:
-        print(
-            f"Selected {n_selected}/{len(data)} stars in match filter + magnitude cut"
-        )
+        print(f"Selected {n_selected}/{len(data)} stars in match filter + cuts")
 
     if footprint_bounds is None:
         ra_min = float(np.min(ra_values))
@@ -221,7 +221,7 @@ def find_stream(
     return {
         "data": data,
         "mag_to_use": mag_to_use,
-        "faint_mag_cut": faint_mag_cut,
+        "cuts": dict(cuts or {}),
         "match_filter_parameters": dict(match_filter_parameters),
         "distance_modulus": distance_modulus,
         "distance_kpc": convert_DM_to_kpc(distance_modulus),
@@ -258,7 +258,7 @@ def scan_find_stream(
     Run find_stream() over a grid of distance moduli, optionally plotting
     (and saving) each frame and building a gif from the saved figures.
 
-    The dust correction and the (distance-modulus-independent) magnitude cut
+    The dust correction and the (distance-modulus-independent) cuts
     are each computed once up front and reused for every distance modulus,
     instead of being recomputed on every find_stream() call.
 
@@ -270,7 +270,7 @@ def scan_find_stream(
         Base kwargs for match_filter.build_match_filter; 'distance_modulus'
         is overridden for each value in `distance_modulus_array`.
     find_stream_kwargs : dict, optional
-        Extra kwargs forwarded to find_stream() (e.g. mag_cols, faint_mag_cut,
+        Extra kwargs forwarded to find_stream() (e.g. mag_cols, cuts,
         use_dust_corrected, nside...).
     plot : bool
         If True, display each frame (via plot_results_find_stream, show=True).
@@ -307,7 +307,7 @@ def scan_find_stream(
     ra_col = find_stream_kwargs.get("ra_col", "coord_ra")
     dec_col = find_stream_kwargs.get("dec_col", "coord_dec")
     use_dust_corrected = find_stream_kwargs.get("use_dust_corrected", True)
-    faint_mag_cut = find_stream_kwargs.get("faint_mag_cut", 24.0)
+    cuts = find_stream_kwargs.get("cuts")
 
     if use_dust_corrected:
         _ensure_dust_corrected(
@@ -320,15 +320,9 @@ def scan_find_stream(
         )
     find_stream_kwargs["ensure_dust_correction"] = False
 
-    mag_to_use = _resolve_mag_columns(data, mag_cols, use_dust_corrected)
-    find_stream_kwargs["faint_mag_cut"] = faint_mag_cut
-    find_stream_kwargs["flag_mag"] = data_manipulation.apply_magnitude_cut(
-        data, mag_col=mag_to_use[0], mag_bounds=(None, faint_mag_cut)
-    )
+    find_stream_kwargs["flag_cuts"] = get_cut_mask(data, cuts or {})
     if verbose:
-        print(
-            f"Precomputed dust correction + magnitude cut once for the scan (mag columns: {mag_to_use})."
-        )
+        print(f"Precomputed dust correction + cuts once for the scan (cuts: {cuts}).")
 
     results_by_dm = {}
     for dm in distance_modulus_array:

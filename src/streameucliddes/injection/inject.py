@@ -62,9 +62,8 @@ def inject_stream_catalog(
     stream_config=None,
     seed=None,
     gc_frame=None,
-    survey=[
+    survey=[{"survey": "euclid", "release": "q1"},
         {"survey": "des", "release": "yr6"},
-        {"survey": "euclid", "release": "q1"},
     ],
     bands={"des_yr6": ["g", "r", "i"], "euclid_q1": ["VIS", "Y", "J"]},
     **kwargs,
