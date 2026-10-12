@@ -79,15 +79,9 @@ def mock_background(monkeypatch):
         columns[f"{band}_err"] = _mag_err(mag)
     background = pd.DataFrame(columns)
 
-    # phi1/phi2 in the default stream frame, as added to the real catalog at import
-    stream_coord = coord.SkyCoord(
-        ra=background["ra"].to_numpy() * u.deg,
-        dec=background["dec"].to_numpy() * u.deg,
-    ).transform_to(data_manipulation.GC_FRAME_DEFAULT)
-    background["phi1"] = stream_coord.phi1.deg
-    background["phi2"] = stream_coord.phi2.deg
-
     monkeypatch.setattr(data_manipulation, "STARS_BACKGROUND", background)
+    # Its phi1/phi2 are not computed yet, whatever the frame of a previous test
+    monkeypatch.setattr(data_manipulation, "_BACKGROUND_FRAME", None)
     return background
 
 
@@ -104,26 +98,12 @@ def _snr(match_filter=DEFAULT_MATCH_FILTER, **kwargs):
 # ===================================================
 
 
-# SNR = number of stream stars / sqrt(number of background stars), within the mask
+# SNR = number of stream stars / sqrt(number of background stars)
 def test_compute_snr():
-    data = pd.DataFrame({"x": np.arange(10)})
-    flag_stream = np.arange(10) < 2  # 2 stream stars, 8 background stars
-
-    snr = data_manipulation._compute_SNR(data, flag_stream=flag_stream)
-    assert snr == pytest.approx(2 / np.sqrt(8))
-
-    mask = np.arange(10) % 2 == 0  # keeps 1 stream star and 4 background stars
-    snr = data_manipulation._compute_SNR(data, mask=mask, flag_stream=flag_stream)
-    assert snr == pytest.approx(1 / np.sqrt(4))
-
+    assert data_manipulation._compute_SNR(2, 8) == pytest.approx(2 / np.sqrt(8))
+    assert data_manipulation._compute_SNR(0, 4) == 0
     # No background left: infinite SNR rather than a division by zero
-    snr = data_manipulation._compute_SNR(
-        data, mask=flag_stream, flag_stream=flag_stream
-    )
-    assert snr == np.inf
-
-    with pytest.raises(ValueError):
-        data_manipulation._compute_SNR(data)
+    assert data_manipulation._compute_SNR(3, 0) == np.inf
 
 
 # ===================================================
@@ -230,3 +210,42 @@ def test_cuts_update():
 
     # A given error cut replaces the default one (err <= 0.2)
     assert _snr(cuts={"des_yr6_g_err": (None, 0.02)}) != _snr()
+
+
+@pytest.mark.usefixtures("mock_background")
+def test_injection_kwargs():
+    """Verify that the kwargs other than the stream configuration go to the injection."""
+    # Stream injected in DES g and r only: the stream stars only need to be observed by DES
+    snr_results, _ = data_manipulation.get_stream_snr(
+        seed=SEED,
+        match_filter_list=MATCH_FILTER_LIST[:1],  # DES g vs g - r
+        survey=[{"survey": "des", "release": "yr6"}],
+        bands={"des_yr6": ["g", "r"]},
+    )
+    snr = snr_results[DEFAULT_MATCH_FILTER]
+    assert np.isfinite(snr) and snr > 0
+
+
+@pytest.mark.usefixtures("mock_background")
+def test_background_frame():
+    """Verify that the background phi1/phi2 follow the frame, recomputed only when it changes."""
+    end1 = coord.SkyCoord(ra=66 * u.deg, dec=-47 * u.deg)
+    end2 = coord.SkyCoord(ra=56 * u.deg, dec=-49 * u.deg)
+    other_frame = gc.GreatCircleICRSFrame.from_endpoints(end1, end2)
+
+    default_frame = data_manipulation.GC_FRAME_DEFAULT
+    for gc_frame in (default_frame, other_frame, default_frame):
+        background = data_manipulation._get_background(gc_frame)
+        expected = coord.SkyCoord(
+            ra=background["ra"].to_numpy() * u.deg,
+            dec=background["dec"].to_numpy() * u.deg,
+        ).transform_to(gc_frame)
+        np.testing.assert_allclose(background["phi2"], expected.phi2.deg)
+
+    # Same frame again, even rebuilt from the same ends: phi2 is not recomputed
+    phi2 = background["phi2"].to_numpy()
+    same_frame = gc.GreatCircleICRSFrame.from_endpoints(
+        data_manipulation.END1, data_manipulation.END2
+    )
+    background = data_manipulation._get_background(same_frame)
+    assert np.shares_memory(background["phi2"].to_numpy(), phi2)

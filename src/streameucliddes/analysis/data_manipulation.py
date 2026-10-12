@@ -17,21 +17,16 @@ from streameucliddes.analysis.utils import cut_flow, get_cut_mask
 from streameucliddes.injection import generate, inject
 
 
-STARS_BACKGROUND = get_eucliddes_stars()
+# Euclid x DES stars used as background by get_stream_snr: read on first use (see
+# _get_background), not at import
+STARS_BACKGROUND = None
+# Frame of the phi1/phi2 columns of STARS_BACKGROUND (None: not computed yet)
+_BACKGROUND_FRAME = None
 
 
 END1 = coord.SkyCoord(ra=67 * u.deg, dec=-47 * u.deg, frame="icrs")
 END2 = coord.SkyCoord(ra=55 * u.deg, dec=-49 * u.deg, frame="icrs")
 GC_FRAME_DEFAULT = gc.GreatCircleICRSFrame.from_endpoints(END1, END2)
-
-stream_coord = coord.SkyCoord(
-ra=STARS_BACKGROUND["ra"].to_numpy() * u.deg,
-dec=STARS_BACKGROUND["dec"].to_numpy() * u.deg,
-frame="icrs",
-).transform_to(GC_FRAME_DEFAULT)
-
-STARS_BACKGROUND["phi1"] = stream_coord.phi1.deg
-STARS_BACKGROUND["phi2"] = stream_coord.phi2.deg
 
 STREAM_CONFIG = {
     "stream_length": 7.0,  # degrees
@@ -50,137 +45,192 @@ STREAM_CONFIG = {
     }
 }
 
+DEFAULT_MATCH_FILTERS = [
+    {
+        "name": "default_des_gr",
+        "reference_band": ("des_yr6", "g"),
+        "color_bands": [("des_yr6", "r")],
+    },
+]
+DEFAULT_ERR_CUT = (None, 0.2)  # Default cut on the errors of the match-filter bands
+# Default phi2 window: +- 1.4 stream_width, maximizes the SNR of a gaussian signal on
+# a uniform background
+PHI2_WIDTH_FACTOR = 1.4
+
 
 ################################
 ########### SNR ##############
 ################################
 
-def get_stream_snr(seed=None, reload_data=False,match_filter_list=[{"name": "default_des_gr",
-                                                                     "reference_band": ("des_yr6", "g"),
-                                                                       "color_bands": [("des_yr6", "r")] }], **kwargs):
-    if reload_data:
-        stars_background = get_eucliddes_stars()
-    else:
-        stars_background = STARS_BACKGROUND
+def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwargs):
+    """
+    Estimate the SNR of a mock stream injected in the Euclid x DES stars.
 
+    SNR = N_stream / sqrt(N_background), counting the stars passing the cuts and
+    inside the match filter.
 
-    # Update stream configuration with any additional parameters
-    stream_config = copy.deepcopy(STREAM_CONFIG)
-    # update each of the nested dictionaries in stream_config with kwargs if they exist
-    for key in stream_config:
-        if isinstance(stream_config[key], dict):
-            stream_config[key].update(kwargs.get(key, {}))
-            logging.info(f"Updated stream_config[{key}] with {kwargs.get(key, {})}")
-        else:
-            if key in kwargs:
-                stream_config[key] = kwargs[key]
-                logging.info(f"Updated stream_config[{key}] with {kwargs[key]}")
+    Parameters
+    ----------
+    seed : int, optional
+        Seed of the stream generation and injection.
+    reload_data : bool
+        Read the Euclid x DES stars again instead of using the cached ones.
+    match_filter_list : list of dict, optional
+        ``{"name": ..., "reference_band": (namespace, band), "color_bands":
+        [(namespace, band), ...]}``; the stars must be inside the polygon of every
+        colour. Default: DEFAULT_MATCH_FILTERS (DES g vs g - r).
+    **kwargs
+        - keys of STREAM_CONFIG (e.g. ``surface_brightness``, ``N``,
+          ``distance_modulus``): update the stream configuration, nested
+          dictionaries key by key;
+        - ``gc_frame``: frame of the stream (default: GC_FRAME_DEFAULT);
+        - ``cuts``: cuts of get_cut_mask, replacing the default ones on the same
+          columns (errors of the match-filter bands <= 0.2, |phi2| <= 1.4
+          stream_width);
+        - anything else is passed to inject.inject_stream (e.g. ``survey``,
+          ``bands``).
 
+    Returns
+    -------
+    snr_results : dict
+        SNR for each match filter name.
+    stream_config : dict
+        Stream configuration used, with its ``gc_frame``.
+    """
+    if match_filter_list is None:
+        match_filter_list = DEFAULT_MATCH_FILTERS
+    # kwargs is local to this call: popping does not modify the caller's arguments
+    cuts = kwargs.pop("cuts", {})
     gc_frame = kwargs.pop("gc_frame", GC_FRAME_DEFAULT)
 
-    injected_catalog, metadata = inject.inject_stream(
-        stream_config=stream_config, seed=seed, 
+    # Update stream configuration with the kwargs among its keys
+    stream_config = copy.deepcopy(STREAM_CONFIG)
+    for key in STREAM_CONFIG:
+        if key in kwargs:
+            value = kwargs.pop(key)
+            if isinstance(stream_config[key], dict):
+                stream_config[key].update(value)
+            else:
+                stream_config[key] = value
+            logging.info(f"Updated stream_config[{key}] with {value}")
+
+    # The remaining kwargs are injection options
+    injected_catalog, _ = inject.inject_stream(
+        stream_config=stream_config, seed=seed,
         detection_mag_cut=[], # if we want to avoid applying snr cuts
         gc_frame=gc_frame,
         **kwargs
     )
     stream_config["gc_frame"] = gc_frame
 
-    flag_obs_euclid = injected_catalog['euclid_q1_flag_observed']
-    flag_obs_des = injected_catalog['des_yr6_flag_observed']
-    flag_obs_cross = flag_obs_euclid & flag_obs_des
-    observed_stream_both = injected_catalog[flag_obs_cross]
+    # Stream stars observed by every injected survey
+    flag_observed = np.logical_and.reduce(
+        [
+            injected_catalog[col].to_numpy(dtype=bool)
+            for col in injected_catalog.columns
+            if col.endswith("_flag_observed")
+        ]
+    )
+    stars_background = _get_background(gc_frame, reload_data=reload_data)
 
-    observed_stream_both['is_stream'] = True
-    stars_background['is_stream'] = False
-
-    # Add phi1 and phi2 columns to the background stars if a different GC frame is used
-    if gc_frame != GC_FRAME_DEFAULT:
-        stream_coord = coord.SkyCoord(
-        ra=stars_background["ra"].to_numpy() * u.deg,
-        dec=stars_background["dec"].to_numpy() * u.deg,
-        frame="icrs",
-        ).transform_to(gc_frame)
-
-        # assign returns a copy: STARS_BACKGROUND keeps the default frame's phi1/phi2
-        stars_background = stars_background.assign(
-            phi1=stream_coord.phi1.deg, phi2=stream_coord.phi2.deg
-        )
-
-
-    total_stars = pd.concat([observed_stream_both, stars_background])
-
+    distance_modulus = stream_config["distance_modulus"]["center"]["value"]
+    age = stream_config["isochrone"]["age"]
+    metallicity = stream_config["isochrone"]["z"]
+    phi2_max = PHI2_WIDTH_FACTOR * stream_config["stream_width"]
 
     snr_results = {}
     for match_filter in match_filter_list:
         logging.info(f"Applying match filter: {match_filter}")
+        namespace_1, band_1 = match_filter["reference_band"]
 
-        DISTANCE_MODULUS = stream_config["distance_modulus"]["center"]["value"]
-        AGE = stream_config["isochrone"]["age"]
-        METALLICITY = stream_config["isochrone"]["z"]
-
-        survey_1, band_1 = match_filter["reference_band"]
-        band_1_col = f"{survey_1}_{band_1}_obs"
-        band_1_err = f"{survey_1}_{band_1}_err"
-
-        flag_mf = np.ones(len(total_stars), dtype=bool)  # Initialize flag for match filter
-        for survey_2, band_2 in match_filter["color_bands"]:
+        # (band_1 column, band_2 column, polygon) for each colour of the match filter
+        polygons = []
+        for namespace_2, band_2 in match_filter["color_bands"]:
             mf_polygon = build_match_filter(
-            distance_modulus=DISTANCE_MODULUS,
-            age=AGE,
-            metallicity=METALLICITY,
-            band_1=band_1,
-            band_2=band_2,
-            survey_1=survey_1.split("_")[0],  # isochrone survey: "des_yr6" -> "des"
-            survey_2=survey_2.split("_")[0],
+                distance_modulus=distance_modulus,
+                age=age,
+                metallicity=metallicity,
+                band_1=band_1,
+                band_2=band_2,
+                survey_1=namespace_1.split("_")[0],  # isochrone survey: "des_yr6" -> "des"
+                survey_2=namespace_2.split("_")[0],
+            )
+            polygons.append(
+                (f"{namespace_1}_{band_1}_obs", f"{namespace_2}_{band_2}_obs", mf_polygon)
             )
 
-            band_2_col = f"{survey_2}_{band_2}_obs"
+        # Default cuts, replaced by the given ones on the same columns
+        mf_cuts = {
+            f"{namespace}_{band}_err": DEFAULT_ERR_CUT
+            for namespace, band in [match_filter["reference_band"], *match_filter["color_bands"]]
+        }
+        mf_cuts["phi2"] = (-phi2_max, phi2_max)
+        mf_cuts.update(cuts)
 
-            # Selecting stars in the stream and background catalogs that are inside the match filter polygon
-            flag_sub_mf = is_in_match_filter(
-                total_stars[band_1_col],
-                total_stars[band_2_col],
-                polygon_vertices=mf_polygon,
-            )
+        n_stream = _count_selected(injected_catalog, mf_cuts, polygons, mask=flag_observed)
+        n_background = _count_selected(stars_background, mf_cuts, polygons)
+        logging.info(
+            f"{match_filter['name']}: {n_stream} stream stars, {n_background} background stars"
+        )
+        if logging.getLogger().isEnabledFor(logging.DEBUG):
+            logging.debug(f"Background cut flow:\n{cut_flow(stars_background, mf_cuts)}")
 
-            flag_mf &= flag_sub_mf  # Combine flags for all color bands in the match filter
-
-        cuts = dict(kwargs.get("cuts", {}))  # copy: the given cuts are not modified
-        if band_1_err not in cuts:
-            cuts[band_1_err] = (None, 0.2)  # Default error cut for band_1 if not provided
-        for survey_2, band_2 in match_filter["color_bands"]:
-            band_2_err = f"{survey_2}_{band_2}_err"
-            if band_2_err not in cuts:
-                cuts[band_2_err] = (None, 0.2)  # Default error cut for band_2 if not provided
-        if "phi2" not in cuts:
-            # Default cut for phi2 based on stream width if not provided. 
-            # 1.4 factor to maximize SNR of gaussian signal on uniform background
-            cuts["phi2"] = (-1.4*stream_config["stream_width"], 1.4*stream_config["stream_width"])
-        mask_cuts = get_cut_mask(total_stars, cuts)
-        flag_stream = total_stars['is_stream']
-
-        logging.debug(f"{cut_flow(total_stars, cuts)} print to be improved")
-
-        snr = _compute_SNR(total_stars, mask=mask_cuts&flag_mf, flag_stream=flag_stream)
-        snr_results[match_filter["name"]] = snr
+        snr_results[match_filter["name"]] = _compute_SNR(n_stream, n_background)
 
     return snr_results, stream_config
 
 
-def _compute_SNR(data, mask=None, flag_stream=None):
-    if mask is None:
-        mask = np.ones(len(data), dtype=bool)
-    if flag_stream is None:
-        raise ValueError("flag_stream must be provided to compute SNR.")
-    # Compute SNR for the selected data
-    signal = len(data[mask & flag_stream])
-    noise = len(data[mask & ~flag_stream])
-    if noise == 0:
+def _get_background(gc_frame, reload_data=False):
+    """
+    Euclid x DES stars, read once and cached in STARS_BACKGROUND, with phi1/phi2 in
+    ``gc_frame``.
+
+    phi1/phi2 are written in place, so that the cached catalog is never copied, and
+    only recomputed when ``gc_frame`` differs from the frame they were computed in.
+    """
+    global STARS_BACKGROUND, _BACKGROUND_FRAME
+    if STARS_BACKGROUND is None or reload_data:
+        STARS_BACKGROUND = get_eucliddes_stars()
+        _BACKGROUND_FRAME = None
+
+    if _BACKGROUND_FRAME is None or not gc_frame.is_equivalent_frame(_BACKGROUND_FRAME):
+        stream_coord = coord.SkyCoord(
+            ra=STARS_BACKGROUND["ra"].to_numpy() * u.deg,
+            dec=STARS_BACKGROUND["dec"].to_numpy() * u.deg,
+            frame="icrs",
+        ).transform_to(gc_frame)
+        STARS_BACKGROUND["phi1"] = stream_coord.phi1.deg
+        STARS_BACKGROUND["phi2"] = stream_coord.phi2.deg
+        _BACKGROUND_FRAME = gc_frame
+    return STARS_BACKGROUND
+
+
+def _count_selected(catalog, cuts, polygons, mask=None):
+    """
+    Number of stars of ``catalog`` passing ``cuts`` (and ``mask``) and inside every
+    match-filter polygon of ``polygons`` (``(band_1 column, band_2 column, vertices)``).
+
+    The cuts are applied first: the polygon test, the slow part, only runs on the
+    stars left.
+    """
+    selected = get_cut_mask(catalog, cuts)
+    if mask is not None:
+        selected &= mask
+    for band_1_col, band_2_col, mf_polygon in polygons:
+        idx = np.flatnonzero(selected)
+        selected[idx] = is_in_match_filter(
+            catalog[band_1_col].to_numpy()[idx],
+            catalog[band_2_col].to_numpy()[idx],
+            polygon_vertices=mf_polygon,
+        )
+    return int(selected.sum())
+
+
+def _compute_SNR(n_stream, n_background):
+    """SNR of ``n_stream`` stream stars over ``n_background`` background stars."""
+    if n_background == 0:
         return np.inf  # Avoid division by zero
-    return signal / np.sqrt(noise)
-
-
+    return n_stream / np.sqrt(n_background)
 
 
 
