@@ -14,6 +14,8 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from streamobs.match_filter import build_match_filter
+
 from streameucliddes.analysis import data_manipulation
 
 SEED = 42
@@ -91,6 +93,29 @@ def _snr(match_filter=DEFAULT_MATCH_FILTER, **kwargs):
         seed=SEED, match_filter_list=MATCH_FILTER_LIST, **kwargs
     )
     return snr_results[match_filter]
+
+
+# ===================================================
+# Test _match_filter_polygon
+# ===================================================
+
+
+# The polygon is build_match_filter's, built once for the same parameters
+def test_match_filter_polygon_cache():
+    params = {
+        "distance_modulus": 16.8,
+        "age": 12.0,
+        "metallicity": 0.0006,
+        "band_1": "g",
+        "band_2": "r",
+        "survey_1": "des",
+        "survey_2": "des",
+    }
+    polygon = data_manipulation._match_filter_polygon(*params.values())
+    np.testing.assert_array_equal(polygon, build_match_filter(**params))
+
+    assert data_manipulation._match_filter_polygon(*params.values()) is polygon
+    assert not polygon.flags.writeable  # shared between calls
 
 
 # ===================================================
@@ -249,3 +274,45 @@ def test_background_frame():
     )
     background = data_manipulation._get_background(same_frame)
     assert np.shares_memory(background["phi2"].to_numpy(), phi2)
+
+
+# ===================================================
+# Test scan_snr_grid
+# ===================================================
+
+
+@pytest.mark.usefixtures("mock_background")
+def test_scan_snr_grid():
+    """Verify that the scan gives, for each match filter, the SNR grid over both axes."""
+    surface_brightness = [32.0, 34.0]
+    distance_modulus = [16.0, 17.0, 18.0]
+    match_filter_list = MATCH_FILTER_LIST[:2]
+
+    results = data_manipulation.scan_snr_grid(
+        axis_values={
+            "surface_brightness": surface_brightness,
+            "distance_modulus": distance_modulus,
+        },
+        seed=SEED,
+        match_filter_list=match_filter_list,
+    )
+
+    assert list(results) == [mf["name"] for mf in match_filter_list]
+    for grid in results.values():
+        np.testing.assert_array_equal(grid["surface_brightness"], surface_brightness)
+        np.testing.assert_array_equal(grid["distance_modulus"], distance_modulus)
+        # snr[i, j]: surface_brightness[i] and distance_modulus[j]
+        assert grid["snr"].shape == (2, 3)
+        assert np.all(np.isfinite(grid["snr"]))
+
+    # A grid point is the SNR of get_stream_snr at these values
+    i, j = 1, 2
+    snr_results, _ = data_manipulation.get_stream_snr(
+        seed=SEED,
+        match_filter_list=match_filter_list,
+        surface_brightness=surface_brightness[i],
+        distance_modulus={"center": {"type": "Constant", "value": distance_modulus[j]}},
+    )
+    for name, snr in snr_results.items():
+        assert results[name]["snr"][i, j] == snr
+

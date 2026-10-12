@@ -1,4 +1,5 @@
 import copy
+import functools
 import os
 import healpy as hp
 import numpy as np
@@ -146,14 +147,14 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
         # (band_1 column, band_2 column, polygon) for each colour of the match filter
         polygons = []
         for namespace_2, band_2 in match_filter["color_bands"]:
-            mf_polygon = build_match_filter(
-                distance_modulus=distance_modulus,
-                age=age,
-                metallicity=metallicity,
-                band_1=band_1,
-                band_2=band_2,
-                survey_1=namespace_1.split("_")[0],  # isochrone survey: "des_yr6" -> "des"
-                survey_2=namespace_2.split("_")[0],
+            mf_polygon = _match_filter_polygon(
+                distance_modulus,
+                age,
+                metallicity,
+                band_1,
+                band_2,
+                namespace_1.split("_")[0],  # isochrone survey: "des_yr6" -> "des"
+                namespace_2.split("_")[0],
             )
             polygons.append(
                 (f"{namespace_1}_{band_1}_obs", f"{namespace_2}_{band_2}_obs", mf_polygon)
@@ -226,12 +227,90 @@ def _count_selected(catalog, cuts, polygons, mask=None):
     return int(selected.sum())
 
 
+@functools.lru_cache(maxsize=1024)
+def _match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2):
+    """
+    build_match_filter polygon, cached: it only depends on these parameters, which
+    repeat over a scan (e.g. the same distance modulus for every surface brightness).
+    """
+    mf_polygon = build_match_filter(
+        distance_modulus=distance_modulus,
+        age=age,
+        metallicity=metallicity,
+        band_1=band_1,
+        band_2=band_2,
+        survey_1=survey_1,
+        survey_2=survey_2,
+    )
+    mf_polygon.setflags(write=False)  # shared between calls
+    return mf_polygon
+
+
 def _compute_SNR(n_stream, n_background):
     """SNR of ``n_stream`` stream stars over ``n_background`` background stars."""
     if n_background == 0:
         return np.inf  # Avoid division by zero
     return n_stream / np.sqrt(n_background)
 
+
+def scan_snr_grid(axes=("surface_brightness", "distance_modulus"), axis_values=None, seed=None, **kwargs):
+    """
+    Scan the SNR of a mock stream over a grid of values for two axes.
+
+    Parameters
+    ----------
+    axes : tuple of str
+        Names of the two axes to scan, among the keys of STREAM_CONFIG (default:
+        ("surface_brightness", "distance_modulus")). A distance_modulus value is the
+        constant center of the distance modulus distribution.
+    axis_values : dict, optional
+        Values to scan for each axis, replacing the default ranges
+        (surface_brightness: 31 -> 34.5, distance_modulus: 15 -> 20, 5 values each).
+    seed : int, optional
+        Seed of the stream generation and injection.
+    **kwargs
+        Additional keyword arguments passed to get_stream_snr.
+
+    Returns
+    -------
+    results : dict
+        For each match filter name, ``{"snr": 2D array, axes[0]: 1D array, axes[1]:
+        1D array}``, with ``snr[i, j]`` the SNR at ``axes[0][i]`` and ``axes[1][j]``
+        (e.g. ``plt.pcolormesh(res[axes[1]], res[axes[0]], res["snr"])``).
+    """
+    axis_values = {
+        "surface_brightness": np.linspace(31.0, 34.5, 5),
+        "distance_modulus": np.linspace(15.0, 20.0, 5),
+        **(axis_values or {}),
+    }
+    values_0 = np.asarray(axis_values[axes[0]], dtype=float)
+    values_1 = np.asarray(axis_values[axes[1]], dtype=float)
+
+    results = {}
+    for i, value_0 in enumerate(values_0):
+        for j, value_1 in enumerate(values_1):
+            grid_kwargs = {
+                axes[0]: _axis_kwarg(axes[0], value_0),
+                axes[1]: _axis_kwarg(axes[1], value_1),
+            }
+            snr_results, _ = get_stream_snr(seed=seed, **{**kwargs, **grid_kwargs})
+            for name, snr in snr_results.items():
+                if name not in results:
+                    results[name] = {
+                        "snr": np.full((len(values_0), len(values_1)), np.nan),
+                        axes[0]: values_0,
+                        axes[1]: values_1,
+                    }
+                results[name]["snr"][i, j] = snr
+
+    return results
+
+
+def _axis_kwarg(axis, value):
+    """get_stream_snr kwarg setting ``axis`` of the stream configuration to ``value``."""
+    if axis == "distance_modulus":
+        return {"center": {"type": "Constant", "value": value}}
+    return value
 
 
 ################################
