@@ -5,37 +5,6 @@ import numpy as np
 import pandas as pd
 import skyproj
 
-
-def apply_magnitude_cut(data, mag_col="mag_g", mag_bounds=(None, None)):
-    """
-    Return a boolean mask selecting rows within magnitude bounds.
-
-    Parameters
-    ----------
-    data : pandas.DataFrame or astropy.table.Table
-    mag_col : str
-        Name of magnitude column
-    mag_bounds : tuple (min, max)
-        Bounds on magnitude. Use None for open bound.
-
-    Returns
-    -------
-    mask : array-like (bool)
-        True for rows داخل bounds
-    """
-    mag = data[mag_col]
-
-    mask = np.ones(len(mag), dtype=bool)
-
-    if mag_bounds[0] is not None:
-        mask &= mag >= mag_bounds[0]
-
-    if mag_bounds[1] is not None:
-        mask &= mag <= mag_bounds[1]
-
-    return mask
-
-
 def get_healpy_data_from_table(
     data,
     columns=("ra", "dec"),

@@ -339,7 +339,8 @@ def plot_results_find_stream(
 ):
     """
     2x2 panel figure from RubinStream.analysis.pipeline.find_stream() output:
-    1. CMD + match filter polygon (+ faint magnitude-cut line, if applied)
+    1. CMD + match filter polygon (+ a line per bound of a range cut on the
+       CMD magnitude, if any)
     2. data_map, with dwarves/globular clusters/stream tracks overlaid (see
        `stream_name` and `show_overlapped_objects`)
     3. fit_map
@@ -369,7 +370,7 @@ def plot_results_find_stream(
     """
     data = results["data"]
     mag_to_use = results["mag_to_use"]
-    faint_mag_cut = results.get("faint_mag_cut")
+    cuts = results.get("cuts") or {}
     polygon_vertices = results["polygon_vertices"]
     ra_min, ra_max, dec_min, dec_max = results["footprint_bounds"]
     dm = results["distance_modulus"]
@@ -413,14 +414,17 @@ def plot_results_find_stream(
         lw=2,
         label="Match filter",
     )
-    if faint_mag_cut is not None:
-        ax[0].axhline(
-            faint_mag_cut,
-            color="C1",
-            lw=1.5,
-            ls="dashed",
-            label=f"Magnitude cut ({faint_mag_cut:g})",
-        )
+    mag_cut = cuts.get(mag_to_use[0])
+    if isinstance(mag_cut, tuple):
+        for bound in mag_cut:
+            if bound is not None:
+                ax[0].axhline(
+                    bound,
+                    color="C1",
+                    lw=1.5,
+                    ls="dashed",
+                    label=f"Magnitude cut ({bound:g})",
+                )
     ax[0].legend(fontsize=8)
     ax[0].set_title("Match filter", fontsize=11)
 
