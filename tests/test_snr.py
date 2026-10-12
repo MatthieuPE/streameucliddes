@@ -79,6 +79,14 @@ def mock_background(monkeypatch):
         columns[f"{band}_err"] = _mag_err(mag)
     background = pd.DataFrame(columns)
 
+    # phi1/phi2 in the default stream frame, as added to the real catalog at import
+    stream_coord = coord.SkyCoord(
+        ra=background["ra"].to_numpy() * u.deg,
+        dec=background["dec"].to_numpy() * u.deg,
+    ).transform_to(data_manipulation.GC_FRAME_DEFAULT)
+    background["phi1"] = stream_coord.phi1.deg
+    background["phi2"] = stream_coord.phi2.deg
+
     monkeypatch.setattr(data_manipulation, "STARS_BACKGROUND", background)
     return background
 
