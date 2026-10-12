@@ -1,6 +1,9 @@
 import numpy as np
 import pandas as pd
 import pytest
+import astropy.coordinates as coord
+import astropy.units as u
+import gala.coordinates as gc
 
 from streameucliddes.injection import generate, inject, inject_utils
 
@@ -37,6 +40,11 @@ STREAM_CONFIG = {
 
 STREAM_CONFIG_SINGLE_SURVEY = STREAM_CONFIG.copy()
 STREAM_CONFIG_SINGLE_SURVEY["isochrone"] = ISOCHRONE_SINGlE_SURVEY
+
+
+ED1 = coord.SkyCoord(ra=67 * u.deg, dec=-47 * u.deg, frame="icrs")
+ED2 = coord.SkyCoord(ra=55 * u.deg, dec=-49 * u.deg, frame="icrs")
+GC_FRAME = gc.GreatCircleICRSFrame.from_endpoints(ED1, ED2)
 
 
 # ===================================================
@@ -157,14 +165,14 @@ def test_inject_stream():
     # Test injection with a generated catalog
     catalog = generate.generate_uniform_stream(STREAM_CONFIG, seed=42)
     injected_catalog, metadata = inject.inject_stream(
-        stream_catalog=catalog, seed=42, stream_config=STREAM_CONFIG
+        stream_catalog=catalog, seed=42, stream_config=STREAM_CONFIG, gc_frame=GC_FRAME
     )
 
     verify_injected_catalog(injected_catalog, metadata)
 
     # Test injection with the stream config only (catalog generated internally)
     injected_catalog_2, metadata_2 = inject.inject_stream(
-        stream_config=STREAM_CONFIG, seed=42
+        stream_config=STREAM_CONFIG, seed=42, gc_frame=GC_FRAME
     )
     verify_injected_catalog(injected_catalog_2, metadata_2)
 
