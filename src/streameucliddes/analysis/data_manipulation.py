@@ -248,6 +248,8 @@ def _match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, su
 
 def _compute_SNR(n_stream, n_background):
     """SNR of ``n_stream`` stream stars over ``n_background`` background stars."""
+    if n_stream == 0:
+        return 0.0  # No stream star selected, even without background
     if n_background == 0:
         return np.inf  # Avoid division by zero
     return n_stream / np.sqrt(n_background)
