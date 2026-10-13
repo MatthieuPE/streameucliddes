@@ -633,7 +633,7 @@ def _format_snr_axes(ax, x_name, y_name):
         top.set_xlabel("Distance [kpc]")
 
 
-def plot_snr_contours(results, snr_level=5, ax=None, colors=None, label_on_contours=False):
+def plot_snr_contours(results, snr_level=5, ax=None, colors=None, label_on_contours=False, names_to_plot=None):
     """
     Contour SNR = ``snr_level`` of each match filter of a scan_snr_grid result.
 
@@ -656,6 +656,9 @@ def plot_snr_contours(results, snr_level=5, ax=None, colors=None, label_on_conto
     -------
     fig, ax
     """
+    if names_to_plot is not None:
+        results = {name: grid for name, grid in results.items() if name in names_to_plot}
+    
     if colors is None:
         if len(results) > N_SERIES_MAX:
             raise ValueError(
