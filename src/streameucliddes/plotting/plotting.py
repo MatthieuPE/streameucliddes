@@ -633,7 +633,7 @@ def _format_snr_axes(ax, x_name, y_name):
         top.set_xlabel("Distance [kpc]")
 
 
-def plot_snr_contours(results, snr_level=5, ax=None, colors=None):
+def plot_snr_contours(results, snr_level=5, ax=None, colors=None, label_on_contours=False):
     """
     Contour SNR = ``snr_level`` of each match filter of a scan_snr_grid result.
 
@@ -677,19 +677,20 @@ def plot_snr_contours(results, snr_level=5, ax=None, colors=None):
         )
         handles.append(Line2D([], [], color=colors[name], lw=2, label=_label(name)))
 
-    # Each label where its contour is farthest from the others
-    vertices = {name: contour.get_paths()[0].vertices for name, contour in contours.items()}
-    for name, contour in contours.items():
-        if len(vertices[name]) == 0:
-            continue  # SNR never reaches snr_level: only in the legend
-        others = [v for other, v in vertices.items() if other != name and len(v)]
-        position = _isolated_point(
-            vertices[name], np.concatenate(others) if others else [], (x[0], x[-1]), (y[0], y[-1])
-        )
-        ax.clabel(
-            contour, fmt={snr_level: _label(name)}, manual=[position],
-            fontsize=7, colors=INK, inline_spacing=2,
-        )
+    if label_on_contours:
+        # Each label where its contour is farthest from the others
+        vertices = {name: contour.get_paths()[0].vertices for name, contour in contours.items()}
+        for name, contour in contours.items():
+            if len(vertices[name]) == 0:
+                continue  # SNR never reaches snr_level: only in the legend
+            others = [v for other, v in vertices.items() if other != name and len(v)]
+            position = _isolated_point(
+                vertices[name], np.concatenate(others) if others else [], (x[0], x[-1]), (y[0], y[-1])
+            )
+            ax.clabel(
+                contour, fmt={snr_level: _label(name)}, manual=[position],
+                fontsize=7, colors=INK, inline_spacing=2,
+            )
 
     _format_snr_axes(ax, x_name, y_name)
     ax.legend(handles=handles, title=f"SNR = {snr_level:g}", loc="lower left", frameon=False)

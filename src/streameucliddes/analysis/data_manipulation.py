@@ -147,6 +147,10 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
         # (band_1 column, band_2 column, polygon) for each colour of the match filter
         polygons = []
         for namespace_2, band_2 in match_filter["color_bands"]:
+
+            color_cut = match_filter.get("color_cut", True)
+            red_cap_value = match_filter.get("red_cap_value", None)
+
             mf_polygon = _match_filter_polygon(
                 distance_modulus,
                 age,
@@ -155,6 +159,8 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
                 band_2,
                 namespace_1.split("_")[0],  # isochrone survey: "des_yr6" -> "des"
                 namespace_2.split("_")[0],
+                color_cut=color_cut,
+                red_cap_value=red_cap_value,
             )
             polygons.append(
                 (f"{namespace_1}_{band_1}_obs", f"{namespace_2}_{band_2}_obs", mf_polygon)
@@ -228,7 +234,7 @@ def _count_selected(catalog, cuts, polygons, mask=None):
 
 
 @functools.lru_cache(maxsize=1024)
-def _match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2):
+def _match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2, color_cut=True, red_cap_value=None):
     """
     build_match_filter polygon, cached: it only depends on these parameters, which
     repeat over a scan (e.g. the same distance modulus for every surface brightness).
@@ -241,6 +247,8 @@ def _match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, su
         band_2=band_2,
         survey_1=survey_1,
         survey_2=survey_2,
+        color_cut=color_cut,
+        red_cap_value=red_cap_value
     )
     mf_polygon.setflags(write=False)  # shared between calls
     return mf_polygon
