@@ -1,0 +1,29 @@
+name: notebooks
+
+on:
+  pull_request:
+    paths:
+      - "**.ipynb"
+      - "tools/strip_notebook_outputs.py"
+      - ".github/workflows/notebooks.yml"
+  push:
+    branches: [main]
+    paths:
+      - "**.ipynb"
+      - "tools/strip_notebook_outputs.py"
+      - ".github/workflows/notebooks.yml"
+  workflow_dispatch:
+
+# Notebooks are committed without their outputs, through the clean filter of
+# .gitattributes. A clone that skipped its setup (`git config include.path
+# ../.gitconfig`, see the README) commits them with their outputs instead:
+# this check catches it. The runner has no filter set up, so the notebooks
+# are checked out exactly as committed.
+jobs:
+  outputs:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Notebooks are stored without their outputs
+        run: git ls-files -z '*.ipynb' | xargs -0 python3 tools/strip_notebook_outputs.py --check

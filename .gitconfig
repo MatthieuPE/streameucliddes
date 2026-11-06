@@ -1,0 +1,13 @@
+# Git settings of this repository. Git never applies a repository's settings by itself:
+# include this file once per clone (the path is relative to .git/config),
+#   git config include.path ../.gitconfig
+# and later changes to it then apply with each pull.
+
+# Notebooks are stored without their outputs (see .gitattributes)
+[filter "strip-notebook-outputs"]
+	clean = python3 tools/strip_notebook_outputs.py
+	# Checkout writes notebooks as stored. A required filter needs this line: without it,
+	# git aborts any checkout of a notebook halfway ("smudge filter ... failed").
+	smudge = cat
+	# Abort rather than store a notebook with its outputs if the clean command fails
+	required = true

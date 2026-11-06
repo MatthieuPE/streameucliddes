@@ -34,4 +34,6 @@ docs = [
 addopts = ["--verbose", "--emoji", "--strict-markers"]
 testpaths = ["tests"]
 # One marker per module, e.g. "config: config.py (...)", added as modules land.
-markers = []
+markers = [
+    "tools: tools/ scripts (git filter stripping the notebook outputs)",
+]
