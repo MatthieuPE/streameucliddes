@@ -27,10 +27,12 @@ def _scan_results(names):
     return results
 
 
-# One color per match filter, a legend entry and a contour label for each
+# One color per match filter, a legend entry and, on request, a contour label for each
 def test_plot_snr_contours():
     results = _scan_results(["des_gr", "cross_gH"])
-    fig, ax = plot_injected_stream_snr.plot_snr_contours(results, snr_level=5)
+    fig, ax = plot_injected_stream_snr.plot_snr_contours(
+        results, snr_level=5, label_on_contours=True
+    )
 
     legend = ax.get_legend()
     assert [text.get_text() for text in legend.get_texts()] == ["des$\\_$gr", "cross$\\_$gH"]
