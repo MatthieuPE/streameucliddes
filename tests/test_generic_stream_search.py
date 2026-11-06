@@ -1,7 +1,10 @@
 import healpy as hp
 import numpy as np
+import pytest
 
 from streameucliddes.analysis import generic_stream_search
+
+pytestmark = pytest.mark.generic_stream_search
 
 CUTS = {"mag_g": (None, 22.0)}
 

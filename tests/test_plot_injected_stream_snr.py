@@ -8,6 +8,8 @@ import pytest
 
 from streameucliddes.plotting import plot_injected_stream_snr
 
+pytestmark = pytest.mark.plot_injected_stream_snr
+
 
 def _scan_results(names):
     """scan_snr_grid-like results: SNR growing with brightness, one SNR = inf cell."""

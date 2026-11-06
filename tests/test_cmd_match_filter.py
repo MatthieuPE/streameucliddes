@@ -1,7 +1,11 @@
 import numpy as np
+import pytest
 from streamobs.match_filter import build_match_filter
 
 from streameucliddes.analysis import cmd_match_filter
+
+pytestmark = pytest.mark.cmd_match_filter
+
 
 # ===================================================
 # Test build_match_filter_polygon

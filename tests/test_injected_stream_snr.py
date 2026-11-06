@@ -16,6 +16,8 @@ import pytest
 
 from streameucliddes.analysis import injected_stream_snr
 
+pytestmark = pytest.mark.injected_stream_snr
+
 SEED = 42
 
 N_BACKGROUND = 20_000

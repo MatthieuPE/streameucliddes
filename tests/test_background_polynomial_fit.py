@@ -4,6 +4,8 @@ import pytest
 
 from streameucliddes.analysis import background_polynomial_fit
 
+pytestmark = pytest.mark.background_polynomial_fit
+
 # The mock sky (projection, footprint, polynomial background) is defined in conftest.py.
 
 

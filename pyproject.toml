@@ -36,4 +36,12 @@ testpaths = ["tests"]
 # One marker per module, e.g. "config: config.py (...)", added as modules land.
 markers = [
     "tools: tools/ scripts (git filter stripping the notebook outputs)",
+    "ugali_patches: _ugali_patches.py (cache of the ugali isochrone grids)",
+    "background_polynomial_fit: analysis/background_polynomial_fit.py (2D polynomial background fit)",
+    "cmd_match_filter: analysis/cmd_match_filter.py (match-filter polygon)",
+    "generic_stream_search: analysis/generic_stream_search.py (generic stream search)",
+    "injected_stream_snr: analysis/injected_stream_snr.py (SNR of injected streams)",
+    "injection: injection/ (stream generation and injection)",
+    "plot_injected_stream_snr: plotting/plot_injected_stream_snr.py (SNR figures)",
+    "package: __init__.py (version)",
 ]

@@ -1,8 +1,11 @@
 import numpy as np
 import ugali.isochrone
 from ugali.isochrone.model import Isochrone
+import pytest
 
 from streameucliddes import _ugali_patches
+
+pytestmark = pytest.mark.ugali_patches
 
 ISOCHRONE = {"name": "Marigo2017", "survey": "des", "age": 12.0, "z": 0.0006}
 
