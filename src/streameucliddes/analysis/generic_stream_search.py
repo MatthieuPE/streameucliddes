@@ -5,8 +5,9 @@ import gc
 import numpy as np
 from streamobs import match_filter
 
-from streameucliddes.analysis import background_polynomial_fit, injected_stream_snr
+from streameucliddes.analysis import background_polynomial_fit
 from streameucliddes.analysis.background_polynomial_fit import SimpleLonLatProj
+from streameucliddes.analysis.star_density_maps import star_density_healpix
 from streameucliddes.catalogs import dust_correction
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
 from streameucliddes.plotting import plot_style
@@ -172,7 +173,7 @@ def generic_search_single_dm(
         ra_min, ra_max, dec_min, dec_max = footprint_bounds
 
     # --- Smoothed HEALPix map ---
-    data_map, lon, lat, npix = injected_stream_snr.get_healpy_data_from_table(
+    data_map, lon, lat, npix = star_density_healpix(
         {ra_col: ra_values, dec_col: dec_values},
         columns=[ra_col, dec_col],
         nside=nside,
