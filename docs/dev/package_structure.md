@@ -127,6 +127,7 @@ src/streameucliddes/
 
 scripts/                         [NEW] run_generic_search.py, run_known_stream_search.py
 configs/                         [NEW] generic_search.yaml, known_stream_search.yaml
+notebooks/                       [NEW] known_stream_search_example.ipynb (usage example)
 ```
 
 Naming rules used:

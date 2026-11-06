@@ -74,6 +74,12 @@ Method: Rockosi et al. 2002 (AJ 124, 349); Grillmair 2009 (ApJ 693,
   references), body `raise NotImplementedError`.
 - Add `catalogs/stream_populations.csv` with the header only.
 - Add one test per new module that only checks the import.
+- Add `notebooks/known_stream_search_example.ipynb`: an example of how
+  to use the known-stream search, written against the stubs. Markdown
+  explains each step (galstreams streams in the footprint, stream frame,
+  isochrone, map per dm, video, data cube); code cells call the public
+  functions in the order a user would. Only the import cell runs at this
+  stage: the other cells call stubs. Stored without outputs (git filter).
 - No implementation. The user reviews and may reorganise the stubs.
 
 ### Phase 3: fill the stubs (later, on request)
@@ -85,6 +91,9 @@ Method: Rockosi et al. 2002 (AJ 124, 349); Grillmair 2009 (ApJ 693,
   functions: ask first.
 - Write a real test for each filled function.
 - Reuse code before writing new code (Section 4).
+- Once the functions it calls are filled, make
+  `notebooks/known_stream_search_example.ipynb` run end to end on a
+  validation stream of Section 7.
 
 ## 3. Where to find celestial_currents
 
