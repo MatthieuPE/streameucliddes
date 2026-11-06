@@ -148,6 +148,12 @@ Read its `CLAUDE.md` and `README.md` first.
   coverage maps when available.
 - **Edges.** Normalise smoothed counts by the smoothed footprint mask.
 - **Euclid isochrones.** Check `streamobs` has them for each (age, Z).
+- **Dust.** The Euclid × DES magnitudes are already dereddened: DES uses
+  `BDF_MAG_<B>_CORRECTED` (SFD98, by DES); Euclid is dereddened in
+  `euclid_des_catalog.add_magnitudes` (`EBV_SFD98_des` × the streamobs
+  coefficients). Do not correct them again. `generic_search_single_dm`
+  defaults to `use_dust_corrected=True`: pass `False` on this catalog.
+  `correct_dust_map` stays missing (it raises) unless it is needed.
 
 ## 6. Repo conventions
 

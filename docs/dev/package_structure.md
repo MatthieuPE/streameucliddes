@@ -130,7 +130,7 @@ configs/                         [NEW] generic_search.yaml, known_stream_search.
 ```
 
 Naming rules used:
-- `generic_search_*` and `known_stream_search_*` mirror each other: `_single_dm` gives one map, `_dm_scan` gives the stack over a dm grid.
+- `generic_search_*` and `known_stream_search_*` mirror each other: `_single_dm` gives one map; `_dm_scan` goes over a dm grid one dm at a time (it yields `(dm, result)`), so that the caller can drop each map before the next one is computed. The workflows build the stacks (`save_*_cube`).
 - `star_density_*` = smoothed star counts, `*_healpix` or `*_phi12` says the grid.
 - `galstreams_*` = reads galstreams. `survey_footprint_*` = footprint.
 - `plot_<thing>` in `plot_<module>.py`; `run_<thing>` in `run_<thing>.py`.
