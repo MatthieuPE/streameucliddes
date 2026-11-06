@@ -55,19 +55,21 @@ def test_pipeline_applies_cuts(sample_sky_catalog, nside):
 
 
 # ===================================================
-# Test scan_find_stream
+# Test generic_search_dm_scan
 # ===================================================
 
 
 # The cuts precomputed once by the scan select the same stars as generic_search_single_dm
-def test_scan_applies_same_cuts_as_find_stream(sample_sky_catalog, nside):
+def test_scan_applies_same_cuts_as_single_dm(sample_sky_catalog, nside):
     find_stream_kwargs = _find_stream_kwargs(nside, cuts=CUTS)
-    scan = generic_stream_search.scan_find_stream(
-        sample_sky_catalog,
-        [16.0],
-        match_filter_parameters={},
-        find_stream_kwargs=find_stream_kwargs,
-        verbose=False,
+    scan = dict(
+        generic_stream_search.generic_search_dm_scan(
+            sample_sky_catalog,
+            [16.0],
+            match_filter_parameters={},
+            find_stream_kwargs=find_stream_kwargs,
+            verbose=False,
+        )
     )
     single = generic_stream_search.generic_search_single_dm(
         sample_sky_catalog, {"distance_modulus": 16.0}, **find_stream_kwargs

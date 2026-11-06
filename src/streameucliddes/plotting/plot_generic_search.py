@@ -49,7 +49,7 @@ def plot_generic_search_result(
         single "type" legend entry too (see plot_overlapped_objects).
     show_overlapped_objects : bool
         If False, skip the data_map overlay entirely -- e.g. for repeated
-        calls (like scan_find_stream's gif frames) where the extra
+        calls (like run_generic_search's gif frames) where the extra
         network/file I/O and visual clutter aren't wanted.
     overlap_kwargs : dict, optional
         Forwarded to plot_overlapped_objects (e.g. {"gc_kwargs": {"s": 10}}).
