@@ -1,5 +1,20 @@
 import matplotlib.pyplot as plt
 
+# Categorical colors (Okabe-Ito), in this fixed order. The first 6 are distinct for
+# color-blind readers when shown all together (the 6th only with direct labels);
+# the last 2 (yellow, black) are too light / not a hue for series.
+CATEGORICAL_COLORS = [
+    "#E69F00",
+    "#56B4E9",
+    "#009E73",
+    "#0072B2",
+    "#D55E00",
+    "#CC79A7",
+    "#F0E442",
+    "#000000",
+]
+N_SERIES_MAX = 6
+
 plt_params = {
     "figure.figsize": [3.5, 2.625],  # Single column width, 4:3 aspect ratio
     "figure.dpi": 100,
@@ -37,19 +52,7 @@ plt_params = {
     "figure.constrained_layout.w_pad": 0.005,
     "figure.constrained_layout.hspace": 0.005,
     "figure.constrained_layout.wspace": 0.005,
-    "axes.prop_cycle": plt.cycler(
-        "color",
-        [
-            "#E69F00",
-            "#56B4E9",
-            "#009E73",
-            "#0072B2",
-            "#D55E00",
-            "#CC79A7",
-            "#F0E442",
-            "#000000",
-        ],
-    ),
+    "axes.prop_cycle": plt.cycler("color", CATEGORICAL_COLORS),
     # "legend.frameon": False,
 }
 

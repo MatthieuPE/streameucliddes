@@ -166,53 +166,49 @@ def convert_SurfaceBrightness_to_N(
     **kwargs,
 ):
     """
-    Numeric inverse of convert_N_SurfaceBrightness: the number of stars N whose
-    stream (with the given isochrone/surface parameters) has the requested
-    surface brightness.
+    Inverse of convert_N_to_SurfaceBrightness: the number of stars N whose stream
+    (with the given isochrone/surface parameters) has the requested surface
+    brightness.
 
-    convert_N_SurfaceBrightness(N, ...) is monotonic in N (more stars -> more
-    total flux -> brighter/smaller surface brightness), so this brackets and
-    solves for N in log10(N) space with scipy.optimize.brentq, calling
-    convert_N_SurfaceBrightness itself (same isochrone-loading path, mag_bounds,
-    and surface as the forward function -- nothing here is duplicated).
+    The total flux of the stream is proportional to its number of stars, so
+    SB(N) = SB(N_ref) - 2.5 log10(N / N_ref): a single call of
+    convert_N_to_SurfaceBrightness at a reference N gives N for any target, with
+    the isochrone built once (instead of once per step of a root finding).
 
     Parameters
     ----------
     target_surface_brightness : float
         Desired surface brightness, mag/arcsec^2 (same convention as
-        convert_N_SurfaceBrightness's return value).
+        convert_N_to_SurfaceBrightness's return value).
     mag_bounds, surface, stream_length, stream_width, isochrone_config_path,
-    band, isochrone, verbose : see convert_N_SurfaceBrightness.
+    band, isochrone, verbose : see convert_N_to_SurfaceBrightness.
     n_bracket : tuple (N_min, N_max)
-        Bracket searched in log10(N) space. Widen this if brentq raises a
-        sign-mismatch error (the target surface brightness falls outside what
-        this bracket can produce).
+        Allowed range of N; a ValueError is raised outside of it.
 
     Returns
     -------
-    float
+    int
         N (number of stars) giving `target_surface_brightness`.
     """
-    from scipy.optimize import brentq
-
-    def _residual(log10_N):
-        N = 10**log10_N
-        sb = convert_N_to_SurfaceBrightness(
-            N,
-            mag_bounds=mag_bounds,
-            surface=surface,
-            stream_length=stream_length,
-            stream_width=stream_width,
-            isochrone_config_path=isochrone_config_path,
-            band=band,
-            isochrone=isochrone,
-            verbose=False,
-            distance_modulus=distance_modulus,
+    n_ref = 1e6
+    sb_ref = convert_N_to_SurfaceBrightness(
+        n_ref,
+        mag_bounds=mag_bounds,
+        surface=surface,
+        stream_length=stream_length,
+        stream_width=stream_width,
+        isochrone_config_path=isochrone_config_path,
+        band=band,
+        isochrone=isochrone,
+        verbose=False,
+        distance_modulus=distance_modulus,
+    )
+    N = n_ref * 10 ** (-0.4 * (target_surface_brightness - sb_ref))
+    if not n_bracket[0] <= N <= n_bracket[1]:
+        raise ValueError(
+            f"Surface brightness {target_surface_brightness:.2f} mag/arcsec^2 gives "
+            f"N={N:.3g}, outside of n_bracket={n_bracket}."
         )
-        return sb - target_surface_brightness
-
-    log10_N = brentq(_residual, np.log10(n_bracket[0]), np.log10(n_bracket[1]))
-    N = 10**log10_N
 
     if verbose:
         print(

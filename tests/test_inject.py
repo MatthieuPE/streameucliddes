@@ -4,6 +4,7 @@ import pytest
 import astropy.coordinates as coord
 import astropy.units as u
 import gala.coordinates as gc
+from scipy.optimize import brentq
 
 from streameucliddes.injection import generate, inject, inject_utils
 
@@ -91,6 +92,39 @@ def test_convert_N_SurfaceBrightness():
     assert (
         surface_brightness_2 < surface_brightness
     ), "Surface brightness should decrease with increasing N."
+
+
+def _convert_SurfaceBrightness_to_N_brentq(
+    target_surface_brightness, n_bracket=(10, 1e8), **kwargs
+):
+    """Previous convert_SurfaceBrightness_to_N (root finding with brentq), as reference."""
+
+    def _residual(log10_N):
+        sb = inject_utils.convert_N_to_SurfaceBrightness(10**log10_N, **kwargs)
+        return sb - target_surface_brightness
+
+    log10_N = brentq(_residual, np.log10(n_bracket[0]), np.log10(n_bracket[1]))
+    return int(10**log10_N)
+
+
+# Test convert_SurfaceBrightness_to_N: the closed form gives the N found by root finding
+@pytest.mark.parametrize("surface_brightness", [28.0, 31.0, 33.5, 36.0])
+def test_convert_SurfaceBrightness_to_N(surface_brightness):
+    kwargs = {
+        "mag_bounds": (None, 24),
+        "stream_length": 10.0,
+        "stream_width": 0.5,
+        "isochrone": ISOCHRONE,
+        "band": "r",
+        "distance_modulus": DISTANCE_MODULUS,
+    }
+
+    N = inject_utils.convert_SurfaceBrightness_to_N(surface_brightness, **kwargs)
+    N_brentq = _convert_SurfaceBrightness_to_N_brentq(surface_brightness, **kwargs)
+
+    # Same N up to one star: convert_N_to_SurfaceBrightness counts int(0.68 * N)
+    # stars, so the surface brightness is a step function of N
+    assert abs(N - N_brentq) <= 1, f"N={N} (closed form) vs N={N_brentq} (brentq)"
 
 
 # ===================================================
