@@ -1,4 +1,4 @@
-"""Tests of the stream SNR estimate (data_manipulation.get_stream_snr).
+"""Tests of the stream SNR estimate (injected_stream_snr.get_stream_snr).
 
 The Euclid x DES stars are replaced by a mock background with the same columns as
 get_eucliddes_stars(), uniform on the sky around the default stream and uniform in
@@ -14,9 +14,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from streamobs.match_filter import build_match_filter
-
-from streameucliddes.analysis import data_manipulation
+from streameucliddes.analysis import injected_stream_snr
 
 SEED = 42
 
@@ -81,41 +79,18 @@ def mock_background(monkeypatch):
         columns[f"{band}_err"] = _mag_err(mag)
     background = pd.DataFrame(columns)
 
-    monkeypatch.setattr(data_manipulation, "STARS_BACKGROUND", background)
+    monkeypatch.setattr(injected_stream_snr, "STARS_BACKGROUND", background)
     # Its phi1/phi2 are not computed yet, whatever the frame of a previous test
-    monkeypatch.setattr(data_manipulation, "_BACKGROUND_FRAME", None)
+    monkeypatch.setattr(injected_stream_snr, "_BACKGROUND_FRAME", None)
     return background
 
 
 def _snr(match_filter=DEFAULT_MATCH_FILTER, **kwargs):
     """SNR of the stream for one match filter of MATCH_FILTER_LIST."""
-    snr_results, _ = data_manipulation.get_stream_snr(
+    snr_results, _ = injected_stream_snr.get_stream_snr(
         seed=SEED, match_filter_list=MATCH_FILTER_LIST, **kwargs
     )
     return snr_results[match_filter]
-
-
-# ===================================================
-# Test _match_filter_polygon
-# ===================================================
-
-
-# The polygon is build_match_filter's, built once for the same parameters
-def test_match_filter_polygon_cache():
-    params = {
-        "distance_modulus": 16.8,
-        "age": 12.0,
-        "metallicity": 0.0006,
-        "band_1": "g",
-        "band_2": "r",
-        "survey_1": "des",
-        "survey_2": "des",
-    }
-    polygon = data_manipulation._match_filter_polygon(*params.values())
-    np.testing.assert_array_equal(polygon, build_match_filter(**params))
-
-    assert data_manipulation._match_filter_polygon(*params.values()) is polygon
-    assert not polygon.flags.writeable  # shared between calls
 
 
 # ===================================================
@@ -125,12 +100,12 @@ def test_match_filter_polygon_cache():
 
 # SNR = number of stream stars / sqrt(number of background stars)
 def test_compute_snr():
-    assert data_manipulation._compute_SNR(2, 8) == pytest.approx(2 / np.sqrt(8))
-    assert data_manipulation._compute_SNR(0, 4) == 0
+    assert injected_stream_snr._compute_SNR(2, 8) == pytest.approx(2 / np.sqrt(8))
+    assert injected_stream_snr._compute_SNR(0, 4) == 0
     # No background left: infinite SNR rather than a division by zero
-    assert data_manipulation._compute_SNR(3, 0) == np.inf
+    assert injected_stream_snr._compute_SNR(3, 0) == np.inf
     # Nothing selected at all: no detection, not an infinite SNR
-    assert data_manipulation._compute_SNR(0, 0) == 0
+    assert injected_stream_snr._compute_SNR(0, 0) == 0
 
 
 # ===================================================
@@ -141,12 +116,12 @@ def test_compute_snr():
 @pytest.mark.usefixtures("mock_background")
 def test_update_kwargs_snr():
     """Verify that giving new kwargs updates the stream_config correctly."""
-    default_config = copy.deepcopy(data_manipulation.STREAM_CONFIG)
+    default_config = copy.deepcopy(injected_stream_snr.STREAM_CONFIG)
     end1 = coord.SkyCoord(ra=66 * u.deg, dec=-47 * u.deg)
     end2 = coord.SkyCoord(ra=56 * u.deg, dec=-49 * u.deg)
     gc_frame = gc.GreatCircleICRSFrame.from_endpoints(end1, end2)
 
-    _, stream_config = data_manipulation.get_stream_snr(
+    _, stream_config = injected_stream_snr.get_stream_snr(
         seed=SEED,
         surface_brightness=32.0,
         stream_width=0.3,
@@ -171,7 +146,7 @@ def test_update_kwargs_snr():
     assert stream_config["stream_length"] == default_config["stream_length"]
 
     # The update does not leak into the next call
-    _, next_config = data_manipulation.get_stream_snr(seed=SEED)
+    _, next_config = injected_stream_snr.get_stream_snr(seed=SEED)
     assert {key: next_config[key] for key in default_config} == default_config
 
 
@@ -206,7 +181,7 @@ def test_snr_distance():
 def test_snr_different_filters():
     """Verify that the SNR logic works as expected: different match filters."""
     # 2 different match filters should leads to different SNR values.
-    snr_results, _ = data_manipulation.get_stream_snr(
+    snr_results, _ = injected_stream_snr.get_stream_snr(
         seed=SEED, match_filter_list=MATCH_FILTER_LIST
     )
 
@@ -218,7 +193,7 @@ def test_snr_different_filters():
     # Each match filter is applied on its own: its SNR does not depend on the
     # other match filters of the list (e.g. on their error cuts)
     for match_filter in MATCH_FILTER_LIST:
-        alone, _ = data_manipulation.get_stream_snr(
+        alone, _ = injected_stream_snr.get_stream_snr(
             seed=SEED, match_filter_list=[match_filter]
         )
         assert alone[match_filter["name"]] == snr_results[match_filter["name"]]
@@ -243,7 +218,7 @@ def test_cuts_update():
 def test_injection_kwargs():
     """Verify that the kwargs other than the stream configuration go to the injection."""
     # Stream injected in DES g and r only: the stream stars only need to be observed by DES
-    snr_results, _ = data_manipulation.get_stream_snr(
+    snr_results, _ = injected_stream_snr.get_stream_snr(
         seed=SEED,
         match_filter_list=MATCH_FILTER_LIST[:1],  # DES g vs g - r
         survey=[{"survey": "des", "release": "yr6"}],
@@ -260,9 +235,9 @@ def test_background_frame():
     end2 = coord.SkyCoord(ra=56 * u.deg, dec=-49 * u.deg)
     other_frame = gc.GreatCircleICRSFrame.from_endpoints(end1, end2)
 
-    default_frame = data_manipulation.GC_FRAME_DEFAULT
+    default_frame = injected_stream_snr.GC_FRAME_DEFAULT
     for gc_frame in (default_frame, other_frame, default_frame):
-        background = data_manipulation._get_background(gc_frame)
+        background = injected_stream_snr._get_background(gc_frame)
         expected = coord.SkyCoord(
             ra=background["ra"].to_numpy() * u.deg,
             dec=background["dec"].to_numpy() * u.deg,
@@ -272,9 +247,9 @@ def test_background_frame():
     # Same frame again, even rebuilt from the same ends: phi2 is not recomputed
     phi2 = background["phi2"].to_numpy()
     same_frame = gc.GreatCircleICRSFrame.from_endpoints(
-        data_manipulation.END1, data_manipulation.END2
+        injected_stream_snr.END1, injected_stream_snr.END2
     )
-    background = data_manipulation._get_background(same_frame)
+    background = injected_stream_snr._get_background(same_frame)
     assert np.shares_memory(background["phi2"].to_numpy(), phi2)
 
 
@@ -290,7 +265,7 @@ def test_scan_snr_grid():
     distance_modulus = [16.0, 17.0, 18.0]
     match_filter_list = MATCH_FILTER_LIST[:2]
 
-    results = data_manipulation.scan_snr_grid(
+    results = injected_stream_snr.scan_snr_grid(
         axis_values={
             "surface_brightness": surface_brightness,
             "distance_modulus": distance_modulus,
@@ -309,7 +284,7 @@ def test_scan_snr_grid():
 
     # A grid point is the SNR of get_stream_snr at these values
     i, j = 1, 2
-    snr_results, _ = data_manipulation.get_stream_snr(
+    snr_results, _ = injected_stream_snr.get_stream_snr(
         seed=SEED,
         match_filter_list=match_filter_list,
         surface_brightness=surface_brightness[i],

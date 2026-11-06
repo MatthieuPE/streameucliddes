@@ -5,28 +5,16 @@ import gc
 import numpy as np
 from streamobs import match_filter
 
-from streameucliddes.analysis import data_manipulation, fit
-from streameucliddes.analysis.utils import get_cut_mask
+from streameucliddes.analysis import background_polynomial_fit, injected_stream_snr
+from streameucliddes.analysis.background_polynomial_fit import SimpleLonLatProj
+from streameucliddes.catalogs import dust_correction
+from streameucliddes.catalogs.catalog_cuts import get_cut_mask
 from streameucliddes.plotting import plot_style
-from streameucliddes.plotting.plotting import (make_gif,
-                                               plot_results_find_stream)
-from streameucliddes.utils import convert_DM_to_kpc
+from streameucliddes.plotting.make_videos import make_gif
+from streameucliddes.plotting.plot_generic_search import plot_results_find_stream
+from streameucliddes.unit_conversions import convert_DM_to_kpc
 
 DEFAULT_MODEL_TYPE_FIT = {"polynomial": {"degree": 5}}
-
-
-class SimpleLonLatProj:
-    """Trivial "projection" that treats (lon, lat) as flat (x, y), in degrees.
-
-    Used as the `proj` argument of fit.fit_background_model(method="polyfit2d").
-    """
-
-    def ang2xy(self, lon, lat, lonlat=True):
-        return np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)
-
-    def get_extent(self):
-        return (0.0, 360.0, -90.0, 90.0)
-
 
 # Stateless -> shared across calls instead of re-instantiating on every find_stream() call.
 _PROJ = SimpleLonLatProj()
@@ -51,14 +39,14 @@ def _resolve_mag_columns(data, mag_cols, use_dust_corrected):
 def _ensure_dust_corrected(
     data, mag_cols, ra_col, dec_col, dust_correction_kwargs=None, verbose=False
 ):
-    """Compute missing '<col>_corrected' columns in place via data_manipulation.correct_dust_map."""
+    """Compute missing '<col>_corrected' columns in place via dust_correction.correct_dust_map."""
     missing = [col for col in mag_cols if f"{col}_corrected" not in data.columns]
     if not missing:
         return
 
     if verbose:
         print(f"Applying dust correction for: {missing}")
-    data_manipulation.correct_dust_map(
+    dust_correction.correct_dust_map(
         data,
         mag_cols=list(mag_cols),
         pos_columns=[ra_col, dec_col],
@@ -104,7 +92,7 @@ def find_stream(
     use_dust_corrected : bool
         If True, use '<col>_corrected' columns instead of the raw ones.
     dust_correction_kwargs : dict, optional
-        Extra kwargs forwarded to data_manipulation.correct_dust_map (e.g.
+        Extra kwargs forwarded to dust_correction.correct_dust_map (e.g.
         'ebv_map' or 'ebv_map_path') when the correction needs to be computed.
     ensure_dust_correction : bool
         If True (default) and `use_dust_corrected`, compute the missing
@@ -113,20 +101,20 @@ def find_stream(
         (e.g. by scan_find_stream) to skip the per-call existence check.
     cuts : dict, optional
         Selection applied on top of the match filter, as ``{column: spec}``
-        (see utils.get_cut_mask), e.g. ``{"mag_g_corrected": (None, 24.0)}``
+        (see catalog_cuts.get_cut_mask), e.g. ``{"mag_g_corrected": (None, 24.0)}``
         for a faint-end magnitude cut. Column names are used as is: name the
         '<col>_corrected' column to cut on a dust-corrected magnitude.
         Ignored if `flag_cuts` is provided. Default: no cuts.
     flag_cuts : array-like of bool, optional
         Precomputed mask of `cuts` (same length as `data`). If provided,
-        the internal call to utils.get_cut_mask is skipped
+        the internal call to catalog_cuts.get_cut_mask is skipped
         -- useful when scanning several distance moduli, since the cuts
         do not depend on distance modulus and only need computing once.
     nside, smoothing, smoothing_scale_degrees : HEALPix map parameters.
     model_type_fit : dict
-        Passed to fit.fit_background_model (default: degree-5 polynomial).
+        Passed to background_polynomial_fit.fit_background_model (default: degree-5 polynomial).
     fit_method : str
-        Passed to fit.fit_background_model (default: "polyfit2d").
+        Passed to background_polynomial_fit.fit_background_model (default: "polyfit2d").
     footprint_bounds : tuple (ra_min, ra_max, dec_min, dec_max), optional
         If None, inferred from the match-filtered + cut selection.
 
@@ -184,7 +172,7 @@ def find_stream(
         ra_min, ra_max, dec_min, dec_max = footprint_bounds
 
     # --- Smoothed HEALPix map ---
-    data_map, lon, lat, npix = data_manipulation.get_healpy_data_from_table(
+    data_map, lon, lat, npix = injected_stream_snr.get_healpy_data_from_table(
         {ra_col: ra_values, dec_col: dec_values},
         columns=[ra_col, dec_col],
         nside=nside,
@@ -200,7 +188,7 @@ def find_stream(
     del data_map
 
     # --- Polynomial background fit + residual ---
-    params_fit, solver_res, prepared_fit = fit.fit_background_model(
+    params_fit, solver_res, prepared_fit = background_polynomial_fit.fit_background_model(
         partial_data,
         method=fit_method,
         model_type=model_type_fit,

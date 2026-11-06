@@ -26,8 +26,8 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 from streamobs.surveys import Survey
 
-from streameucliddes.utils import fluxToMag
-from .utils import get_cut_mask
+from streameucliddes.catalogs.catalog_cuts import get_cut_mask
+from streameucliddes.unit_conversions import fluxToMag
 
 DEFAULT_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "euclid_q1_des"
 

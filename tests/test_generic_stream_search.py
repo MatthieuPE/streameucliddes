@@ -1,7 +1,7 @@
 import healpy as hp
 import numpy as np
 
-from streameucliddes.analysis import pipeline
+from streameucliddes.analysis import generic_stream_search
 
 CUTS = {"mag_g": (None, 22.0)}
 
@@ -24,7 +24,7 @@ def _find_stream_kwargs(nside, **kwargs):
 
 # Smoke test: the full pipeline runs on the mock catalog (see conftest.py)
 def test_pipeline_runs_without_error(sample_sky_catalog, nside):
-    results = pipeline.find_stream(
+    results = generic_stream_search.find_stream(
         sample_sky_catalog,
         match_filter_parameters={"distance_modulus": 16.0},
         **_find_stream_kwargs(nside),
@@ -38,10 +38,10 @@ def test_pipeline_runs_without_error(sample_sky_catalog, nside):
 # The cuts are applied on top of the match filter, and stored in the results
 def test_pipeline_applies_cuts(sample_sky_catalog, nside):
     match_filter_parameters = {"distance_modulus": 16.0}
-    no_cuts = pipeline.find_stream(
+    no_cuts = generic_stream_search.find_stream(
         sample_sky_catalog, match_filter_parameters, **_find_stream_kwargs(nside)
     )
-    with_cuts = pipeline.find_stream(
+    with_cuts = generic_stream_search.find_stream(
         sample_sky_catalog,
         match_filter_parameters,
         **_find_stream_kwargs(nside, cuts=CUTS),
@@ -62,14 +62,14 @@ def test_pipeline_applies_cuts(sample_sky_catalog, nside):
 # The cuts precomputed once by the scan select the same stars as find_stream
 def test_scan_applies_same_cuts_as_find_stream(sample_sky_catalog, nside):
     find_stream_kwargs = _find_stream_kwargs(nside, cuts=CUTS)
-    scan = pipeline.scan_find_stream(
+    scan = generic_stream_search.scan_find_stream(
         sample_sky_catalog,
         [16.0],
         match_filter_parameters={},
         find_stream_kwargs=find_stream_kwargs,
         verbose=False,
     )
-    single = pipeline.find_stream(
+    single = generic_stream_search.find_stream(
         sample_sky_catalog, {"distance_modulus": 16.0}, **find_stream_kwargs
     )
 

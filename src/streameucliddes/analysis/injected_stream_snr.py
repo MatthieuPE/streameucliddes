@@ -1,5 +1,6 @@
+"""SNR of mock streams injected in the Euclid x DES stars."""
+
 import copy
-import functools
 import os
 import healpy as hp
 import numpy as np
@@ -10,13 +11,13 @@ import astropy.units as u
 import gala.coordinates as gc
 import logging
 
-from streamobs.match_filter import build_match_filter, is_in_match_filter
+from streamobs.match_filter import is_in_match_filter
 
 
-from streameucliddes.analysis.euclid_des_preparation import get_eucliddes_stars
-from streameucliddes.analysis.utils import cut_flow, get_cut_mask
+from streameucliddes.analysis.cmd_match_filter import _match_filter_polygon
+from streameucliddes.catalogs.catalog_cuts import cut_flow, get_cut_mask
+from streameucliddes.catalogs.euclid_des_catalog import get_eucliddes_stars
 from streameucliddes.injection import generate, inject
-
 
 # Euclid x DES stars used as background by get_stream_snr: read on first use (see
 # _get_background), not at import
@@ -231,28 +232,6 @@ def _count_selected(catalog, cuts, polygons, mask=None):
             polygon_vertices=mf_polygon,
         )
     return int(selected.sum())
-
-
-@functools.lru_cache(maxsize=1024)
-def _match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2, color_cut=True, red_cap_value=None):
-    """
-    build_match_filter polygon, cached: it only depends on these parameters, which
-    repeat over a scan (e.g. the same distance modulus for every surface brightness).
-    """
-    mf_polygon = build_match_filter(
-        distance_modulus=distance_modulus,
-        age=age,
-        metallicity=metallicity,
-        band_1=band_1,
-        band_2=band_2,
-        survey_1=survey_1,
-        survey_2=survey_2,
-        color_cut=color_cut,
-        red_cap_value=red_cap_value
-    )
-    mf_polygon.setflags(write=False)  # shared between calls
-    return mf_polygon
-
 
 def _compute_SNR(n_stream, n_background):
     """SNR of ``n_stream`` stream stars over ``n_background`` background stars."""

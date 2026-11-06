@@ -1,3 +1,5 @@
+"""2D polynomial fit of the background star density."""
+
 import logging
 from types import SimpleNamespace
 
@@ -14,6 +16,17 @@ except Exception:  # pragma: no cover - optional dependency at runtime
 
 LOGGER = logging.getLogger(__name__)
 
+class SimpleLonLatProj:
+    """Trivial "projection" that treats (lon, lat) as flat (x, y), in degrees.
+
+    Used as the `proj` argument of fit_background_model(method="polyfit2d").
+    """
+
+    def ang2xy(self, lon, lat, lonlat=True):
+        return np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)
+
+    def get_extent(self):
+        return (0.0, 360.0, -90.0, 90.0)
 
 def fit_background_model(
     data, method="likelihood", model_type={"polynomial": {"degree": 5}}, **kwargs

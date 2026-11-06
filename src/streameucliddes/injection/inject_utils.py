@@ -1,7 +1,7 @@
 import numpy as np
 import ugali.isochrone
 
-from streameucliddes.utils import fluxToMag, magToFlux
+from streameucliddes.unit_conversions import fluxToMag, magToFlux
 
 
 def _set_isochrone_for_ugali(isochrone, verbose=False):
