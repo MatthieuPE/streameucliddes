@@ -4,8 +4,7 @@ import numpy as np
 import pandas as pd
 from streamobs.model import StreamModel
 
-from .inject_utils import (convert_N_to_SurfaceBrightness,
-                           convert_SurfaceBrightness_to_N)
+from .inject_utils import convert_SurfaceBrightness_to_N
 
 
 def generate_stream_catalog(method="uniform", stream_config=None, **kwargs):

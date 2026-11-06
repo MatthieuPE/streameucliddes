@@ -1,5 +1,4 @@
 # Notebooks are stored without their outputs: the local copies keep them.
-# Set up once per clone:
-#   git config filter.strip-notebook-outputs.clean "python3 tools/strip_notebook_outputs.py"
-#   git config filter.strip-notebook-outputs.required true
+# The filter is defined in .gitconfig. Set up once per clone:
+#   git config include.path ../.gitconfig
 *.ipynb filter=strip-notebook-outputs

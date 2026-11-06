@@ -2,14 +2,16 @@ import healpy as hp
 import numpy as np
 import pytest
 
-from streameucliddes.analysis import fit
+from streameucliddes.analysis import background_polynomial_fit
+
+pytestmark = pytest.mark.background_polynomial_fit
 
 # The mock sky (projection, footprint, polynomial background) is defined in conftest.py.
 
 
 def fit_background(data, degree, fit_log_space, **kwargs):
     """Run the polyfit2d fit and return the background map, with masked pixels as NaN."""
-    _, _, prepared = fit.fit_background_model_polyfit2d(
+    _, _, prepared = background_polynomial_fit.fit_background_model_polyfit2d(
         data,
         model_type={"polynomial": {"degree": degree}},
         fit_log_space=fit_log_space,

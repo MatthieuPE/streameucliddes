@@ -1,34 +1,18 @@
-"""Wrapper for the full match-filter / background-fit pipeline."""
-
-import gc
+"""Generic stream search: match filter, smoothed HEALPix map, polynomial background fit."""
 
 import numpy as np
 from streamobs import match_filter
 
-from streameucliddes.analysis import data_manipulation, fit
-from streameucliddes.analysis.utils import get_cut_mask
-from streameucliddes.plotting import plot_style
-from streameucliddes.plotting.plotting import (make_gif,
-                                               plot_results_find_stream)
-from streameucliddes.utils import convert_DM_to_kpc
+from streameucliddes.analysis import background_polynomial_fit
+from streameucliddes.analysis.background_polynomial_fit import SimpleLonLatProj
+from streameucliddes.analysis.star_density_maps import star_density_healpix
+from streameucliddes.catalogs import dust_correction
+from streameucliddes.catalogs.catalog_cuts import get_cut_mask
+from streameucliddes.unit_conversions import convert_DM_to_kpc
 
 DEFAULT_MODEL_TYPE_FIT = {"polynomial": {"degree": 5}}
 
-
-class SimpleLonLatProj:
-    """Trivial "projection" that treats (lon, lat) as flat (x, y), in degrees.
-
-    Used as the `proj` argument of fit.fit_background_model(method="polyfit2d").
-    """
-
-    def ang2xy(self, lon, lat, lonlat=True):
-        return np.asarray(lon, dtype=float), np.asarray(lat, dtype=float)
-
-    def get_extent(self):
-        return (0.0, 360.0, -90.0, 90.0)
-
-
-# Stateless -> shared across calls instead of re-instantiating on every find_stream() call.
+# Stateless -> shared across calls instead of re-instantiating on every generic_search_single_dm() call.
 _PROJ = SimpleLonLatProj()
 
 
@@ -51,14 +35,14 @@ def _resolve_mag_columns(data, mag_cols, use_dust_corrected):
 def _ensure_dust_corrected(
     data, mag_cols, ra_col, dec_col, dust_correction_kwargs=None, verbose=False
 ):
-    """Compute missing '<col>_corrected' columns in place via data_manipulation.correct_dust_map."""
+    """Compute missing '<col>_corrected' columns in place via dust_correction.correct_dust_map."""
     missing = [col for col in mag_cols if f"{col}_corrected" not in data.columns]
     if not missing:
         return
 
     if verbose:
         print(f"Applying dust correction for: {missing}")
-    data_manipulation.correct_dust_map(
+    dust_correction.correct_dust_map(
         data,
         mag_cols=list(mag_cols),
         pos_columns=[ra_col, dec_col],
@@ -66,7 +50,7 @@ def _ensure_dust_corrected(
     )
 
 
-def find_stream(
+def generic_search_single_dm(
     data,
     match_filter_parameters,
     mag_cols=("mag_g", "mag_r"),
@@ -104,29 +88,29 @@ def find_stream(
     use_dust_corrected : bool
         If True, use '<col>_corrected' columns instead of the raw ones.
     dust_correction_kwargs : dict, optional
-        Extra kwargs forwarded to data_manipulation.correct_dust_map (e.g.
+        Extra kwargs forwarded to dust_correction.correct_dust_map (e.g.
         'ebv_map' or 'ebv_map_path') when the correction needs to be computed.
     ensure_dust_correction : bool
         If True (default) and `use_dust_corrected`, compute the missing
         '<col>_corrected' columns in place before resolving magnitude columns.
         Set to False when the correction has already been applied upfront
-        (e.g. by scan_find_stream) to skip the per-call existence check.
+        (e.g. by generic_search_dm_scan) to skip the per-call existence check.
     cuts : dict, optional
         Selection applied on top of the match filter, as ``{column: spec}``
-        (see utils.get_cut_mask), e.g. ``{"mag_g_corrected": (None, 24.0)}``
+        (see catalog_cuts.get_cut_mask), e.g. ``{"mag_g_corrected": (None, 24.0)}``
         for a faint-end magnitude cut. Column names are used as is: name the
         '<col>_corrected' column to cut on a dust-corrected magnitude.
         Ignored if `flag_cuts` is provided. Default: no cuts.
     flag_cuts : array-like of bool, optional
         Precomputed mask of `cuts` (same length as `data`). If provided,
-        the internal call to utils.get_cut_mask is skipped
+        the internal call to catalog_cuts.get_cut_mask is skipped
         -- useful when scanning several distance moduli, since the cuts
         do not depend on distance modulus and only need computing once.
     nside, smoothing, smoothing_scale_degrees : HEALPix map parameters.
     model_type_fit : dict
-        Passed to fit.fit_background_model (default: degree-5 polynomial).
+        Passed to background_polynomial_fit.fit_background_model (default: degree-5 polynomial).
     fit_method : str
-        Passed to fit.fit_background_model (default: "polyfit2d").
+        Passed to background_polynomial_fit.fit_background_model (default: "polyfit2d").
     footprint_bounds : tuple (ra_min, ra_max, dec_min, dec_max), optional
         If None, inferred from the match-filtered + cut selection.
 
@@ -184,7 +168,7 @@ def find_stream(
         ra_min, ra_max, dec_min, dec_max = footprint_bounds
 
     # --- Smoothed HEALPix map ---
-    data_map, lon, lat, npix = data_manipulation.get_healpy_data_from_table(
+    data_map, lon, lat, npix = star_density_healpix(
         {ra_col: ra_values, dec_col: dec_values},
         columns=[ra_col, dec_col],
         nside=nside,
@@ -200,7 +184,7 @@ def find_stream(
     del data_map
 
     # --- Polynomial background fit + residual ---
-    params_fit, solver_res, prepared_fit = fit.fit_background_model(
+    params_fit, solver_res, prepared_fit = background_polynomial_fit.fit_background_model(
         partial_data,
         method=fit_method,
         model_type=model_type_fit,
@@ -240,27 +224,25 @@ def find_stream(
     }
 
 
-def scan_find_stream(
+def generic_search_dm_scan(
     data,
     distance_modulus_array,
     match_filter_parameters,
     find_stream_kwargs=None,
-    plot=False,
-    save_figures=False,
-    fig_folder="../../figures",
-    plot_kwargs=None,
-    make_gif_flag=False,
-    gif_kwargs=None,
-    keep_results=False,
     verbose=True,
 ):
     """
-    Run find_stream() over a grid of distance moduli, optionally plotting
-    (and saving) each frame and building a gif from the saved figures.
+    Run generic_search_single_dm() over a grid of distance moduli, one at a time.
 
     The dust correction and the (distance-modulus-independent) cuts
     are each computed once up front and reused for every distance modulus,
-    instead of being recomputed on every find_stream() call.
+    instead of being recomputed on every generic_search_single_dm() call.
+
+    The results are yielded one distance modulus at a time, so that the caller
+    can plot or save each one and drop its HEALPix maps before the next one is
+    computed: retaining every frame's maps would otherwise grow without bound
+    when scanning many distance moduli over a large catalog (see
+    workflows.run_generic_search.run_generic_search).
 
     Parameters
     ----------
@@ -270,37 +252,17 @@ def scan_find_stream(
         Base kwargs for match_filter.build_match_filter; 'distance_modulus'
         is overridden for each value in `distance_modulus_array`.
     find_stream_kwargs : dict, optional
-        Extra kwargs forwarded to find_stream() (e.g. mag_cols, cuts,
+        Extra kwargs forwarded to generic_search_single_dm() (e.g. mag_cols, cuts,
         use_dust_corrected, nside...).
-    plot : bool
-        If True, display each frame (via plot_results_find_stream, show=True).
-    save_figures : bool
-        If True, save each frame to `fig_folder`.
-    plot_kwargs : dict, optional
-        Extra kwargs forwarded to plot_results_find_stream().
-    make_gif_flag : bool
-        If True, build a gif from `fig_folder` once the scan is done
-        (requires save_figures=True).
-    gif_kwargs : dict, optional
-        Extra kwargs forwarded to make_gif().
-    keep_results : bool
-        If True, retain the full find_stream() output (HEALPix maps, etc.)
-        for every distance modulus. Default False: only a lightweight summary
-        ('distance_kpc', 'n_selected', 'fname') is kept per distance modulus,
-        and the heavy per-frame result is dropped as soon as it has been
-        plotted/saved -- important when scanning many distance moduli over a
-        large catalog, since retaining every frame's HEALPix maps would
-        otherwise grow without bound.
+    verbose : bool
 
-    Returns
-    -------
-    results_by_dm : dict[float, dict]
-        find_stream() output (or the lightweight summary, see `keep_results`)
-        keyed by distance modulus.
+    Yields
+    ------
+    distance_modulus : float
+    results : dict
+        generic_search_single_dm() output for this distance modulus.
     """
     find_stream_kwargs = dict(find_stream_kwargs or {})
-    plot_kwargs = dict(plot_kwargs or {})
-    gif_kwargs = dict(gif_kwargs or {})
 
     # --- Precompute what doesn't depend on distance modulus, once, for the whole scan ---
     mag_cols = find_stream_kwargs.get("mag_cols", ("mag_g", "mag_r"))
@@ -324,7 +286,6 @@ def scan_find_stream(
     if verbose:
         print(f"Precomputed dust correction + cuts once for the scan (cuts: {cuts}).")
 
-    results_by_dm = {}
     for dm in distance_modulus_array:
         if verbose:
             print(f"Processing distance modulus = {dm:.2f}")
@@ -332,32 +293,4 @@ def scan_find_stream(
         mf_params = dict(match_filter_parameters)
         mf_params["distance_modulus"] = dm
 
-        results = find_stream(data, mf_params, **find_stream_kwargs)
-
-        fname_path = None
-        if plot or save_figures:
-            _, _, fname_path = plot_results_find_stream(
-                results,
-                save=save_figures,
-                show=plot,
-                fig_folder=fig_folder,
-                **plot_kwargs,
-            )
-
-        if keep_results:
-            results_by_dm[dm] = results
-        else:
-            results_by_dm[dm] = {
-                "distance_kpc": results["distance_kpc"],
-                "n_selected": results["n_selected"],
-                "fname": fname_path,
-            }
-            del results
-
-        # Release any lingering matplotlib/array reference cycles before the next frame.
-        gc.collect()
-
-    if make_gif_flag:
-        make_gif(figures_folder=fig_folder, **gif_kwargs)
-
-    return results_by_dm
+        yield dm, generic_search_single_dm(data, mf_params, **find_stream_kwargs)
