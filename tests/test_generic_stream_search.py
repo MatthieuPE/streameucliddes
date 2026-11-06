@@ -7,7 +7,7 @@ CUTS = {"mag_g": (None, 22.0)}
 
 
 def _find_stream_kwargs(nside, **kwargs):
-    """find_stream() kwargs for the mock catalog (see conftest.py)."""
+    """generic_search_single_dm() kwargs for the mock catalog (see conftest.py)."""
     return {
         "use_dust_corrected": False,  # the mock catalog has no dust map
         "nside": nside,
@@ -18,13 +18,13 @@ def _find_stream_kwargs(nside, **kwargs):
 
 
 # ===================================================
-# Test find_stream
+# Test generic_search_single_dm
 # ===================================================
 
 
 # Smoke test: the full pipeline runs on the mock catalog (see conftest.py)
 def test_pipeline_runs_without_error(sample_sky_catalog, nside):
-    results = generic_stream_search.find_stream(
+    results = generic_stream_search.generic_search_single_dm(
         sample_sky_catalog,
         match_filter_parameters={"distance_modulus": 16.0},
         **_find_stream_kwargs(nside),
@@ -38,10 +38,10 @@ def test_pipeline_runs_without_error(sample_sky_catalog, nside):
 # The cuts are applied on top of the match filter, and stored in the results
 def test_pipeline_applies_cuts(sample_sky_catalog, nside):
     match_filter_parameters = {"distance_modulus": 16.0}
-    no_cuts = generic_stream_search.find_stream(
+    no_cuts = generic_stream_search.generic_search_single_dm(
         sample_sky_catalog, match_filter_parameters, **_find_stream_kwargs(nside)
     )
-    with_cuts = generic_stream_search.find_stream(
+    with_cuts = generic_stream_search.generic_search_single_dm(
         sample_sky_catalog,
         match_filter_parameters,
         **_find_stream_kwargs(nside, cuts=CUTS),
@@ -59,7 +59,7 @@ def test_pipeline_applies_cuts(sample_sky_catalog, nside):
 # ===================================================
 
 
-# The cuts precomputed once by the scan select the same stars as find_stream
+# The cuts precomputed once by the scan select the same stars as generic_search_single_dm
 def test_scan_applies_same_cuts_as_find_stream(sample_sky_catalog, nside):
     find_stream_kwargs = _find_stream_kwargs(nside, cuts=CUTS)
     scan = generic_stream_search.scan_find_stream(
@@ -69,7 +69,7 @@ def test_scan_applies_same_cuts_as_find_stream(sample_sky_catalog, nside):
         find_stream_kwargs=find_stream_kwargs,
         verbose=False,
     )
-    single = generic_stream_search.find_stream(
+    single = generic_stream_search.generic_search_single_dm(
         sample_sky_catalog, {"distance_modulus": 16.0}, **find_stream_kwargs
     )
 

@@ -14,7 +14,7 @@ import logging
 from streamobs.match_filter import is_in_match_filter
 
 
-from streameucliddes.analysis.cmd_match_filter import _match_filter_polygon
+from streameucliddes.analysis.cmd_match_filter import build_match_filter_polygon
 from streameucliddes.catalogs.catalog_cuts import cut_flow, get_cut_mask
 from streameucliddes.catalogs.euclid_des_catalog import get_eucliddes_stars
 from streameucliddes.injection import generate, inject
@@ -152,7 +152,7 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
             color_cut = match_filter.get("color_cut", True)
             red_cap_value = match_filter.get("red_cap_value", None)
 
-            mf_polygon = _match_filter_polygon(
+            mf_polygon = build_match_filter_polygon(
                 distance_modulus,
                 age,
                 metallicity,

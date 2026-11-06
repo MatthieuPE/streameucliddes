@@ -27,7 +27,7 @@ import pyarrow.parquet as pq
 from streamobs.surveys import Survey
 
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
-from streameucliddes.unit_conversions import fluxToMag
+from streameucliddes.unit_conversions import flux_to_mag
 
 DEFAULT_DATA_PATH = Path(__file__).resolve().parents[3] / "data" / "euclid_q1_des"
 
@@ -308,7 +308,7 @@ def add_magnitudes(
         flux_err = data[err_col].to_numpy(dtype=float)
         valid = flux > 0
         with np.errstate(divide="ignore", invalid="ignore"):
-            mag = fluxToMag(np.where(valid, flux, np.nan) * 1e-6)  # micro-Jy -> Jy
+            mag = flux_to_mag(np.where(valid, flux, np.nan) * 1e-6)  # micro-Jy -> Jy
             mag_err = 2.5 / np.log(10) * flux_err / flux
         extinction = EUCLID_SURVEY.coeff_extinc[band] * data[EBV_COLUMN].to_numpy(
             dtype=float

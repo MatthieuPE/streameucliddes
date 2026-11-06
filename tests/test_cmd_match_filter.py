@@ -4,7 +4,7 @@ from streamobs.match_filter import build_match_filter
 from streameucliddes.analysis import cmd_match_filter
 
 # ===================================================
-# Test _match_filter_polygon
+# Test build_match_filter_polygon
 # ===================================================
 
 
@@ -19,8 +19,8 @@ def test_match_filter_polygon_cache():
         "survey_1": "des",
         "survey_2": "des",
     }
-    polygon = cmd_match_filter._match_filter_polygon(*params.values())
+    polygon = cmd_match_filter.build_match_filter_polygon(*params.values())
     np.testing.assert_array_equal(polygon, build_match_filter(**params))
 
-    assert cmd_match_filter._match_filter_polygon(*params.values()) is polygon
+    assert cmd_match_filter.build_match_filter_polygon(*params.values()) is polygon
     assert not polygon.flags.writeable  # shared between calls

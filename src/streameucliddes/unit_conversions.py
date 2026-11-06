@@ -4,7 +4,7 @@ import astropy.units as u
 import numpy as np
 from astropy.coordinates import Distance
 
-def magToFlux(mag):
+def mag_to_flux(mag):
     """
     Convert from AB magnitude to flux.
 
@@ -21,7 +21,7 @@ def magToFlux(mag):
     return 3631.0 * 10 ** (-0.4 * mag)
 
 
-def fluxToMag(flux):
+def flux_to_mag(flux):
     """
     Convert from flux to AB magnitude.
 

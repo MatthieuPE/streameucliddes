@@ -3,7 +3,7 @@
 import healpy as hp
 import numpy as np
 
-def get_healpy_data_from_table(
+def star_density_healpix(
     data,
     columns=("ra", "dec"),
     nside=512,

@@ -5,7 +5,7 @@ import functools
 from streamobs.match_filter import build_match_filter
 
 @functools.lru_cache(maxsize=1024)
-def _match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2, color_cut=True, red_cap_value=None):
+def build_match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2, color_cut=True, red_cap_value=None):
     """
     build_match_filter polygon, cached: it only depends on these parameters, which
     repeat over a scan (e.g. the same distance modulus for every surface brightness).

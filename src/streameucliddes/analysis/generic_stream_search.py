@@ -11,12 +11,12 @@ from streameucliddes.catalogs import dust_correction
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
 from streameucliddes.plotting import plot_style
 from streameucliddes.plotting.make_videos import make_gif
-from streameucliddes.plotting.plot_generic_search import plot_results_find_stream
+from streameucliddes.plotting.plot_generic_search import plot_generic_search_result
 from streameucliddes.unit_conversions import convert_DM_to_kpc
 
 DEFAULT_MODEL_TYPE_FIT = {"polynomial": {"degree": 5}}
 
-# Stateless -> shared across calls instead of re-instantiating on every find_stream() call.
+# Stateless -> shared across calls instead of re-instantiating on every generic_search_single_dm() call.
 _PROJ = SimpleLonLatProj()
 
 
@@ -54,7 +54,7 @@ def _ensure_dust_corrected(
     )
 
 
-def find_stream(
+def generic_search_single_dm(
     data,
     match_filter_parameters,
     mag_cols=("mag_g", "mag_r"),
@@ -243,12 +243,12 @@ def scan_find_stream(
     verbose=True,
 ):
     """
-    Run find_stream() over a grid of distance moduli, optionally plotting
+    Run generic_search_single_dm() over a grid of distance moduli, optionally plotting
     (and saving) each frame and building a gif from the saved figures.
 
     The dust correction and the (distance-modulus-independent) cuts
     are each computed once up front and reused for every distance modulus,
-    instead of being recomputed on every find_stream() call.
+    instead of being recomputed on every generic_search_single_dm() call.
 
     Parameters
     ----------
@@ -258,21 +258,21 @@ def scan_find_stream(
         Base kwargs for match_filter.build_match_filter; 'distance_modulus'
         is overridden for each value in `distance_modulus_array`.
     find_stream_kwargs : dict, optional
-        Extra kwargs forwarded to find_stream() (e.g. mag_cols, cuts,
+        Extra kwargs forwarded to generic_search_single_dm() (e.g. mag_cols, cuts,
         use_dust_corrected, nside...).
     plot : bool
-        If True, display each frame (via plot_results_find_stream, show=True).
+        If True, display each frame (via plot_generic_search_result, show=True).
     save_figures : bool
         If True, save each frame to `fig_folder`.
     plot_kwargs : dict, optional
-        Extra kwargs forwarded to plot_results_find_stream().
+        Extra kwargs forwarded to plot_generic_search_result().
     make_gif_flag : bool
         If True, build a gif from `fig_folder` once the scan is done
         (requires save_figures=True).
     gif_kwargs : dict, optional
         Extra kwargs forwarded to make_gif().
     keep_results : bool
-        If True, retain the full find_stream() output (HEALPix maps, etc.)
+        If True, retain the full generic_search_single_dm() output (HEALPix maps, etc.)
         for every distance modulus. Default False: only a lightweight summary
         ('distance_kpc', 'n_selected', 'fname') is kept per distance modulus,
         and the heavy per-frame result is dropped as soon as it has been
@@ -283,7 +283,7 @@ def scan_find_stream(
     Returns
     -------
     results_by_dm : dict[float, dict]
-        find_stream() output (or the lightweight summary, see `keep_results`)
+        generic_search_single_dm() output (or the lightweight summary, see `keep_results`)
         keyed by distance modulus.
     """
     find_stream_kwargs = dict(find_stream_kwargs or {})
@@ -320,11 +320,11 @@ def scan_find_stream(
         mf_params = dict(match_filter_parameters)
         mf_params["distance_modulus"] = dm
 
-        results = find_stream(data, mf_params, **find_stream_kwargs)
+        results = generic_search_single_dm(data, mf_params, **find_stream_kwargs)
 
         fname_path = None
         if plot or save_figures:
-            _, _, fname_path = plot_results_find_stream(
+            _, _, fname_path = plot_generic_search_result(
                 results,
                 save=save_figures,
                 show=plot,

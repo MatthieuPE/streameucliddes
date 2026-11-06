@@ -1,6 +1,6 @@
 """Figures of the generic stream search (analysis.generic_stream_search).
 
-plot_results_find_stream calls _apply_overlay_tracks, plot_overlapped_objects and
+plot_generic_search_result calls _apply_overlay_tracks, plot_overlapped_objects and
 plot_single_stream_track, which were never defined in this package (see
 docs/dev/package_structure.md)."""
 
@@ -11,7 +11,7 @@ import matplotlib.pyplot as plt
 from streameucliddes.plotting.plot_cmd import plot_CMD
 from streameucliddes.plotting.plot_sky_density import plot_2D_density_from_hp
 
-def plot_results_find_stream(
+def plot_generic_search_result(
     results,
     mag_bounds=(16.0, 28.0),
     color_bounds=(-0.5, 1.5),
@@ -29,7 +29,7 @@ def plot_results_find_stream(
     dpi=150,
 ):
     """
-    2x2 panel figure from RubinStream.analysis.pipeline.find_stream() output:
+    2x2 panel figure from analysis.generic_stream_search.generic_search_single_dm() output:
     1. CMD + match filter polygon (+ a line per bound of a range cut on the
        CMD magnitude, if any)
     2. data_map, with dwarves/globular clusters/stream tracks overlaid (see
