@@ -1,10 +1,7 @@
 """SNR of mock streams injected in the Euclid x DES stars."""
 
 import copy
-import os
 import numpy as np
-import pandas as pd
-import skyproj
 import astropy.coordinates as coord
 import astropy.units as u
 import gala.coordinates as gc
@@ -16,7 +13,7 @@ from streamobs.match_filter import is_in_match_filter
 from streameucliddes.analysis.cmd_match_filter import build_match_filter_polygon
 from streameucliddes.catalogs.catalog_cuts import cut_flow, get_cut_mask
 from streameucliddes.catalogs.euclid_des_catalog import get_eucliddes_stars
-from streameucliddes.injection import generate, inject
+from streameucliddes.injection import inject
 
 # Euclid x DES stars used as background by get_stream_snr: read on first use (see
 # _get_background), not at import
