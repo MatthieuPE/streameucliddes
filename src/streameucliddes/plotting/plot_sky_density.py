@@ -104,63 +104,6 @@ def plot_2D_density(
     return fig, sp.ax
 
 
-def get_hp_map(
-    data,
-    columns=("ra", "dec"),
-    nside=48,
-    nest=False,
-    lon_range=None,
-    lat_range=None,
-    title=None,
-    vmin=None,
-    vmax=None,
-    smoothing=False,
-    smoothing_scale_degrees=0.3,
-):
-    """
-
-    Parameters
-    ----------
-    data : pd.DataFrame
-        Table containing at least RA/Dec columns (degrees).
-    columns : tuple[str, str]
-        Names of (RA, Dec) columns in degrees.
-    nside : int
-        HEALPix NSIDE resolution (power of 2).
-    nest : bool
-        HEALPix ordering scheme. False = RING, True = NESTED.
-    lon_range, lat_range : tuple, optional
-        Plot bounds in degrees. If None, inferred from data.
-    title : str
-        Plot title.
-
-    Returns
-    -------
-    hpmap
-    """
-
-    # Read coordinates and keep only valid values
-    ra = np.asarray(data[columns[0]], dtype=float)
-    dec = np.asarray(data[columns[1]], dtype=float)
-    valid = np.isfinite(ra) & np.isfinite(dec) & (dec >= -90.0) & (dec <= 90.0)
-
-    ra = ra[valid]
-    dec = dec[valid]
-
-    # Build HEALPix count map
-    npix = hp.nside2npix(nside)
-    pix_idx = hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)
-    hp_map = np.bincount(pix_idx, minlength=npix).astype(np.float32)
-    # convert degrees in radian
-    smoothing_scale_radian = 2 * np.pi / 360.0 * smoothing_scale_degrees
-    if smoothing:
-        hp_map = hp.sphtfunc.smoothing(hp_map, sigma=smoothing_scale_radian)
-    # Build projection
-    # sp = skyproj.McBrydeSkyproj(ax=ax)
-
-    return hp_map
-
-
 def plot_2D_density_from_hp(
     hp_map,
     nest=False,
