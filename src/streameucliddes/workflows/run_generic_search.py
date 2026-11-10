@@ -1,10 +1,18 @@
 """Generic stream search over a grid of distance moduli: figures, gif and results."""
 
+from __future__ import annotations
+
 import gc
+from typing import TYPE_CHECKING
 
 from streameucliddes.analysis.generic_stream_search import generic_search_dm_scan
 from streameucliddes.plotting.make_videos import make_gif
 from streameucliddes.plotting.plot_generic_search import plot_generic_search_result
+
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Mapping
+    from pathlib import Path
+    from typing import Any
 
 
 def run_generic_search(
@@ -102,3 +110,45 @@ def run_generic_search(
         make_gif(figures_folder=fig_folder, **gif_kwargs)
 
     return results_by_dm
+
+
+def save_generic_search_healpix_cube(
+    results: Mapping[float, Mapping[str, Any]] | Iterable[tuple[float, Mapping[str, Any]]],
+    output_path: str | Path,
+    *,
+    map_key: str = "residual_map",
+    nest: bool,
+) -> Path:
+    """Save the maps of a generic search, one per distance modulus, as one cube.
+
+    Parquet table in the ugali cube format: a column ``hpx<nside>`` of pixel
+    indices, NESTED as the ugali and celestial_currents cubes, and one column
+    per distance modulus, named by its string (e.g. ``"16.5"``). Only the
+    pixels inside the footprint are written.
+
+    Parameters
+    ----------
+    results : mapping or iterable of (distance_modulus, result)
+        Output of ``run_generic_search(..., keep_results=True)``, or the pairs
+        yielded by ``analysis.generic_stream_search.generic_search_dm_scan``:
+        then only the map ``map_key`` of each distance modulus is kept, not
+        the whole result.
+    output_path : str or pathlib.Path
+        Parquet file to write.
+    map_key : str, optional
+        Map to save: ``"residual_map"``, ``"data_map"`` or ``"fit_map"``.
+    nest : bool
+        HEALPix ordering of the maps in ``results``: False for the maps of
+        ``star_density_healpix`` (RING). The cube is written NESTED.
+
+    Returns
+    -------
+    output_path : pathlib.Path
+        The file written.
+
+    Notes
+    -----
+    Code to reuse: the output block of celestial_currents
+    ``scripts/run_matched_filter_maps.py::main``.
+    """
+    raise NotImplementedError
