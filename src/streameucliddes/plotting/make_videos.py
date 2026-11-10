@@ -1,10 +1,17 @@
 """Videos made from saved figures."""
 
+from __future__ import annotations
+
 import glob
 import os
 import re
+from typing import TYPE_CHECKING
 
 from PIL import Image
+
+if TYPE_CHECKING:
+    from pathlib import Path
+
 
 def make_gif(
     figures_folder="../../figures",
@@ -75,3 +82,64 @@ def make_gif(
     )
     print(f"{gif_name} created ({len(files)} frames) at {gif_path}")
     return gif_path
+
+
+def make_gif_from_plots(
+    output_path: str | Path, pattern: str = "./plots/*.png", duration: int = 500
+) -> None:
+    """Animated GIF from the PNG images matching a glob pattern.
+
+    Frames in the sorted order of their file names, each shown ``duration``
+    ms; the GIF loops. All new gifs use this function (user choice), not
+    ``make_gif``.
+
+    Parameters
+    ----------
+    output_path : str or pathlib.Path
+        GIF file to write.
+    pattern : str, optional
+        Glob pattern of the frames.
+    duration : int, optional
+        Time per frame (ms).
+
+    Raises
+    ------
+    FileNotFoundError
+        No image matches ``pattern``.
+
+    Notes
+    -----
+    Code to reuse: copy as is of celestial_currents
+    ``visualization.py::make_gif_from_plots``.
+    """
+    raise NotImplementedError
+
+
+def make_mp4(
+    output_path: str | Path, pattern: str = "./plots/*.png", duration: int = 500
+) -> None:
+    """MP4 video from the PNG images matching a glob pattern.
+
+    Same interface as ``make_gif_from_plots``: frames in the sorted order of
+    their file names, each shown ``duration`` ms.
+
+    Parameters
+    ----------
+    output_path : str or pathlib.Path
+        MP4 file to write.
+    pattern : str, optional
+        Glob pattern of the frames.
+    duration : int, optional
+        Time per frame (ms): 1000 / ``duration`` frames per second.
+
+    Raises
+    ------
+    FileNotFoundError
+        No image matches ``pattern``.
+
+    Notes
+    -----
+    Code to reuse: none. ``imageio`` with the ``imageio-ffmpeg`` plugin (new
+    dependencies of phase 3).
+    """
+    raise NotImplementedError
