@@ -4,50 +4,100 @@ As in ``analysis.star_density_maps.star_density_healpix`` and
 ``analysis.background_polynomial_fit.process_data``, a mask is True outside
 the footprint (masked). phi1/phi2 grids follow the convention of
 ``analysis.star_density_maps``.
+
+The footprint map of a survey, when there is one (e.g. the DES Y6 or Euclid
+DR1 coverage map), is a HEALPix FITS file ``FOOTPRINT_DIR/<survey>.fits``.
 """
 
 from __future__ import annotations
 
+import logging
+from pathlib import Path
 from typing import TYPE_CHECKING
 
+import healpy as hp
+import numpy as np
+
+from streameucliddes.stream_frames import phi12_to_radec
+
 if TYPE_CHECKING:
-    import numpy as np
     from numpy.typing import ArrayLike, NDArray
+
+LOGGER = logging.getLogger(__name__)
+
+# Footprint maps of the surveys, next to the catalogs (see
+# euclid_des_catalog.DEFAULT_DATA_PATH): the data/ folder of the repository.
+FOOTPRINT_DIR = Path(__file__).resolve().parents[3] / "data" / "footprints"
 
 
 def survey_footprint_healpix_mask(
-    ra: ArrayLike, dec: ArrayLike, nside: int, *, nest: bool, min_count: int = 1
+    ra: ArrayLike,
+    dec: ArrayLike,
+    nside: int,
+    *,
+    nest: bool,
+    min_count: int = 1,
+    survey: str | None = None,
 ) -> NDArray[np.bool_]:
-    """HEALPix mask of the survey footprint, from the star counts.
+    """HEALPix mask of the survey footprint.
 
-    A pixel is in the footprint when it holds at least ``min_count`` stars.
-    To replace by the DES Y6 and Euclid DR1 coverage maps when they are
-    available.
+    Read from the footprint map of ``survey`` when there is one, brought to
+    ``nside``. Otherwise computed from the star counts: a pixel is in the
+    footprint when it holds at least ``min_count`` stars.
+
+    A footprint map is a HEALPix FITS file ``FOOTPRINT_DIR/<survey>.fits``, of
+    any nside and ordering. A pixel is in the footprint when its value is
+    positive (UNSEEN and NaN are outside), so both a 0/1 map and a coverage
+    fraction work. At a coarser nside, a pixel is in the footprint when at
+    least half of its sub-pixels are. At a finer nside, the sub-pixels take
+    the value of their pixel.
 
     Parameters
     ----------
     ra, dec : array_like
-        Stars of the survey catalog (deg).
+        Stars of the survey catalog (deg). Stars with a non-finite position
+        are left out. Not used when the footprint map is read.
     nside : int
         HEALPix resolution of the mask.
     nest : bool
         HEALPix ordering of the mask. No default: always explicit.
     min_count : int, optional
-        Minimum number of stars of a pixel in the footprint.
+        Minimum number of stars of a pixel in the footprint, when the mask is
+        computed from the stars.
+    survey : str, optional
+        Name of the footprint map, without ``.fits`` (e.g. ``"des_y6"``).
+        None, or no such file: the mask is computed from the stars.
 
     Returns
     -------
     mask : numpy.ndarray of bool, shape (12 * nside**2,)
         True outside the footprint.
-
-    Notes
-    -----
-    Code to reuse: the footprint from the counts in
-    ``analysis.star_density_maps.star_density_healpix`` (pixels without stars
-    are masked), and the mask of
-    ``analysis.background_polynomial_fit.process_data``.
     """
-    raise NotImplementedError
+    if survey is not None:
+        path = FOOTPRINT_DIR / f"{survey}.fits"
+        if path.exists():
+            return _footprint_mask_from_map(path, nside, nest=nest)
+        LOGGER.info("No footprint map %s: footprint from the star counts.", path)
+
+    ra = np.asarray(ra, dtype=float)
+    dec = np.asarray(dec, dtype=float)
+    valid = np.isfinite(ra) & np.isfinite(dec)
+    pixels = hp.ang2pix(nside, ra[valid], dec[valid], lonlat=True, nest=nest)
+    counts = np.bincount(pixels, minlength=hp.nside2npix(nside))
+    return counts < min_count
+
+
+def _footprint_mask_from_map(path: Path, nside: int, *, nest: bool) -> NDArray[np.bool_]:
+    """Mask (True outside) of the footprint map in ``path``, brought to ``nside``."""
+    values = hp.read_map(path, nest=nest)  # converted to the requested ordering
+    inside = (values > 0).astype(float)  # UNSEEN (negative) and NaN: outside
+    map_nside = hp.npix2nside(inside.size)
+    if map_nside != nside:
+        # Coarser: fraction of the sub-pixels inside. Finer: value of the pixel.
+        order = "NESTED" if nest else "RING"
+        inside = hp.ud_grade(inside, nside, order_in=order, order_out=order)
+    LOGGER.info("Footprint read from %s (nside %d, used at nside %d).", path, map_nside, nside)
+    return inside < 0.5
 
 
 def survey_footprint_phi12_mask(
@@ -87,8 +137,30 @@ def survey_footprint_phi12_mask(
 
     Notes
     -----
-    Code to reuse: celestial_currents
-    ``visualization.py::transform_healpix_to_custom_frame`` (bin centres to
-    ICRS, then ``healpy.ang2pix``), with ``stream_frames.phi12_to_radec``.
+    Adapted from celestial_currents
+    ``visualization.py::transform_healpix_to_custom_frame``: the bin centres
+    are taken to ICRS (``stream_frames.phi12_to_radec``), then to HEALPix
+    pixels.
     """
-    raise NotImplementedError
+    footprint_mask = np.asarray(footprint_mask, dtype=bool)
+    nside = hp.npix2nside(footprint_mask.size)
+    phi1_centres, phi2_centres = _phi12_bin_centres(window, bin_size_deg)
+    phi1, phi2 = np.meshgrid(phi1_centres, phi2_centres, indexing="ij")
+    ra, dec = phi12_to_radec(phi1.ravel(), phi2.ravel(), rotation_matrix)
+    pixels = hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)
+    return footprint_mask[pixels].reshape(phi1.shape)
+
+
+def _phi12_bin_centres(
+    window: tuple[float, float, float, float], bin_size_deg: float
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Bin centres of the phi1/phi2 grid: ``round((max - min) / bin_size)`` bins per axis."""
+    phi1_min, phi1_max, phi2_min, phi2_max = window
+    centres = []
+    for low, high in ((phi1_min, phi1_max), (phi2_min, phi2_max)):
+        n_bins = round((high - low) / bin_size_deg)
+        if n_bins < 1:
+            raise ValueError(f"Window ({low}, {high}) narrower than one bin of {bin_size_deg} deg.")
+        edges = np.linspace(low, high, n_bins + 1)
+        centres.append(0.5 * (edges[:-1] + edges[1:]))
+    return centres[0], centres[1]
