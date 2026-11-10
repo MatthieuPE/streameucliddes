@@ -15,13 +15,14 @@ footprint.
 2. **Frame.** phi1/phi2 from the galstreams frame (`strm.stream_frame`),
    turned into a 3×3 rotation matrix.
 3. **Known-stream MF.** Isochrone from the stream's age and [Fe/H] when
-   known, else a default old, metal-poor grid. Maps in phi1/phi2.
-   **No polynomial background subtraction.**
+   known, else a default old, metal-poor grid. Maps in phi1/phi2, **one
+   set of maps per isochrone**. **No polynomial background subtraction.**
 4. **Generic MF.** Full footprint, generic isochrones, dm 15–22.
-   **2D polynomial background, degree 3–5**, chosen from the map
-   fluctuations.
-5. **Products.** One map per dm, one video per stream, one data cube
-   per stream.
+   **2D polynomial background of fixed degree** (5, the current default)
+   for now. Choosing the degree from the map fluctuations comes later
+   (Section 8).
+5. **Products.** One map per (isochrone, dm); one video and one file of
+   maps per (stream, isochrone).
 
 Method: Rockosi et al. 2002 (AJ 124, 349); Grillmair 2009 (ApJ 693,
 1118); Shipp et al. 2018 (ApJ 862, 114).
@@ -77,7 +78,7 @@ Method: Rockosi et al. 2002 (AJ 124, 349); Grillmair 2009 (ApJ 693,
 - Add `notebooks/known_stream_search_example.ipynb`: an example of how
   to use the known-stream search, written against the stubs. Markdown
   explains each step (galstreams streams in the footprint, stream frame,
-  isochrone, map per dm, video, data cube); code cells call the public
+  isochrone, map per dm, video, file of maps); code cells call the public
   functions in the order a user would. Only the import cell runs at this
   stage: the other cells call stubs. Stored without outputs (git filter).
 - No implementation. The user reviews and may reorganise the stubs.
@@ -135,14 +136,12 @@ Read its `CLAUDE.md` and `README.md` first.
 | `survey_footprint.*` | [U] footprint mask in `star_density_healpix` and `background_polynomial_fit.process_data`; [C] `visualization.py::transform_healpix_to_custom_frame` |
 | `cmd_match_filter.select_stars_in_match_filter` | [U] `build_match_filter_polygon` + `streamobs.match_filter.is_in_match_filter` (see `_count_selected` in `injected_stream_snr`); [C] DES g−r alternative `search/matched_filter.py::get_filter_splines_from_color_mag`, `filter_data` |
 | `star_density_maps.star_density_phi12` | [C] `_compute_spline_phi12` in `notebooks/candidate_investigations/full_search/template.ipynb` (histogram2d + Gaussian smoothing) |
-| `star_density_maps.mask_disks_in_phi12_density` | [C] `visualization.py::mask_phi12_disks`; [C] `investigate/postprocess.py::build_lvdb_mask` (LVDB path as an argument) |
-| `background_polynomial_fit.select_background_polynomial_degree` | [U] `fit_background_model`; [C] `visualization.py::fit_bkg_poly` |
 | `known_stream_search.*` | [U] `generic_search_dm_scan` pattern (cuts computed once); [C] `ProcessPoolExecutor` sweep cells in the template notebook |
 | `plot_known_stream_search.*` | [C] `visualization.py::plot_custom_stream_at_mu`, `_find_overlapping_streams` (rewrite with imshow on the grid) |
 | `make_videos.make_gif_from_plots` | [C] `visualization.py::make_gif_from_plots` (copy as is). **User choice: all new gifs use this function**, not [U] `make_gif` |
 | `make_videos.make_mp4` | `imageio` + `imageio-ffmpeg`; same interface as `make_gif_from_plots` |
 | `run_config.RunConfig` | [C] `config.py::RunConfig.from_yaml` |
-| `save_generic_search_healpix_cube`, `save_known_stream_search_cube` | [C] output block of `scripts/run_matched_filter_maps.py::main` |
+| `save_generic_search_healpix_maps`, `save_known_stream_search_maps` | [C] output block of `scripts/run_matched_filter_maps.py::main` |
 | CLI scripts | [C] `scripts/run_matched_filter_maps.py` |
 
 ## 5. Known gaps
@@ -151,8 +150,6 @@ Read its `CLAUDE.md` and `README.md` first.
   2022 (ApJ 928, 30); Martin et al. 2022 (MNRAS 516, 5331); Bonaca &
   Price-Whelan 2024 (arXiv:2405.19410). Never invent values: NaN →
   default grid.
-- **Polynomial degree rule.** No standard rule found. Proposal: lowest
-  BIC on a Poisson deviance; tie → lower degree. Confirm with the user.
 - **Footprint.** Start from star counts; use DES Y6 and Euclid DR1
   coverage maps when available.
 - **Edges.** Normalise smoothed counts by the smoothed footprint mask.
@@ -182,3 +179,20 @@ Read its `CLAUDE.md` and `README.md` first.
   footprint (e.g. ATLAS, Phoenix, Turranburra; Shipp et al. 2018).
 - Inject a stream with `injection.inject_stream_catalog` on a known
   track; check it appears at phi2 ≈ 0.
+
+## 8. Later: left out of the first version
+
+Start simple (user choice, phase 2 review). Add these once the simple
+version works, and only on request:
+
+- **Polynomial degree from the map fluctuations** (generic search):
+  choose among degrees 3–5, e.g. by the lowest BIC (Bayesian Information
+  Criterion) on a Poisson deviance, ties going to the lower degree. Reuse:
+  [U] `fit_background_model`; [C] `visualization.py::fit_bkg_poly`.
+- **Masking known objects in the maps**: disks around the dwarf galaxies
+  and globular clusters of the LVDB (Local Volume Database; Pace 2024,
+  arXiv:2411.07424). Reuse: [C] `visualization.py::mask_phi12_disks`;
+  [C] `investigate/postprocess.py::build_lvdb_mask` (LVDB path as an
+  argument).
+- **Several isochrones in one map** (e.g. the union of their filters),
+  instead of one set of maps per isochrone.

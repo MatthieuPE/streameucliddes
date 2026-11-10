@@ -81,12 +81,10 @@ src/streameucliddes/
                                  (old: get_healpy_data_from_table, one copy,
                                   + compute part of plotting.get_hp_map)
                                  [NEW] star_density_phi12
-                                 [NEW] mask_disks_in_phi12_density
     background_polynomial_fit.py fit_background_model, polyfit2d,
                                  fit_background_model_polyfit2d, process_data,
                                  process_data_polyfit2d, polynomial_formula
                                  (old: analysis/fit.py)
-                                 [NEW] select_background_polynomial_degree
     generic_stream_search.py     generic_search_single_dm  (old: pipeline.find_stream)
                                  generic_search_dm_scan    (old: compute part of
                                                             pipeline.scan_find_stream)
@@ -120,10 +118,10 @@ src/streameucliddes/
     run_config.py                [NEW] RunConfig (YAML)
     run_generic_search.py        run_generic_search
                                  (old: loop, plots and gif of scan_find_stream)
-                                 [NEW] save_generic_search_healpix_cube
+                                 [NEW] save_generic_search_healpix_maps
     run_known_stream_search.py   [NEW] run_known_stream_search
                                  [NEW] run_all_known_stream_searches
-                                 [NEW] save_known_stream_search_cube
+                                 [NEW] save_known_stream_search_maps
 
 scripts/                         [NEW] run_generic_search.py, run_known_stream_search.py
 configs/                         [NEW] generic_search.yaml, known_stream_search.yaml
@@ -131,7 +129,7 @@ notebooks/                       [NEW] known_stream_search_example.ipynb (usage 
 ```
 
 Naming rules used:
-- `generic_search_*` and `known_stream_search_*` mirror each other: `_single_dm` gives one map; `_dm_scan` goes over a dm grid one dm at a time (it yields `(dm, result)`), so that the caller can drop each map before the next one is computed. The workflows build the stacks (`save_*_cube`).
+- `generic_search_*` and `known_stream_search_*` mirror each other: `_single_dm` gives one map; `_dm_scan` goes over a dm grid one dm at a time (it yields `(dm, result)`), so that the caller can drop each map before the next one is computed. The workflows save all the maps of a run in one file (`save_*_maps`). Known-stream maps: one set per isochrone.
 - `star_density_*` = smoothed star counts, `*_healpix` or `*_phi12` says the grid.
 - `galstreams_*` = reads galstreams. `survey_footprint_*` = footprint.
 - `plot_<thing>` in `plot_<module>.py`; `run_<thing>` in `run_<thing>.py`.
