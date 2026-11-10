@@ -1,0 +1,135 @@
+"""Stream frames: rotation matrices, and (ra, dec) <-> (phi1, phi2).
+
+A stream frame is a 3x3 rotation matrix ``R`` that maps ICRS Cartesian unit
+vectors to the stream frame: ``v_stream = R @ v_icrs``. Its rows are the x, y
+and z axes of the stream frame, in ICRS. phi1 = phi2 = 0 is the x axis;
+phi2 = 90 deg is the z axis (the pole). Angles are in degrees.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    import numpy as np
+    from astropy.coordinates import BaseCoordinateFrame
+    from numpy.typing import ArrayLike, NDArray
+
+
+def rotation_matrix_from_astropy_frame(frame: BaseCoordinateFrame) -> NDArray[np.float64]:
+    """Rotation matrix of an astropy stream frame.
+
+    Used for the galstreams frames (``track.stream_frame``), so that the
+    known-stream maps use the same phi1/phi2 as galstreams.
+
+    Parameters
+    ----------
+    frame : astropy.coordinates.BaseCoordinateFrame
+        Stream frame with phi1/phi2 components, e.g. the ``stream_frame`` of a
+        galstreams track (a gala ``GreatCircleICRSFrame``).
+
+    Returns
+    -------
+    rotation_matrix : numpy.ndarray, shape (3, 3)
+        ``R`` such that ``R @ v_icrs`` is the Cartesian vector in the stream
+        frame.
+
+    Notes
+    -----
+    Code to reuse: none. Transform the points (phi1, phi2) = (0, 0), (90, 0)
+    and (0, 90) of the frame to ICRS: their Cartesian vectors are the rows of
+    ``R``. Test it against ``SkyCoord.transform_to(frame)`` on random points.
+
+    References
+    ----------
+    Mateu 2023, MNRAS 520, 5225 (galstreams).
+    """
+    raise NotImplementedError
+
+
+def rotation_matrix_from_endpoints(
+    ra_1: float, dec_1: float, ra_2: float, dec_2: float
+) -> NDArray[np.float64]:
+    """Rotation matrix of the great circle through two points.
+
+    The pole is ``v1 x v2`` (normalised), with ``v1`` and ``v2`` the unit
+    vectors of the two points. phi1 = phi2 = 0 is their midpoint, ``v1 + v2``
+    (normalised). The y axis completes the right-handed frame (``z x x``), so
+    phi1 increases from the first point to the second. For a stream or a
+    candidate without a galstreams frame.
+
+    Parameters
+    ----------
+    ra_1, dec_1 : float
+        First point (deg).
+    ra_2, dec_2 : float
+        Second point (deg).
+
+    Returns
+    -------
+    rotation_matrix : numpy.ndarray, shape (3, 3)
+        ``R`` such that ``R @ v_icrs`` is the Cartesian vector in the stream
+        frame.
+
+    Notes
+    -----
+    Code to reuse: adapted from celestial_currents
+    ``frame_utils.py::rotation_matrix_from_endpoints``, with floats instead of
+    SkyCoord endpoints.
+    """
+    raise NotImplementedError
+
+
+def radec_to_phi12(
+    ra: ArrayLike, dec: ArrayLike, rotation_matrix: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """(ra, dec) to (phi1, phi2) in a stream frame.
+
+    Parameters
+    ----------
+    ra, dec : array_like
+        ICRS coordinates (deg).
+    rotation_matrix : numpy.ndarray, shape (3, 3)
+        Stream frame (see the module docstring).
+
+    Returns
+    -------
+    phi1 : numpy.ndarray
+        Longitude in the stream frame (deg), in [-180, 180).
+    phi2 : numpy.ndarray
+        Latitude in the stream frame (deg), in [-90, 90].
+
+    Notes
+    -----
+    Code to reuse: adapted from celestial_currents
+    ``frame_utils.py::apply_rotation``, with ra/dec arrays instead of a
+    SkyCoord.
+    """
+    raise NotImplementedError
+
+
+def phi12_to_radec(
+    phi1: ArrayLike, phi2: ArrayLike, rotation_matrix: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """(phi1, phi2) in a stream frame to (ra, dec).
+
+    Parameters
+    ----------
+    phi1, phi2 : array_like
+        Coordinates in the stream frame (deg).
+    rotation_matrix : numpy.ndarray, shape (3, 3)
+        Stream frame (see the module docstring).
+
+    Returns
+    -------
+    ra : numpy.ndarray
+        ICRS right ascension (deg), in [0, 360).
+    dec : numpy.ndarray
+        ICRS declination (deg), in [-90, 90].
+
+    Notes
+    -----
+    Code to reuse: celestial_currents ``frame_utils.py::phi12_to_radec``
+    (applies the transpose of ``R``).
+    """
+    raise NotImplementedError
