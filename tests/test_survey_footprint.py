@@ -1,10 +1,13 @@
 """Tests of catalogs/survey_footprint.py.
 
-Footprint maps are written to a temporary FOOTPRINT_DIR. The phi1/phi2 grid is
-tested in the frame aligned with ICRS (phi1 = ra, phi2 = dec), with a stand-in
-for stream_frames.phi12_to_radec.
+Footprint maps are written to a temporary FOOTPRINT_DIR. Until stream_frames
+is written, stream_frames.phi12_to_radec is replaced by a stand-in: the frame
+aligned with ICRS (phi1 = ra, phi2 = dec), or astropy's transform from the gala
+frame of conftest.py.
 """
 
+import astropy.coordinates as coord
+import astropy.units as u
 import healpy as hp
 import numpy as np
 import pytest
@@ -14,6 +17,7 @@ from streameucliddes.catalogs.survey_footprint import (
     survey_footprint_healpix_mask,
     survey_footprint_phi12_mask,
 )
+from streameucliddes.stream_frames import phi12_bin_centres
 
 pytestmark = pytest.mark.survey_footprint
 
@@ -160,3 +164,66 @@ def test_phi12_window_narrower_than_a_bin(icrs_frame):
     footprint_mask = np.zeros(hp.nside2npix(NSIDE), dtype=bool)
     with pytest.raises(ValueError, match="narrower than half a bin"):
         survey_footprint_phi12_mask(footprint_mask, icrs_frame, (0.0, 0.04, 0.0, 1.0), 0.1, nest=False)
+
+
+# ===================================================
+# Test the footprint from uniformly sampled stars
+# ===================================================
+
+
+def _uniform_on_sphere(rng, n, lon_range, lat_range):
+    """n positions uniform on the sphere, in a lon/lat box (deg)."""
+    lon = rng.uniform(*lon_range, n)
+    sin_lat = rng.uniform(*np.sin(np.radians(lat_range)), n)
+    return lon, np.degrees(np.arcsin(sin_lat))
+
+
+# Stars sampled uniformly inside a footprint give it back. Outside, no pixel holds a
+# star: the footprint from the stars lies inside the true one. Inside, a pixel is only
+# missed when no star fell in it: probability exp(-n_per_pixel), about 1e-5 here.
+def test_footprint_from_uniform_stars(rng, footprint, nside):
+    true_mask = ~footprint  # conftest.py: footprint is True inside
+    # Box around the footprint of conftest.py; about 40% of its stars fall inside
+    ra, dec = _uniform_on_sphere(rng, 15_000, (30.0, 70.0), (-40.0, -10.0))
+    inside = footprint[hp.ang2pix(nside, ra, dec, lonlat=True)]
+    ra, dec = ra[inside], dec[inside]
+    n_per_pixel = inside.sum() / footprint.sum()
+    assert n_per_pixel > 10
+
+    mask = survey_footprint_healpix_mask(ra, dec, nside, nest=False)
+    assert not np.any(~mask & true_mask)
+    assert np.mean(mask[footprint]) < 0.01
+
+
+def _phi12_to_radec_astropy(frame):
+    """phi12_to_radec of an astropy frame (stand-in until stream_frames is written)."""
+
+    def phi12_to_radec(phi1, phi2, rotation_matrix):
+        stars = coord.SkyCoord(phi1=phi1 * u.deg, phi2=phi2 * u.deg, frame=frame)
+        icrs = stars.transform_to(coord.ICRS())
+        return icrs.ra.deg, icrs.dec.deg
+
+    return phi12_to_radec
+
+
+# The same in a stream frame: stars sampled uniformly in a phi1/phi2 box give the box
+# back on the phi1/phi2 grid. The HEALPix pixels (0.23 deg) are smaller than half a bin
+# (0.5 deg): a bin outside the box never falls in a pixel holding a star.
+def test_phi12_footprint_from_uniform_stars(rng, gc_frame, monkeypatch):
+    phi12_to_radec = _phi12_to_radec_astropy(gc_frame)
+    monkeypatch.setattr(survey_footprint, "phi12_to_radec", phi12_to_radec)
+    nside = 256
+    box = (-10.0, 10.0, -3.0, 3.0)  # footprint: |phi1| < 10, |phi2| < 3 (deg)
+    phi1, phi2 = _uniform_on_sphere(rng, 25_000, box[:2], box[2:])  # about 11 per pixel
+    ra, dec = phi12_to_radec(phi1, phi2, None)
+
+    footprint_mask = survey_footprint_healpix_mask(ra, dec, nside, nest=False)
+    window = (-15.0, 15.0, -5.0, 5.0)
+    mask = survey_footprint_phi12_mask(footprint_mask, None, window, 1.0, nest=False)
+
+    phi1_centres, phi2_centres = phi12_bin_centres(window, 1.0)
+    phi1_grid, phi2_grid = np.meshgrid(phi1_centres, phi2_centres, indexing="ij")
+    in_box = (np.abs(phi1_grid) < box[1]) & (np.abs(phi2_grid) < box[3])
+    assert mask.shape == in_box.shape == (30, 10)
+    assert mask[~in_box].all()
+    assert np.mean(mask[in_box]) < 0.01
