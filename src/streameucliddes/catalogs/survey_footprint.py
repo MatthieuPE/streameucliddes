@@ -21,6 +21,7 @@ import numpy as np
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
 
 if TYPE_CHECKING:
+    import astropy.coordinates as coord
     from numpy.typing import ArrayLike, NDArray
 
 LOGGER = logging.getLogger(__name__)
@@ -102,7 +103,7 @@ def _footprint_mask_from_map(path: Path, nside: int, *, nest: bool) -> NDArray[n
 
 def survey_footprint_phi12_mask(
     footprint_mask: NDArray[np.bool_],
-    rotation_matrix: NDArray[np.float64],
+    stream_frame: coord.BaseCoordinateFrame,
     window: tuple[float, float, float, float],
     bin_size_deg: float,
     *,
@@ -120,8 +121,9 @@ def survey_footprint_phi12_mask(
     footprint_mask : numpy.ndarray of bool
         HEALPix mask from ``survey_footprint_healpix_mask``, True outside.
         nside is taken from its length.
-    rotation_matrix : numpy.ndarray, shape (3, 3)
-        Stream frame (see ``stream_frames``).
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Stream frame, e.g. the ``stream_frame`` of a galstreams track (a gala
+        ``GreatCircleICRSFrame``).
     window : tuple of float
         ``(phi1_min, phi1_max, phi2_min, phi2_max)`` of the grid (deg).
     bin_size_deg : float
@@ -147,6 +149,6 @@ def survey_footprint_phi12_mask(
     nside = hp.npix2nside(footprint_mask.size)
     phi1_centres, phi2_centres = phi12_bin_centres(window, bin_size_deg)
     phi1, phi2 = np.meshgrid(phi1_centres, phi2_centres, indexing="ij")
-    ra, dec = phi12_to_radec(phi1.ravel(), phi2.ravel(), rotation_matrix)
+    ra, dec = phi12_to_radec(phi1, phi2, stream_frame)
     pixels = hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)
-    return footprint_mask[pixels].reshape(phi1.shape)
+    return footprint_mask[pixels]

@@ -18,6 +18,7 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
     from typing import Any
 
+    import astropy.coordinates as coord
     import numpy as np
     import pandas as pd
     from numpy.typing import NDArray
@@ -28,7 +29,7 @@ if TYPE_CHECKING:  # galstreams: new dependency of phase 3, not installed yet
 
 def known_stream_search_single_dm(
     catalog: pd.DataFrame,
-    rotation_matrix: NDArray[np.float64],
+    stream_frame: coord.BaseCoordinateFrame,
     window: tuple[float, float, float, float],
     distance_modulus: float,
     isochrone: Mapping[str, float],
@@ -52,8 +53,9 @@ def known_stream_search_single_dm(
     catalog : pandas.DataFrame
         Stars, with ``ra``, ``dec`` (deg) and the magnitude columns of the
         match filter, e.g. ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
-    rotation_matrix : numpy.ndarray, shape (3, 3)
-        Stream frame (see ``stream_frames``).
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Stream frame, e.g. the ``stream_frame`` of the galstreams track (a gala
+        ``GreatCircleICRSFrame``).
     window : tuple of float
         ``(phi1_min, phi1_max, phi2_min, phi2_max)`` of the map (deg), e.g.
         from ``catalogs.galstreams_catalog.galstreams_phi12_window``.
@@ -106,7 +108,7 @@ def known_stream_search_single_dm(
 
 def known_stream_search_dm_scan(
     catalog: pd.DataFrame,
-    rotation_matrix: NDArray[np.float64],
+    stream_frame: coord.BaseCoordinateFrame,
     window: tuple[float, float, float, float],
     distance_moduli: Iterable[float],
     isochrone: Mapping[str, float],
@@ -126,7 +128,7 @@ def known_stream_search_dm_scan(
 
     Parameters
     ----------
-    catalog, rotation_matrix, window, isochrone, match_filter
+    catalog, stream_frame, window, isochrone, match_filter
         See ``known_stream_search_single_dm``.
     distance_moduli : iterable of float
         Grid of distance moduli. Plan: 15 to 22.
@@ -158,7 +160,7 @@ def known_stream_search_dm_scan(
 def known_stream_search_dm_along_track(
     catalog: pd.DataFrame,
     track: galstreams.Track6D,
-    rotation_matrix: NDArray[np.float64],
+    stream_frame: coord.BaseCoordinateFrame,
     window: tuple[float, float, float, float],
     isochrone: Mapping[str, float],
     match_filter: Mapping[str, Any],
@@ -181,7 +183,7 @@ def known_stream_search_dm_along_track(
 
     Parameters
     ----------
-    catalog, rotation_matrix, window, isochrone, match_filter
+    catalog, stream_frame, window, isochrone, match_filter
         See ``known_stream_search_single_dm``.
     track : galstreams.Track6D
         Track of the stream, from ``catalogs.galstreams_catalog.load_galstreams``.

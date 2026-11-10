@@ -51,9 +51,8 @@ src/streameucliddes/
                                  flux_to_mag                      (old: utils.fluxToMag)
                                  convert_DM_to_kpc, convert_kpc_to_DM,
                                  convert_FeH_to_z                 (old: utils.py)
-  stream_frames.py               [NEW] rotation_matrix_from_astropy_frame
-                                 [NEW] rotation_matrix_from_endpoints
-                                 [NEW] radec_to_phi12, phi12_to_radec
+  stream_frames.py               [NEW] radec_to_phi12, phi12_to_radec (gala frames)
+                                 [NEW] phi12_bin_centres
   isochrone_parameters.py        [NEW] default_isochrone_grid
                                  [NEW] known_stream_isochrone_parameters
 

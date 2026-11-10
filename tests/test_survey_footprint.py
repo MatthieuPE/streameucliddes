@@ -1,10 +1,11 @@
 """Tests of catalogs/survey_footprint.py.
 
 Footprint maps are written to a temporary FOOTPRINT_DIR. The stream frames
-are the identity matrix (the frame aligned with ICRS: phi1 = ra, phi2 = dec)
-and the gala great-circle frame of conftest.py.
+are ICRS itself (phi1 = ra, phi2 = dec) and the gala great-circle frame of
+conftest.py.
 """
 
+import astropy.coordinates as coord
 import healpy as hp
 import numpy as np
 import pytest
@@ -14,11 +15,7 @@ from streameucliddes.catalogs.survey_footprint import (
     survey_footprint_healpix_mask,
     survey_footprint_phi12_mask,
 )
-from streameucliddes.stream_frames import (
-    phi12_bin_centres,
-    phi12_to_radec,
-    rotation_matrix_from_astropy_frame,
-)
+from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
 
 pytestmark = pytest.mark.survey_footprint
 
@@ -127,8 +124,8 @@ def test_survey_without_footprint_map(footprint_dir):
 
 @pytest.fixture
 def icrs_frame():
-    """Rotation matrix of the frame aligned with ICRS: phi1 = ra, phi2 = dec."""
-    return np.eye(3)
+    """ICRS as the stream frame: phi1 = ra, phi2 = dec."""
+    return coord.ICRS()
 
 
 # A bin is outside the footprint when its centre falls in a masked pixel
@@ -194,15 +191,14 @@ def test_footprint_from_uniform_stars(rng, footprint, nside):
 # back on the phi1/phi2 grid. The HEALPix pixels (0.23 deg) are smaller than half a bin
 # (0.5 deg): a bin outside the box never falls in a pixel holding a star.
 def test_phi12_footprint_from_uniform_stars(rng, gc_frame):
-    rotation_matrix = rotation_matrix_from_astropy_frame(gc_frame)
     nside = 256
     box = (-10.0, 10.0, -3.0, 3.0)  # footprint: |phi1| < 10, |phi2| < 3 (deg)
     phi1, phi2 = _uniform_on_sphere(rng, 25_000, box[:2], box[2:])  # about 11 per pixel
-    ra, dec = phi12_to_radec(phi1, phi2, rotation_matrix)
+    ra, dec = phi12_to_radec(phi1, phi2, gc_frame)
 
     footprint_mask = survey_footprint_healpix_mask(ra, dec, nside, nest=False)
     window = (-15.0, 15.0, -5.0, 5.0)
-    mask = survey_footprint_phi12_mask(footprint_mask, rotation_matrix, window, 1.0, nest=False)
+    mask = survey_footprint_phi12_mask(footprint_mask, gc_frame, window, 1.0, nest=False)
 
     phi1_centres, phi2_centres = phi12_bin_centres(window, 1.0)
     phi1_grid, phi2_grid = np.meshgrid(phi1_centres, phi2_centres, indexing="ij")

@@ -32,8 +32,8 @@ def run_known_stream_search(
 ) -> dict[str, Any]:
     """Known-stream search of one galstreams track: one set of maps per isochrone.
 
-    Builds the stream frame (``stream_frames.rotation_matrix_from_astropy_frame``
-    of the track's ``stream_frame``), the window
+    Uses the track's ``stream_frame`` (a gala ``GreatCircleICRSFrame``) as
+    the stream frame, and builds the window
     (``catalogs.galstreams_catalog.galstreams_phi12_window``), the footprint
     on the grid (``catalogs.survey_footprint.survey_footprint_phi12_mask``)
     and the isochrones of the stream

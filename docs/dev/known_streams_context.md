@@ -13,7 +13,8 @@ footprint.
 1. **Selection.** galstreams streams (Mateu 2023, MNRAS 520, 5225) with
    **15 < dm < 22** along the track, crossing the footprint.
 2. **Frame.** phi1/phi2 from the galstreams frame (`strm.stream_frame`),
-   turned into a 3×3 rotation matrix.
+   used as it is: a gala `GreatCircleICRSFrame`. Transformations with
+   gala and astropy (user choice), not with our own rotation matrices.
 3. **Known-stream MF.** Isochrone from the stream's age and [Fe/H] when
    known, else a default old, metal-poor grid. Maps in phi1/phi2, **one
    set of maps per isochrone**. **No polynomial background subtraction.**
@@ -124,10 +125,7 @@ Read its `CLAUDE.md` and `README.md` first.
 
 | New stub | Reuse |
 |------|-------|
-| `stream_frames.rotation_matrix_from_astropy_frame` | none; transform the frame unit vectors to ICRS; test vs `SkyCoord.transform_to(strm.stream_frame)` |
-| `stream_frames.rotation_matrix_from_endpoints` | [C] `frame_utils.py::rotation_matrix_from_endpoints` |
-| `stream_frames.radec_to_phi12` | [C] `frame_utils.py::apply_rotation` (take ra/dec arrays, not SkyCoord) |
-| `stream_frames.phi12_to_radec` | [C] `frame_utils.py::phi12_to_radec` |
+| `stream_frames.radec_to_phi12`, `phi12_to_radec` | gala frames + `SkyCoord.transform_to` (numpy arrays in degrees in and out) |
 | `isochrone_parameters.*` | [U] `unit_conversions.convert_FeH_to_z`; [C] grid in `configs/delve_dr3_mz_scan.yaml` |
 | `galstreams_catalog.load_galstreams` | [C] `galstreams.MWStreams(verbose=False)` in `notebooks/create_projections.ipynb`; [U] `unit_conversions.convert_kpc_to_DM` |
 | `galstreams_track_length_in_footprint`, `select_galstreams_in_footprint` | [C] `visualization.py::_find_overlapping_streams` |
@@ -164,6 +162,9 @@ Read its `CLAUDE.md` and `README.md` first.
 ## 6. Repo conventions
 
 - Env: `conda activate streameuclid` (celestial uses `search26`).
+- Stream frames: gala `GreatCircleICRSFrame` (galstreams `stream_frame`,
+  or `GreatCircleICRSFrame.from_endpoints` for another stream). Use gala
+  for the transformations as much as possible.
 - Tests: `pytest`, one marker per module in `pyproject.toml`.
 - Docs: Sphinx autosummary (recursive), `docs/source/api.rst`.
 - Numpy-style docstrings, short sentences.
