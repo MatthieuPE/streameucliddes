@@ -2,6 +2,6 @@
 
 __version__ = "0.1.0"
 
-from streameucliddes.utils import cache_isochrone_grids
+from streameucliddes._ugali_patches import cache_isochrone_grids
 
 cache_isochrone_grids()

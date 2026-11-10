@@ -8,6 +8,8 @@ from scipy.optimize import brentq
 
 from streameucliddes.injection import generate, inject, inject_utils
 
+pytestmark = pytest.mark.injection
+
 ISOCHRONE = {
     "name": "Marigo2017",
     "age": 12.0,  # Gyr

@@ -1,7 +1,7 @@
 import numpy as np
 import ugali.isochrone
 
-from streameucliddes.utils import fluxToMag, magToFlux
+from streameucliddes.unit_conversions import flux_to_mag, mag_to_flux
 
 
 def _set_isochrone_for_ugali(isochrone, verbose=False):
@@ -141,12 +141,12 @@ def convert_N_to_luminosity(
 
     # Select only the magnitudes corresponding to the mass steps that have mag within bounds
     mag_sel = mag1[mask]
-    lum = magToFlux(
+    lum = mag_to_flux(
         mag_sel
     )  # Luminosity corresponding to the magnitude of each mass step
 
     L_tot = np.sum(number_of_stars_per_mass_bin_within_mag_bounds * lum)
-    M_tot = fluxToMag(L_tot)
+    M_tot = flux_to_mag(L_tot)
 
     return M_tot
 
