@@ -80,7 +80,7 @@ def test_mask_from_footprint_map(footprint_dir, map_nest, nest):
     _write_map(footprint_dir / "mysurvey.fits", _reorder_to(values, map_nest), map_nest)
 
     no_stars = np.array([])
-    mask = survey_footprint_healpix_mask(no_stars, no_stars, NSIDE, nest=nest, survey="mysurvey")
+    mask = survey_footprint_healpix_mask(no_stars, no_stars, NSIDE, nest=nest, survey_name="mysurvey")
     expected = _reorder_to((~inside).astype(float), nest).astype(bool)
     np.testing.assert_array_equal(mask, expected)
 
@@ -94,7 +94,7 @@ def test_footprint_map_at_coarser_nside(footprint_dir):
     values[8:12] = 1  # pixel 2: 4 of 4
     _write_map(footprint_dir / "fine.fits", values, nest=True)
 
-    mask = survey_footprint_healpix_mask([], [], NSIDE, nest=True, survey="fine")
+    mask = survey_footprint_healpix_mask([], [], NSIDE, nest=True, survey_name="fine")
     np.testing.assert_array_equal(np.flatnonzero(~mask), [1, 2])
 
 
@@ -104,14 +104,14 @@ def test_footprint_map_at_finer_nside(footprint_dir):
     values[[5, 7]] = 1
     _write_map(footprint_dir / "coarse.fits", values, nest=True)
 
-    mask = survey_footprint_healpix_mask([], [], 2 * NSIDE, nest=True, survey="coarse")
+    mask = survey_footprint_healpix_mask([], [], 2 * NSIDE, nest=True, survey_name="coarse")
     np.testing.assert_array_equal(np.flatnonzero(~mask), np.r_[20:24, 28:32])
 
 
 # Without a footprint map for the survey, the mask is computed from the stars
 def test_survey_without_footprint_map(footprint_dir):
     ra, dec = hp.pix2ang(NSIDE, [42], lonlat=True)
-    mask = survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False, survey="missing")
+    mask = survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False, survey_name="missing")
     np.testing.assert_array_equal(mask, survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False))
 
 
@@ -146,7 +146,7 @@ def test_phi12_mask(icrs_frame, nest):
     np.testing.assert_array_equal(mask, np.broadcast_to(np.arange(10) < 5, (20, 10)))
 
 
-# round((max - min) / bin_size) bins per axis, also when the bin size does not divide the window
+# The grid of stream_frames.phi12_bin_centres, also when the bin size does not divide the window
 def test_phi12_grid_shape(icrs_frame):
     footprint_mask = np.zeros(hp.nside2npix(NSIDE), dtype=bool)
     window = (0.0, 1.0, -0.15, 0.15)
@@ -155,8 +155,8 @@ def test_phi12_grid_shape(icrs_frame):
     assert not mask.any()
 
 
-# A window narrower than one bin is an error
+# A window narrower than half a bin is an error
 def test_phi12_window_narrower_than_a_bin(icrs_frame):
     footprint_mask = np.zeros(hp.nside2npix(NSIDE), dtype=bool)
-    with pytest.raises(ValueError, match="narrower than one bin"):
+    with pytest.raises(ValueError, match="narrower than half a bin"):
         survey_footprint_phi12_mask(footprint_mask, icrs_frame, (0.0, 0.04, 0.0, 1.0), 0.1, nest=False)

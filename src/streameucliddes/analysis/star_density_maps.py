@@ -2,7 +2,7 @@
 
 On the sky (HEALPix) or in a stream frame (phi1/phi2). A phi1/phi2 grid is
 given by a window ``(phi1_min, phi1_max, phi2_min, phi2_max)`` and a bin size
-(deg), with ``round((max - min) / bin_size)`` bins along each axis. Its maps
+(deg); its bins are those of ``stream_frames.phi12_bin_centres``. Its maps
 have shape (n_phi1, n_phi2), row = phi1 bin (as ``numpy.histogram2d``):
 transpose them for ``imshow``.
 """

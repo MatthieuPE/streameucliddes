@@ -4,14 +4,17 @@ A stream frame is a 3x3 rotation matrix ``R`` that maps ICRS Cartesian unit
 vectors to the stream frame: ``v_stream = R @ v_icrs``. Its rows are the x, y
 and z axes of the stream frame, in ICRS. phi1 = phi2 = 0 is the x axis;
 phi2 = 90 deg is the z axis (the pole). Angles are in degrees.
+
+Maps in a stream frame use the phi1/phi2 grid of ``phi12_bin_centres``.
 """
 
 from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import numpy as np
+
 if TYPE_CHECKING:
-    import numpy as np
     from astropy.coordinates import BaseCoordinateFrame
     from numpy.typing import ArrayLike, NDArray
 
@@ -133,3 +136,42 @@ def phi12_to_radec(
     (applies the transpose of ``R``).
     """
     raise NotImplementedError
+
+
+def phi12_bin_centres(
+    window: tuple[float, float, float, float], bin_size_deg: float
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Bin centres of a phi1/phi2 grid.
+
+    Bins of ``bin_size_deg`` from the minimum of the window, keeping those
+    whose centre is inside the window: ``numpy.arange(min + bin_size_deg / 2,
+    max, bin_size_deg)`` on each axis. When the bin size divides the window,
+    the bins cover it exactly; otherwise the last bin ends within half a bin
+    of the maximum.
+
+    Parameters
+    ----------
+    window : tuple of float
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg).
+    bin_size_deg : float
+        Bin size (deg), the same in phi1 and phi2.
+
+    Returns
+    -------
+    phi1_centres, phi2_centres : numpy.ndarray
+        Bin centres along each axis (deg). The bin edges are the centres
+        minus and plus ``bin_size_deg / 2``.
+
+    Raises
+    ------
+    ValueError
+        The window is narrower than half a bin along an axis: no bin centre
+        inside.
+    """
+    phi1_min, phi1_max, phi2_min, phi2_max = window
+    half_bin = bin_size_deg / 2
+    phi1_centres = np.arange(phi1_min + half_bin, phi1_max, bin_size_deg)
+    phi2_centres = np.arange(phi2_min + half_bin, phi2_max, bin_size_deg)
+    if phi1_centres.size == 0 or phi2_centres.size == 0:
+        raise ValueError(f"Window {window} narrower than half a bin of {bin_size_deg} deg.")
+    return phi1_centres, phi2_centres
