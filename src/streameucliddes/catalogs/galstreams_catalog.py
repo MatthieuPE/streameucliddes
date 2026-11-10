@@ -7,10 +7,12 @@ a ``stream_frame`` (gala ``GreatCircleICRSFrame``) and ``InfoFlags``.
 The distances are used as galstreams gives them. When galstreams has no
 distance track for a stream (second digit of ``InfoFlags`` is 0), its
 distances are the reported mean or central value: a single value (dm_min =
-dm_max in the selection), or values between two ends. The tracks of Ibata
-et al. 2024 (41 of the 141 in galstreams 1.2.1) are all at 1 kpc (distance
-modulus 10), whatever their flag: no distance, outside the distance moduli of
-the searches.
+dm_max in the selection), or values between two ends.
+
+The tracks of Ibata et al. 2024 (reference ``ibata2024``: 41 of the 141 in
+galstreams 1.2.1) have no distance in galstreams: they are all at 1 kpc,
+whatever their flag. Their distances are taken as unknown (NaN), and they are
+only selected with ``add_ibata2024``.
 """
 
 from __future__ import annotations
@@ -31,6 +33,8 @@ if TYPE_CHECKING:
 
 if TYPE_CHECKING:  # imported in load_galstreams only, so that the rest works without it
     import galstreams
+
+IBATA2024_REFERENCE = "ibata2024"  # galstreams reference of the Ibata et al. 2024 tracks
 
 SELECTION_COLUMNS = [
     "track_name",
@@ -73,13 +77,14 @@ def galstreams_track_length_in_footprint(
     footprint_mask: NDArray[np.bool_],
     *,
     nest: bool,
-    dm_range: tuple[float, float] | None = None,
+    dm_range: tuple[float | None, float | None] | None = None,
 ) -> float:
     """Length of a galstreams track inside the survey footprint.
 
     Sum of the lengths of the track segments (between consecutive track
     points) whose midpoint is in the footprint and, with ``dm_range``, whose
-    distance modulus is strictly within that range.
+    distance modulus is strictly within that range. A track without
+    distances (Ibata et al. 2024) has no length within a ``dm_range``.
 
     Parameters
     ----------
@@ -91,8 +96,9 @@ def galstreams_track_length_in_footprint(
         outside.
     nest : bool
         HEALPix ordering of ``footprint_mask``.
-    dm_range : tuple of float, optional
-        ``(dm_min, dm_max)``: only count the segments in this range.
+    dm_range : tuple of float or None, optional
+        ``(dm_min, dm_max)``: only count the segments in this range. None for
+        a bound: no bound on that side.
 
     Returns
     -------
@@ -108,14 +114,17 @@ def select_galstreams_in_footprint(
     footprint_mask: NDArray[np.bool_],
     *,
     nest: bool,
-    dm_range: tuple[float, float] = (15.0, 22.0),
+    dm_range: tuple[float | None, float | None] = (14.0, None),
     min_length_deg: float = 1.0,
+    add_ibata2024: bool = False,
 ) -> pd.DataFrame:
     """Known streams to search: the tracks crossing the footprint.
 
     A track is kept when its part inside the footprint, with a distance
     modulus strictly within ``dm_range``, is at least ``min_length_deg`` long
-    (see ``galstreams_track_length_in_footprint``).
+    (see ``galstreams_track_length_in_footprint``). The Ibata et al. 2024
+    tracks, without distances, are only kept with ``add_ibata2024``, on their
+    length inside the footprint alone.
 
     Parameters
     ----------
@@ -125,11 +134,15 @@ def select_galstreams_in_footprint(
         HEALPix mask, True outside the footprint.
     nest : bool
         HEALPix ordering of ``footprint_mask``.
-    dm_range : tuple of float, optional
-        ``(dm_min, dm_max)`` along the track. Default: 15 < dm < 22 (plan,
-        Section 1).
+    dm_range : tuple of float or None, optional
+        ``(dm_min, dm_max)`` along the track; None for a bound: no bound on
+        that side. Default: dm > 14, no upper bound (user choice: wider than
+        the dm 15 to 22 of the maps, so as not to miss a stream).
     min_length_deg : float, optional
         Minimum length in the footprint (deg). Proposal: 1 deg.
+    add_ibata2024 : bool, optional
+        Also select the Ibata et al. 2024 tracks (no distances: their
+        ``dm_min`` and ``dm_max`` are NaN).
 
     Returns
     -------
@@ -138,11 +151,16 @@ def select_galstreams_in_footprint(
         ``stream_name``, ``length_in_footprint_deg``; ``dm_min``,
         ``dm_max`` of the part counted in that length; and
         ``has_distance_track``: False when the distance is only a mean value
-        (see the module docstring).
+        or unknown (see the module docstring).
     """
     rows = []
     for track_name, track in mws.items():
-        lengths, kept, dm = _segments_in_footprint(track, footprint_mask, nest=nest, dm_range=dm_range)
+        is_ibata2024 = _is_ibata2024(track)
+        if is_ibata2024 and not add_ibata2024:
+            continue
+        lengths, kept, dm = _segments_in_footprint(
+            track, footprint_mask, nest=nest, dm_range=None if is_ibata2024 else dm_range
+        )
         length = float(lengths[kept].sum())
         if kept.any() and length >= min_length_deg:
             rows.append(
@@ -206,8 +224,9 @@ def galstreams_dm_along_track(track: galstreams.Track6D, phi1: ArrayLike) -> NDA
 
     Interpolates linearly the distance moduli of the track points in phi1, in
     the track's frame. NaN outside the phi1 range of the track (no
-    extrapolation). Constant when galstreams only has a mean distance (see
-    the module docstring).
+    extrapolation), and for the Ibata et al. 2024 tracks (no distances).
+    Constant when galstreams only has a mean distance (see the module
+    docstring).
 
     Parameters
     ----------
@@ -228,13 +247,20 @@ def galstreams_dm_along_track(track: galstreams.Track6D, phi1: ArrayLike) -> NDA
     return np.interp(phi1, track_phi1[order], dm[order], left=np.nan, right=np.nan)
 
 
+def _is_ibata2024(track: galstreams.Track6D) -> bool:
+    """Whether the track is one of Ibata et al. 2024, without distances in galstreams."""
+    return str(track.ref) == IBATA2024_REFERENCE
+
+
 def _has_distance_track(track: galstreams.Track6D) -> bool:
-    """Whether galstreams has a distance track, not only a mean distance (InfoFlags)."""
-    return str(track.InfoFlags).zfill(4)[1] != "0"
+    """Whether galstreams has a distance track, not only a mean or no distance (InfoFlags)."""
+    return not _is_ibata2024(track) and str(track.InfoFlags).zfill(4)[1] != "0"
 
 
 def _track_distance_moduli(track: galstreams.Track6D) -> NDArray[np.float64]:
-    """Distance modulus of each track point."""
+    """Distance modulus of each track point; NaN for the Ibata et al. 2024 tracks."""
+    if _is_ibata2024(track):
+        return np.full(len(track.track), np.nan)
     return np.asarray(convert_kpc_to_DM(track.track.distance.to_value(u.kpc)).value)
 
 
@@ -248,13 +274,14 @@ def _segments_in_footprint(
     footprint_mask: NDArray[np.bool_],
     *,
     nest: bool,
-    dm_range: tuple[float, float] | None,
+    dm_range: tuple[float | None, float | None] | None,
 ) -> tuple[NDArray[np.float64], NDArray[np.bool_], NDArray[np.float64]]:
     """Length (deg), kept flag and distance modulus of each track segment.
 
     A segment is kept when its midpoint is in the footprint and, with
     ``dm_range``, its distance modulus (mean of its two ends) is strictly
-    within that range.
+    within that range (None for a bound: no bound on that side; an unknown
+    distance modulus, NaN, is never within a range).
     """
     points = track.track
     lengths = points[:-1].separation(points[1:]).deg
@@ -266,5 +293,10 @@ def _segments_in_footprint(
     dm = (dm_points[:-1] + dm_points[1:]) / 2
     kept = ~footprint_mask[pixels]
     if dm_range is not None:
-        kept &= (dm > dm_range[0]) & (dm < dm_range[1])
+        dm_low, dm_high = dm_range
+        if dm_low is not None:
+            kept &= dm > dm_low
+        if dm_high is not None:
+            kept &= dm < dm_high
+        kept &= ~np.isnan(dm)  # unknown distance: never within a range
     return lengths, kept, dm

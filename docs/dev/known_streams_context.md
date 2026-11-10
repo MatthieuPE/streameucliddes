@@ -11,7 +11,10 @@ Euclid DR1 × DES Y6 footprint. Also make generic MF maps over the full
 footprint.
 
 1. **Selection.** galstreams streams (Mateu 2023, MNRAS 520, 5225) with
-   **15 < dm < 22** along the track, crossing the footprint.
+   **dm > 14** along the track, no upper bound (user choice: wider than
+   the dm 15–22 of the maps, so as not to miss a stream), crossing the
+   footprint. The Ibata et al. 2024 tracks have no distance in galstreams:
+   only selected with `add_ibata2024` (default False).
 2. **Frame.** phi1/phi2 from the galstreams frame (`strm.stream_frame`),
    used as it is: a gala `GreatCircleICRSFrame`. Transformations with
    gala and astropy (user choice), not with our own rotation matrices.
