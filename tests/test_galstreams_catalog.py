@@ -179,6 +179,39 @@ def test_galstreams_validation_streams(mws):
         assert selection.loc[name, "length_in_footprint_deg"] == pytest.approx(mws[name].length.deg, rel=1e-3)
 
 
+# Our length on the whole sky is the one galstreams reports in its summary table, for
+# every track of the library
+def test_galstreams_lengths_match_the_library(mws):
+    whole_sky = np.zeros(hp.nside2npix(64), dtype=bool)
+    names = list(mws)
+    ours = [galstreams_track_length_in_footprint(mws[name], whole_sky, nest=False) for name in names]
+    library = mws.summary.loc[names, "length"].to_numpy(dtype=float)  # deg
+    np.testing.assert_allclose(ours, library, rtol=1e-9)
+
+
+# A track with a single distance value (only a mean reported in galstreams) is selected
+# when that value is within 15 < dm < 22, with dm_min = dm_max = that value. The tracks
+# at 1 kpc (dm = 10: the Ibata et al. 2024 tracks, without distances) are not. No minimum
+# length here: short tracks such as Eridanus-M17 (0.6 deg) count too
+def test_galstreams_single_distance_value(mws):
+    whole_sky = np.zeros(hp.nside2npix(64), dtype=bool)
+    selection = select_galstreams_in_footprint(mws, whole_sky, nest=False, min_length_deg=0.0)
+    selection = selection.set_index("track_name")
+    single = {}  # track name -> its distance modulus, for single-valued tracks
+    for name, track in mws.items():
+        distance = track.track.distance.kpc
+        if np.ptp(distance) < 1e-9 * distance.mean():  # equal up to rounding
+            single[name] = _dm(distance.mean())
+    in_range = [name for name, dm in single.items() if 15.0 < dm < 22.0]
+    at_1_kpc = [name for name, dm in single.items() if dm == pytest.approx(10.0)]
+    assert len(in_range) >= 10 and len(at_1_kpc) >= 1  # the library has both kinds
+
+    assert set(in_range) <= set(selection.index)
+    np.testing.assert_allclose(selection.loc[in_range, "dm_min"], [single[n] for n in in_range], atol=1e-9)
+    np.testing.assert_allclose(selection.loc[in_range, "dm_max"], [single[n] for n in in_range], atol=1e-9)
+    assert not set(at_1_kpc) & set(selection.index)
+
+
 # A footprint from stars sampled uniformly around the ATLAS track gives back ATLAS,
 # over its whole length
 def test_galstreams_footprint_from_stars_around_atlas(mws, rng):

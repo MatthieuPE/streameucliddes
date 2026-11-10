@@ -6,9 +6,11 @@ a ``stream_frame`` (gala ``GreatCircleICRSFrame``) and ``InfoFlags``.
 
 The distances are used as galstreams gives them. When galstreams has no
 distance track for a stream (second digit of ``InfoFlags`` is 0), its
-distances are the reported mean or central value, constant along the track.
-A few tracks without any reported distance have 1 kpc (distance modulus 10),
-outside the distance moduli of the searches.
+distances are the reported mean or central value: a single value (dm_min =
+dm_max in the selection), or values between two ends. The tracks of Ibata
+et al. 2024 (41 of the 141 in galstreams 1.2.1) are all at 1 kpc (distance
+modulus 10), whatever their flag: no distance, outside the distance moduli of
+the searches.
 """
 
 from __future__ import annotations
