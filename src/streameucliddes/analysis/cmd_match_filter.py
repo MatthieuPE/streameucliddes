@@ -8,7 +8,7 @@ from typing import TYPE_CHECKING
 from streamobs.match_filter import build_match_filter
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Mapping
     from typing import Any
 
     import numpy as np
@@ -41,7 +41,7 @@ def select_stars_in_match_filter(
     catalog: pd.DataFrame,
     distance_modulus: float,
     match_filter: Mapping[str, Any],
-    isochrones: Sequence[Mapping[str, float]],
+    isochrone: Mapping[str, float],
     *,
     cuts: Mapping[str, Any] | None = None,
     flag_cuts: NDArray[np.bool_] | None = None,
@@ -49,10 +49,10 @@ def select_stars_in_match_filter(
     """Stars inside the colour-magnitude match filter at one distance modulus.
 
     A star is selected when it passes the cuts and is inside the polygon of
-    every colour of ``match_filter``, for at least one isochrone of
-    ``isochrones``. The cuts run first: the polygon test, the slow part, only
-    runs on the stars left. Magnitudes are used as they are: the Euclid x DES
-    magnitudes are already dereddened.
+    every colour of ``match_filter``, built for one isochrone. The cuts run
+    first: the polygon test, the slow part, only runs on the stars left.
+    Magnitudes are used as they are: the Euclid x DES magnitudes are already
+    dereddened.
 
     Parameters
     ----------
@@ -66,10 +66,9 @@ def select_stars_in_match_filter(
         [(namespace, band), ...]}``, with optional ``color_cut`` and
         ``red_cap_value``: the format of
         ``injected_stream_snr.DEFAULT_MATCH_FILTERS``.
-    isochrones : sequence of mapping
-        ``{"age": age (Gyr), "metallicity": Z}`` (see
-        ``isochrone_parameters``). Several isochrones: the union of their
-        filters (proposal).
+    isochrone : mapping
+        One isochrone, ``{"age": age (Gyr), "metallicity": Z}`` (see
+        ``isochrone_parameters``).
     cuts : mapping, optional
         Cuts of ``catalogs.catalog_cuts.get_cut_mask``.
     flag_cuts : numpy.ndarray of bool, optional

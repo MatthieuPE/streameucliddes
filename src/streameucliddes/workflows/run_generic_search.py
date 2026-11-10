@@ -112,17 +112,17 @@ def run_generic_search(
     return results_by_dm
 
 
-def save_generic_search_healpix_cube(
+def save_generic_search_healpix_maps(
     results: Mapping[float, Mapping[str, Any]] | Iterable[tuple[float, Mapping[str, Any]]],
     output_path: str | Path,
     *,
     map_key: str = "residual_map",
     nest: bool,
 ) -> Path:
-    """Save the maps of a generic search, one per distance modulus, as one cube.
+    """Save the HEALPix maps of a generic search, one per distance modulus, in one file.
 
-    Parquet table in the ugali cube format: a column ``hpx<nside>`` of pixel
-    indices, NESTED as the ugali and celestial_currents cubes, and one column
+    Parquet table in the format of the ugali and celestial_currents outputs:
+    a column ``hpx<nside>`` of pixel indices, in NESTED ordering, and one column
     per distance modulus, named by its string (e.g. ``"16.5"``). Only the
     pixels inside the footprint are written.
 
@@ -139,7 +139,7 @@ def save_generic_search_healpix_cube(
         Map to save: ``"residual_map"``, ``"data_map"`` or ``"fit_map"``.
     nest : bool
         HEALPix ordering of the maps in ``results``: False for the maps of
-        ``star_density_healpix`` (RING). The cube is written NESTED.
+        ``star_density_healpix`` (RING). The file is written NESTED.
 
     Returns
     -------

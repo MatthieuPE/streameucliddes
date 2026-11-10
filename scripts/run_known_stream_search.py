@@ -9,8 +9,8 @@ python scripts/run_known_stream_search.py configs/known_stream_search.yaml \\
 
 Reads the configuration (``workflows.run_config.RunConfig.from_yaml``) and the
 Euclid x DES stars (``catalogs.euclid_des_catalog.get_eucliddes_stars``), then
-runs ``workflows.run_known_stream_search.run_known_stream_search`` for the
-given tracks, or ``run_all_known_stream_searches`` for every track crossing
+runs ``workflows.run_known_stream_search.run_known_stream_search`` (one set
+of maps per isochrone) for the given tracks, or ``run_all_known_stream_searches`` for every track crossing
 the footprint.
 
 Code to reuse: celestial_currents ``scripts/run_matched_filter_maps.py``

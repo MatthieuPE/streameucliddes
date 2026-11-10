@@ -15,9 +15,6 @@ import healpy as hp
 import numpy as np
 
 if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from pathlib import Path
-
     from numpy.typing import ArrayLike, NDArray
 
 
@@ -156,56 +153,5 @@ def star_density_phi12(
     ``notebooks/candidate_investigations/full_search/template.ipynb``
     (``numpy.histogram2d``, then ``scipy.ndimage.gaussian_filter`` with a
     sigma of ``smoothing_deg / bin_size_deg`` bins).
-    """
-    raise NotImplementedError
-
-
-def mask_disks_in_phi12_density(
-    density: NDArray[np.float64] | np.ma.MaskedArray,
-    window: tuple[float, float, float, float],
-    *,
-    disks: Sequence[tuple[float, float, float]] = (),
-    rotation_matrix: NDArray[np.float64] | None = None,
-    lvdb_dwarf_csv: str | Path | None = None,
-    lvdb_gc_csv: str | Path | None = None,
-    mask_rh_scale: float = 4.0,
-) -> np.ma.MaskedArray:
-    """Mask disks around known objects in a phi1/phi2 map.
-
-    For the dwarf galaxies, globular clusters or other objects that would
-    show up in the maps. A bin is masked when its centre is inside a disk;
-    distances are taken in the phi1/phi2 plane.
-
-    Parameters
-    ----------
-    density : numpy.ndarray or numpy.ma.MaskedArray, shape (n_phi1, n_phi2)
-        Map from ``star_density_phi12``.
-    window : tuple of float
-        Window of the map (see the module docstring).
-    disks : sequence of (phi1, phi2, radius), optional
-        Disks given directly (deg).
-    rotation_matrix : numpy.ndarray, shape (3, 3), optional
-        Stream frame (see ``stream_frames``). Needed for the LVDB objects.
-    lvdb_dwarf_csv, lvdb_gc_csv : str or pathlib.Path, optional
-        LVDB tables of the dwarf galaxies (``dwarf_all.csv``) and of the
-        globular clusters (``gc_harris.csv``). Each of their objects adds a
-        disk of radius ``mask_rh_scale`` times its half-light radius.
-    mask_rh_scale : float, optional
-        Disk radius of the LVDB objects, in half-light radii.
-
-    Returns
-    -------
-    density : numpy.ma.MaskedArray
-        ``density``, with the disks masked too.
-
-    Notes
-    -----
-    Code to reuse: celestial_currents ``visualization.py::mask_phi12_disks``;
-    ``investigate/postprocess.py::build_lvdb_mask`` for the LVDB tables, with
-    their paths as arguments (its default paths are on the cluster).
-
-    References
-    ----------
-    Pace 2024, arXiv:2411.07424 (Local Volume Database).
     """
     raise NotImplementedError

@@ -1,10 +1,7 @@
 """2D polynomial fit of the background star density."""
 
-from __future__ import annotations
-
 import logging
 from types import SimpleNamespace
-from typing import TYPE_CHECKING
 
 import healpy as hp
 import numpy as np
@@ -16,10 +13,6 @@ try:
 except Exception:  # pragma: no cover - optional dependency at runtime
     minimize = None
 
-
-if TYPE_CHECKING:
-    from collections.abc import Sequence
-    from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
@@ -578,60 +571,3 @@ def polynomial_formula(params, model_type, precision=5):
     if not terms:
         return "0"
     return " + ".join(terms)
-
-
-def select_background_polynomial_degree(
-    data_map: np.ma.MaskedArray,
-    *,
-    nside: int,
-    proj: Any,
-    degrees: Sequence[int] = (3, 4, 5),
-    tie_threshold: float = 2.0,
-    **fit_kwargs: Any,
-) -> tuple[int, dict[int, float]]:
-    """Degree of the 2D polynomial background of a generic-search map.
-
-    Fits the background with each degree of ``degrees``, and keeps the one
-    with the lowest BIC on the Poisson deviance. When the lowest BICs differ
-    by less than ``tie_threshold``, the lower degree is kept. Proposal of the
-    plan, to confirm.
-
-    The BIC is ``D + k ln(n)``. ``D = 2 sum[d ln(d / m) - (d - m)]`` is the
-    Poisson deviance of the counts ``d`` given the model ``m``, ``k`` the
-    number of polynomial coefficients, and ``n`` the number of fitted pixels.
-
-    Parameters
-    ----------
-    data_map : numpy.ma.MaskedArray
-        HEALPix map of the generic search, masked outside the footprint.
-    nside : int
-        HEALPix resolution of ``data_map``.
-    proj : object
-        Projection passed to ``fit_background_model``, e.g.
-        ``SimpleLonLatProj()``.
-    degrees : sequence of int, optional
-        Degrees to compare. Default: 3 to 5 (plan, Section 1).
-    tie_threshold : float, optional
-        BIC difference below which two degrees tie. Proposal: 2.
-    **fit_kwargs
-        Passed to ``fit_background_model``.
-
-    Returns
-    -------
-    degree : int
-        Selected degree.
-    bic : dict
-        BIC of each degree.
-
-    Notes
-    -----
-    Code to reuse: ``fit_background_model`` (``method="polyfit2d"``) for each
-    degree; celestial_currents ``visualization.py::fit_bkg_poly``. The
-    Poisson deviance needs counts, while the generic search fits smoothed
-    maps: compute it on the unsmoothed counts (to discuss).
-
-    References
-    ----------
-    Schwarz 1978, Ann. Stat. 6, 461. Kass & Raftery 1995, JASA 90, 773.
-    """
-    raise NotImplementedError

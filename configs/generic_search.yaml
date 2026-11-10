@@ -26,9 +26,7 @@
 #   nside: 512
 #   smoothing_scale_degrees: 0.3
 #   cuts: {}                   # see catalogs.catalog_cuts.get_cut_mask
-#
-# # Compared by select_background_polynomial_degree
-# background_degrees: [3, 4, 5]   # plan, section 1
+#   model_type_fit: {polynomial: {degree: 5}}   # fixed degree for now (the current default)
 #
 # output_dir: figures/outputs/generic_search   # gitignored
 # n_workers: 1

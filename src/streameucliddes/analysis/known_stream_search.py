@@ -1,8 +1,8 @@
 """Known-stream search: matched-filter maps of a known stream, in its frame.
 
-For one galstreams stream: the stars inside the match filter, counted on a
-phi1/phi2 grid in the stream frame, for each distance modulus. No polynomial
-background is subtracted. Magnitudes are used as they are: the Euclid x DES
+For one galstreams stream and one isochrone: the stars inside the match
+filter, counted on a phi1/phi2 grid in the stream frame, for each distance
+modulus. No polynomial background is subtracted. Magnitudes are used as they are: the Euclid x DES
 magnitudes are already dereddened.
 
 Mirrors ``generic_stream_search``: ``_single_dm`` gives one map; ``_dm_scan``
@@ -15,7 +15,7 @@ from __future__ import annotations
 from typing import TYPE_CHECKING
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Iterator, Mapping, Sequence
+    from collections.abc import Iterable, Iterator, Mapping
     from typing import Any
 
     import numpy as np
@@ -31,24 +31,21 @@ def known_stream_search_single_dm(
     rotation_matrix: NDArray[np.float64],
     window: tuple[float, float, float, float],
     distance_modulus: float,
-    isochrones: Sequence[Mapping[str, float]],
+    isochrone: Mapping[str, float],
     match_filter: Mapping[str, Any],
     *,
     bin_size_deg: float,
     smoothing_deg: float,
     cuts: Mapping[str, Any] | None = None,
     footprint_mask: NDArray[np.bool_] | None = None,
-    disk_mask_kwargs: Mapping[str, Any] | None = None,
     phi12: tuple[NDArray[np.float64], NDArray[np.float64]] | None = None,
     flag_cuts: NDArray[np.bool_] | None = None,
 ) -> dict[str, Any]:
     """Matched-filter map of a known stream at one distance modulus.
 
-    Selects the stars in the match filter
-    (``cmd_match_filter.select_stars_in_match_filter``), counts them on the
-    phi1/phi2 grid (``star_density_maps.star_density_phi12``) and masks the
-    disks around known objects
-    (``star_density_maps.mask_disks_in_phi12_density``).
+    Selects the stars in the match filter of one isochrone
+    (``cmd_match_filter.select_stars_in_match_filter``), and counts them on
+    the phi1/phi2 grid (``star_density_maps.star_density_phi12``).
 
     Parameters
     ----------
@@ -62,8 +59,9 @@ def known_stream_search_single_dm(
         from ``catalogs.galstreams_catalog.galstreams_phi12_window``.
     distance_modulus : float
         Distance modulus of the match filter.
-    isochrones : sequence of mapping
-        From ``isochrone_parameters.known_stream_isochrone_parameters``.
+    isochrone : mapping
+        One isochrone, ``{"age": age (Gyr), "metallicity": Z}``: an item of
+        ``isochrone_parameters.known_stream_isochrone_parameters``.
     match_filter : mapping
         See ``cmd_match_filter.select_stars_in_match_filter``.
     bin_size_deg : float
@@ -75,9 +73,6 @@ def known_stream_search_single_dm(
     footprint_mask : numpy.ndarray of bool, optional
         From ``catalogs.survey_footprint.survey_footprint_phi12_mask``, True
         outside the footprint.
-    disk_mask_kwargs : mapping, optional
-        Passed to ``star_density_maps.mask_disks_in_phi12_density`` (disks,
-        LVDB tables). None: no disk is masked.
     phi12 : tuple of numpy.ndarray, optional
         Precomputed (phi1, phi2) of the stars, from
         ``stream_frames.radec_to_phi12``.
@@ -91,7 +86,7 @@ def known_stream_search_single_dm(
     result : dict
         ``density`` (masked array, shape (n_phi1, n_phi2)), ``n_selected``,
         ``distance_modulus``, ``distance_kpc``, ``window``,
-        ``bin_size_deg``, ``smoothing_deg``, ``isochrones`` and
+        ``bin_size_deg``, ``smoothing_deg``, ``isochrone`` and
         ``match_filter``.
 
     Notes
@@ -114,14 +109,13 @@ def known_stream_search_dm_scan(
     rotation_matrix: NDArray[np.float64],
     window: tuple[float, float, float, float],
     distance_moduli: Iterable[float],
-    isochrones: Sequence[Mapping[str, float]],
+    isochrone: Mapping[str, float],
     match_filter: Mapping[str, Any],
     *,
     bin_size_deg: float,
     smoothing_deg: float,
     cuts: Mapping[str, Any] | None = None,
     footprint_mask: NDArray[np.bool_] | None = None,
-    disk_mask_kwargs: Mapping[str, Any] | None = None,
     n_workers: int = 1,
 ) -> Iterator[tuple[float, dict[str, Any]]]:
     """Matched-filter maps of a known stream over a grid of distance moduli.
@@ -132,11 +126,11 @@ def known_stream_search_dm_scan(
 
     Parameters
     ----------
-    catalog, rotation_matrix, window, isochrones, match_filter
+    catalog, rotation_matrix, window, isochrone, match_filter
         See ``known_stream_search_single_dm``.
     distance_moduli : iterable of float
         Grid of distance moduli. Plan: 15 to 22.
-    bin_size_deg, smoothing_deg, cuts, disk_mask_kwargs
+    bin_size_deg, smoothing_deg, cuts
         See ``known_stream_search_single_dm``.
     footprint_mask : numpy.ndarray of bool, optional
         See ``known_stream_search_single_dm``.
@@ -166,7 +160,7 @@ def known_stream_search_dm_along_track(
     track: galstreams.Track6D,
     rotation_matrix: NDArray[np.float64],
     window: tuple[float, float, float, float],
-    isochrones: Sequence[Mapping[str, float]],
+    isochrone: Mapping[str, float],
     match_filter: Mapping[str, Any],
     *,
     dm_offsets: Iterable[float] = (0.0,),
@@ -175,7 +169,6 @@ def known_stream_search_dm_along_track(
     smoothing_deg: float,
     cuts: Mapping[str, Any] | None = None,
     footprint_mask: NDArray[np.bool_] | None = None,
-    disk_mask_kwargs: Mapping[str, Any] | None = None,
 ) -> Iterator[tuple[float, dict[str, Any]]]:
     """Matched-filter maps that follow the distance of the track along phi1.
 
@@ -188,7 +181,7 @@ def known_stream_search_dm_along_track(
 
     Parameters
     ----------
-    catalog, rotation_matrix, window, isochrones, match_filter
+    catalog, rotation_matrix, window, isochrone, match_filter
         See ``known_stream_search_single_dm``.
     track : galstreams.Track6D
         Track of the stream, from ``catalogs.galstreams_catalog.load_galstreams``.
@@ -196,7 +189,7 @@ def known_stream_search_dm_along_track(
         Offsets added to the distance modulus of the track.
     dm_step : float, optional
         Rounding step of the distance moduli of the track.
-    bin_size_deg, smoothing_deg, cuts, disk_mask_kwargs
+    bin_size_deg, smoothing_deg, cuts
         See ``known_stream_search_single_dm``.
     footprint_mask : numpy.ndarray of bool, optional
         See ``known_stream_search_single_dm``.

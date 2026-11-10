@@ -10,8 +10,8 @@ python scripts/run_generic_search.py configs/generic_search.yaml --workers 8 \\
 Reads the configuration (``workflows.run_config.RunConfig.from_yaml``) and the
 Euclid x DES stars (``catalogs.euclid_des_catalog.get_eucliddes_stars``), runs
 ``workflows.run_generic_search.run_generic_search`` over the grid of distance
-moduli, and saves the cube
-(``workflows.run_generic_search.save_generic_search_healpix_cube``).
+moduli, and saves the maps in one file
+(``workflows.run_generic_search.save_generic_search_healpix_maps``).
 
 Code to reuse: celestial_currents ``scripts/run_matched_filter_maps.py``
 (argparse, logging, output directory).

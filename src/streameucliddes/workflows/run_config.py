@@ -20,7 +20,7 @@ class RunConfig:
     distance_moduli : dict
         ``{"start", "stop", "step"}`` of the grid. Plan: 15 to 22.
     output_dir : str
-        Directory of the figures, videos and cubes.
+        Directory of the figures, videos and map files.
     n_workers : int
         Processes over the distance moduli.
     match_filter_parameters : dict
@@ -29,19 +29,16 @@ class RunConfig:
     search_kwargs : dict
         Generic search: the ``find_stream_kwargs`` of
         ``workflows.run_generic_search.run_generic_search`` (magnitude and
-        coordinate columns, nside, smoothing, cuts). Its
+        coordinate columns, nside, smoothing, cuts, polynomial degree). Its
         ``use_dust_corrected`` must be False: the Euclid x DES magnitudes are
         already dereddened.
-    background_degrees : list of int
-        Generic search: degrees compared by
-        ``analysis.background_polynomial_fit.select_background_polynomial_degree``.
-        Plan: 3 to 5.
     match_filter : dict
         Known-stream search: see
         ``analysis.cmd_match_filter.select_stars_in_match_filter``.
     isochrones : dict
         Known-stream search: default grid, ``{"ages_gyr", "metallicities"}``
-        (see ``isochrone_parameters.default_isochrone_grid``).
+        (see ``isochrone_parameters.default_isochrone_grid``). One set of maps
+        per isochrone.
     cuts : dict
         Known-stream search: see ``catalogs.catalog_cuts.get_cut_mask``.
     maps : dict

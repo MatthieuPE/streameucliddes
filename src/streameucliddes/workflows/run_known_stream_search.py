@@ -1,4 +1,4 @@
-"""Known-stream search of galstreams streams: maps over the dm grid, figures, videos, cubes."""
+"""Known-stream search of galstreams streams: maps per isochrone over the dm grid, figures, videos."""
 
 from __future__ import annotations
 
@@ -30,19 +30,22 @@ def run_known_stream_search(
     nest: bool,
     output_dir: str | Path,
 ) -> dict[str, Any]:
-    """Known-stream search of one galstreams track.
+    """Known-stream search of one galstreams track: one set of maps per isochrone.
 
     Builds the stream frame (``stream_frames.rotation_matrix_from_astropy_frame``
     of the track's ``stream_frame``), the window
-    (``catalogs.galstreams_catalog.galstreams_phi12_window``), the isochrones
-    (``isochrone_parameters.known_stream_isochrone_parameters``) and the
-    footprint on the grid
-    (``catalogs.survey_footprint.survey_footprint_phi12_mask``). Then, one
-    distance modulus at a time
-    (``analysis.known_stream_search.known_stream_search_dm_scan``), draws and
-    saves the map (``plotting.plot_known_stream_search.plot_known_stream_search_single_dm``).
-    Finally, makes the videos (``plotting.make_videos.make_gif_from_plots``
-    and ``make_mp4``) and saves the cube (``save_known_stream_search_cube``).
+    (``catalogs.galstreams_catalog.galstreams_phi12_window``), the footprint
+    on the grid (``catalogs.survey_footprint.survey_footprint_phi12_mask``)
+    and the isochrones of the stream
+    (``isochrone_parameters.known_stream_isochrone_parameters``).
+
+    Then, for each isochrone: the maps over the grid of distance moduli, one
+    at a time (``analysis.known_stream_search.known_stream_search_dm_scan``),
+    drawn and saved
+    (``plotting.plot_known_stream_search.plot_known_stream_search_single_dm``);
+    the videos (``plotting.make_videos.make_gif_from_plots`` and
+    ``make_mp4``); and the maps in one file
+    (``save_known_stream_search_maps``).
 
     Parameters
     ----------
@@ -62,13 +65,15 @@ def run_known_stream_search(
     nest : bool
         HEALPix ordering of ``footprint_mask``.
     output_dir : str or pathlib.Path
-        The outputs go to ``output_dir/<track_name>/``.
+        The outputs of each isochrone go to
+        ``output_dir/<track_name>/age<age>_z<Z>/``.
 
     Returns
     -------
     summary : dict
-        ``track_name``, ``window``, ``isochrones``, ``figure_paths``,
-        ``gif_path``, ``mp4_path`` and ``cube_path``.
+        ``track_name``, ``window``, and ``isochrones``: one dict per
+        isochrone, with ``isochrone``, ``figure_paths``, ``gif_path``,
+        ``mp4_path`` and ``maps_path``.
 
     Notes
     -----
@@ -116,25 +121,26 @@ def run_all_known_stream_searches(
     Returns
     -------
     table : pandas.DataFrame
-        The selection, one row per track, with the output paths of
-        ``run_known_stream_search``.
+        The selection, with one row per track and isochrone, and the output
+        paths of ``run_known_stream_search``.
     """
     raise NotImplementedError
 
 
-def save_known_stream_search_cube(
+def save_known_stream_search_maps(
     results: Iterable[tuple[float, Mapping[str, Any]]],
     output_path: str | Path,
     *,
     metadata: Mapping[str, Any] | None = None,
 ) -> Path:
-    """Save the maps of a known-stream search, one per distance modulus, as one cube.
+    """Save the maps of a known-stream search, one per distance modulus, in one file.
 
-    Compressed numpy file (``.npz``, proposal): ``density`` of shape (n_dm,
-    n_phi1, n_phi2), NaN outside the footprint; ``distance_modulus``; the
-    ``phi1`` and ``phi2`` bin centres; and the metadata (stream, window,
-    isochrones, match filter) as JSON. The phi1/phi2 maps are small, so the
-    whole cube fits in memory.
+    For one stream and one isochrone. Compressed numpy file (``.npz``,
+    proposal) holding ``density``, the maps stacked along the distance
+    modulus, of shape (n_dm, n_phi1, n_phi2), NaN outside the footprint;
+    ``distance_modulus``; the ``phi1`` and ``phi2`` bin centres; and the
+    metadata (track, window, isochrone, match filter) as JSON. The phi1/phi2
+    maps are small: they all fit in memory.
 
     Parameters
     ----------
@@ -153,7 +159,7 @@ def save_known_stream_search_cube(
     Notes
     -----
     Code to reuse: the output block of celestial_currents
-    ``scripts/run_matched_filter_maps.py::main`` (one cube per run, with its
-    axes).
+    ``scripts/run_matched_filter_maps.py::main`` (all the maps of a run in
+    one file, with their axes).
     """
     raise NotImplementedError
