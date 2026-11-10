@@ -1,7 +1,25 @@
-"""Star density maps: star counts on a grid, smoothed and masked."""
+"""Star density maps: star counts on a grid, smoothed and masked.
+
+On the sky (HEALPix) or in a stream frame (phi1/phi2). A phi1/phi2 grid is
+given by a window ``(phi1_min, phi1_max, phi2_min, phi2_max)`` and a bin size
+(deg), with ``round((max - min) / bin_size)`` bins along each axis. Its maps
+have shape (n_phi1, n_phi2), row = phi1 bin (as ``numpy.histogram2d``):
+transpose them for ``imshow``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import healpy as hp
 import numpy as np
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
+    from numpy.typing import ArrayLike, NDArray
+
 
 def star_density_healpix(
     data,
@@ -94,3 +112,100 @@ def star_density_healpix(
         hp_map = np.ma.array(hp_map, mask=footprint_mask)
 
     return hp_map, lon, lat, npix
+
+
+def star_density_phi12(
+    phi1: ArrayLike,
+    phi2: ArrayLike,
+    window: tuple[float, float, float, float],
+    bin_size_deg: float,
+    *,
+    smoothing_deg: float = 0.0,
+    footprint_mask: NDArray[np.bool_] | None = None,
+) -> np.ma.MaskedArray:
+    """Smoothed star counts on a phi1/phi2 grid.
+
+    Counts the stars in each bin, then smooths the counts with a Gaussian of
+    standard deviation ``smoothing_deg``. With a footprint, the smoothed
+    counts are divided by the smoothed footprint (the fraction of each bin's
+    neighbourhood inside the footprint), so that the density does not drop
+    at the footprint edges. Bins outside the footprint are masked.
+
+    Parameters
+    ----------
+    phi1, phi2 : array_like
+        Stars in the stream frame (deg).
+    window : tuple of float
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` of the grid (deg).
+    bin_size_deg : float
+        Bin size of the grid (deg), the same in phi1 and phi2.
+    smoothing_deg : float, optional
+        Standard deviation of the Gaussian (deg). 0: no smoothing.
+    footprint_mask : numpy.ndarray of bool, optional
+        From ``catalogs.survey_footprint.survey_footprint_phi12_mask``, True
+        outside the footprint.
+
+    Returns
+    -------
+    density : numpy.ma.MaskedArray, shape (n_phi1, n_phi2)
+        Smoothed counts per bin, masked outside the footprint.
+
+    Notes
+    -----
+    Code to reuse: ``_compute_spline_phi12`` in celestial_currents
+    ``notebooks/candidate_investigations/full_search/template.ipynb``
+    (``numpy.histogram2d``, then ``scipy.ndimage.gaussian_filter`` with a
+    sigma of ``smoothing_deg / bin_size_deg`` bins).
+    """
+    raise NotImplementedError
+
+
+def mask_disks_in_phi12_density(
+    density: NDArray[np.float64] | np.ma.MaskedArray,
+    window: tuple[float, float, float, float],
+    *,
+    disks: Sequence[tuple[float, float, float]] = (),
+    rotation_matrix: NDArray[np.float64] | None = None,
+    lvdb_dwarf_csv: str | Path | None = None,
+    lvdb_gc_csv: str | Path | None = None,
+    mask_rh_scale: float = 4.0,
+) -> np.ma.MaskedArray:
+    """Mask disks around known objects in a phi1/phi2 map.
+
+    For the dwarf galaxies, globular clusters or other objects that would
+    show up in the maps. A bin is masked when its centre is inside a disk;
+    distances are taken in the phi1/phi2 plane.
+
+    Parameters
+    ----------
+    density : numpy.ndarray or numpy.ma.MaskedArray, shape (n_phi1, n_phi2)
+        Map from ``star_density_phi12``.
+    window : tuple of float
+        Window of the map (see the module docstring).
+    disks : sequence of (phi1, phi2, radius), optional
+        Disks given directly (deg).
+    rotation_matrix : numpy.ndarray, shape (3, 3), optional
+        Stream frame (see ``stream_frames``). Needed for the LVDB objects.
+    lvdb_dwarf_csv, lvdb_gc_csv : str or pathlib.Path, optional
+        LVDB tables of the dwarf galaxies (``dwarf_all.csv``) and of the
+        globular clusters (``gc_harris.csv``). Each of their objects adds a
+        disk of radius ``mask_rh_scale`` times its half-light radius.
+    mask_rh_scale : float, optional
+        Disk radius of the LVDB objects, in half-light radii.
+
+    Returns
+    -------
+    density : numpy.ma.MaskedArray
+        ``density``, with the disks masked too.
+
+    Notes
+    -----
+    Code to reuse: celestial_currents ``visualization.py::mask_phi12_disks``;
+    ``investigate/postprocess.py::build_lvdb_mask`` for the LVDB tables, with
+    their paths as arguments (its default paths are on the cluster).
+
+    References
+    ----------
+    Pace 2024, arXiv:2411.07424 (Local Volume Database).
+    """
+    raise NotImplementedError
