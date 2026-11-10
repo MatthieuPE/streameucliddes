@@ -76,6 +76,27 @@ def test_round_trip(gc_frame, rng):
     np.testing.assert_allclose(dec_back, dec, atol=1e-9)
 
 
+# The full loop from the stream frame: (phi1, phi2) -> (ra, dec) -> (phi1, phi2) gives
+# the same positions back, in each kind of frame, also at the edges phi1 = -180 and
+# 180 (where phi1 wraps) and near the poles
+@pytest.mark.parametrize("frame_name", ["gala from endpoints", "gala equatorial", "Galactic"])
+def test_loop_from_phi12(frame_name, gc_frame, equatorial_frame, rng):
+    frame = {
+        "gala from endpoints": gc_frame,
+        "gala equatorial": equatorial_frame,
+        "Galactic": coord.Galactic(),
+    }[frame_name]
+    phi1, phi2 = _random_sky(rng, 1000)
+    phi1 = np.concatenate([phi1 - 180.0, [-180.0, 179.999, 0.0, 0.0]])  # in [-180, 180)
+    phi2 = np.concatenate([phi2, [0.0, 0.0, 89.0, -89.0]])
+
+    ra, dec = phi12_to_radec(phi1, phi2, frame)
+    phi1_back, phi2_back = radec_to_phi12(ra, dec, frame)
+    assert np.all((phi1_back >= -180.0) & (phi1_back < 180.0))
+    np.testing.assert_allclose(_angle_difference(phi1_back, phi1), 0.0, atol=1e-9)
+    np.testing.assert_allclose(phi2_back, phi2, atol=1e-9)
+
+
 # Scalars stay scalars; arrays are broadcast together and keep their shape
 def test_shapes(gc_frame):
     phi1, phi2 = radec_to_phi12(10.0, 20.0, gc_frame)
