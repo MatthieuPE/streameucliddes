@@ -1,13 +1,10 @@
 """Tests of catalogs/survey_footprint.py.
 
-Footprint maps are written to a temporary FOOTPRINT_DIR. Until stream_frames
-is written, stream_frames.phi12_to_radec is replaced by a stand-in: the frame
-aligned with ICRS (phi1 = ra, phi2 = dec), or astropy's transform from the gala
-frame of conftest.py.
+Footprint maps are written to a temporary FOOTPRINT_DIR. The stream frames
+are the identity matrix (the frame aligned with ICRS: phi1 = ra, phi2 = dec)
+and the gala great-circle frame of conftest.py.
 """
 
-import astropy.coordinates as coord
-import astropy.units as u
 import healpy as hp
 import numpy as np
 import pytest
@@ -17,7 +14,11 @@ from streameucliddes.catalogs.survey_footprint import (
     survey_footprint_healpix_mask,
     survey_footprint_phi12_mask,
 )
-from streameucliddes.stream_frames import phi12_bin_centres
+from streameucliddes.stream_frames import (
+    phi12_bin_centres,
+    phi12_to_radec,
+    rotation_matrix_from_astropy_frame,
+)
 
 pytestmark = pytest.mark.survey_footprint
 
@@ -124,15 +125,9 @@ def test_survey_without_footprint_map(footprint_dir):
 # ===================================================
 
 
-def _phi12_to_radec_icrs(phi1, phi2, rotation_matrix):
-    """phi12_to_radec in the frame aligned with ICRS (stand-in until stream_frames is written)."""
-    return np.mod(phi1, 360.0), np.asarray(phi2)
-
-
 @pytest.fixture
-def icrs_frame(monkeypatch):
-    """Rotation matrix of the frame aligned with ICRS, with its phi12_to_radec."""
-    monkeypatch.setattr(survey_footprint, "phi12_to_radec", _phi12_to_radec_icrs)
+def icrs_frame():
+    """Rotation matrix of the frame aligned with ICRS: phi1 = ra, phi2 = dec."""
     return np.eye(3)
 
 
@@ -191,35 +186,23 @@ def test_footprint_from_uniform_stars(rng, footprint, nside):
     assert n_per_pixel > 10
 
     mask = survey_footprint_healpix_mask(ra, dec, nside, nest=False)
-    assert not np.any(~mask & true_mask)
+    assert not np.any(~mask & true_mask), "no pixel outside the footprint should hold a star"
     assert np.mean(mask[footprint]) < 0.01
-
-
-def _phi12_to_radec_astropy(frame):
-    """phi12_to_radec of an astropy frame (stand-in until stream_frames is written)."""
-
-    def phi12_to_radec(phi1, phi2, rotation_matrix):
-        stars = coord.SkyCoord(phi1=phi1 * u.deg, phi2=phi2 * u.deg, frame=frame)
-        icrs = stars.transform_to(coord.ICRS())
-        return icrs.ra.deg, icrs.dec.deg
-
-    return phi12_to_radec
 
 
 # The same in a stream frame: stars sampled uniformly in a phi1/phi2 box give the box
 # back on the phi1/phi2 grid. The HEALPix pixels (0.23 deg) are smaller than half a bin
 # (0.5 deg): a bin outside the box never falls in a pixel holding a star.
-def test_phi12_footprint_from_uniform_stars(rng, gc_frame, monkeypatch):
-    phi12_to_radec = _phi12_to_radec_astropy(gc_frame)
-    monkeypatch.setattr(survey_footprint, "phi12_to_radec", phi12_to_radec)
+def test_phi12_footprint_from_uniform_stars(rng, gc_frame):
+    rotation_matrix = rotation_matrix_from_astropy_frame(gc_frame)
     nside = 256
     box = (-10.0, 10.0, -3.0, 3.0)  # footprint: |phi1| < 10, |phi2| < 3 (deg)
     phi1, phi2 = _uniform_on_sphere(rng, 25_000, box[:2], box[2:])  # about 11 per pixel
-    ra, dec = phi12_to_radec(phi1, phi2, None)
+    ra, dec = phi12_to_radec(phi1, phi2, rotation_matrix)
 
     footprint_mask = survey_footprint_healpix_mask(ra, dec, nside, nest=False)
     window = (-15.0, 15.0, -5.0, 5.0)
-    mask = survey_footprint_phi12_mask(footprint_mask, None, window, 1.0, nest=False)
+    mask = survey_footprint_phi12_mask(footprint_mask, rotation_matrix, window, 1.0, nest=False)
 
     phi1_centres, phi2_centres = phi12_bin_centres(window, 1.0)
     phi1_grid, phi2_grid = np.meshgrid(phi1_centres, phi2_centres, indexing="ij")

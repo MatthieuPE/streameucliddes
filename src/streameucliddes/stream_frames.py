@@ -12,24 +12,30 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import astropy.coordinates as coord
+import astropy.units as u
 import numpy as np
 
 if TYPE_CHECKING:
-    from astropy.coordinates import BaseCoordinateFrame
     from numpy.typing import ArrayLike, NDArray
 
 
-def rotation_matrix_from_astropy_frame(frame: BaseCoordinateFrame) -> NDArray[np.float64]:
+def rotation_matrix_from_astropy_frame(
+    frame: coord.BaseCoordinateFrame,
+) -> NDArray[np.float64]:
     """Rotation matrix of an astropy stream frame.
 
     Used for the galstreams frames (``track.stream_frame``), so that the
-    known-stream maps use the same phi1/phi2 as galstreams.
+    known-stream maps use the same phi1/phi2 as galstreams. The points
+    (phi1, phi2) = (0, 0), (90, 0) and (0, 90) of the frame, taken to ICRS,
+    are the x, y and z axes: the rows of ``R``.
 
     Parameters
     ----------
     frame : astropy.coordinates.BaseCoordinateFrame
-        Stream frame with phi1/phi2 components, e.g. the ``stream_frame`` of a
-        galstreams track (a gala ``GreatCircleICRSFrame``).
+        Stream frame, as an instance: e.g. the ``stream_frame`` of a
+        galstreams track (a gala ``GreatCircleICRSFrame``). Any astropy frame
+        whose transform to ICRS is a rotation works (e.g. ``Galactic()``).
 
     Returns
     -------
@@ -37,17 +43,15 @@ def rotation_matrix_from_astropy_frame(frame: BaseCoordinateFrame) -> NDArray[np
         ``R`` such that ``R @ v_icrs`` is the Cartesian vector in the stream
         frame.
 
-    Notes
-    -----
-    Code to reuse: none. Transform the points (phi1, phi2) = (0, 0), (90, 0)
-    and (0, 90) of the frame to ICRS: their Cartesian vectors are the rows of
-    ``R``. Test it against ``SkyCoord.transform_to(frame)`` on random points.
-
     References
     ----------
     Mateu 2023, MNRAS 520, 5225 (galstreams).
     """
-    raise NotImplementedError
+    axes = coord.UnitSphericalRepresentation(
+        lon=[0.0, 90.0, 0.0] * u.deg, lat=[0.0, 0.0, 90.0] * u.deg
+    )
+    axes_icrs = frame.realize_frame(axes).transform_to(coord.ICRS())
+    return np.array(axes_icrs.cartesian.xyz.value).T
 
 
 def rotation_matrix_from_endpoints(
@@ -74,13 +78,29 @@ def rotation_matrix_from_endpoints(
         ``R`` such that ``R @ v_icrs`` is the Cartesian vector in the stream
         frame.
 
+    Raises
+    ------
+    ValueError
+        The two points are the same or antipodal: no unique great circle.
+
     Notes
     -----
-    Code to reuse: adapted from celestial_currents
+    Adapted from celestial_currents
     ``frame_utils.py::rotation_matrix_from_endpoints``, with floats instead of
     SkyCoord endpoints.
     """
-    raise NotImplementedError
+    v1, v2 = _unit_vectors([ra_1, ra_2], [dec_1, dec_2])
+    z = np.cross(v1, v2)
+    x = v1 + v2
+    if np.linalg.norm(z) < 1e-12 or np.linalg.norm(x) < 1e-12:
+        raise ValueError(
+            f"Points ({ra_1}, {dec_1}) and ({ra_2}, {dec_2}) are the same or "
+            "antipodal: they define no unique great circle."
+        )
+    z = z / np.linalg.norm(z)
+    x = x / np.linalg.norm(x)
+    y = np.cross(z, x)
+    return np.array([x, y, z])
 
 
 def radec_to_phi12(
@@ -91,24 +111,26 @@ def radec_to_phi12(
     Parameters
     ----------
     ra, dec : array_like
-        ICRS coordinates (deg).
+        ICRS coordinates (deg). Broadcast together.
     rotation_matrix : numpy.ndarray, shape (3, 3)
         Stream frame (see the module docstring).
 
     Returns
     -------
     phi1 : numpy.ndarray
-        Longitude in the stream frame (deg), in [-180, 180).
+        Longitude in the stream frame (deg), in [-180, 180). Same shape as
+        the broadcast ``ra`` and ``dec``.
     phi2 : numpy.ndarray
         Latitude in the stream frame (deg), in [-90, 90].
 
     Notes
     -----
-    Code to reuse: adapted from celestial_currents
-    ``frame_utils.py::apply_rotation``, with ra/dec arrays instead of a
-    SkyCoord.
+    Adapted from celestial_currents ``frame_utils.py::apply_rotation``, with
+    ra/dec arrays instead of a SkyCoord.
     """
-    raise NotImplementedError
+    vectors = _unit_vectors(ra, dec) @ np.asarray(rotation_matrix).T  # R @ v, for each v
+    phi1, phi2 = _lonlat(vectors)
+    return (phi1 + 180.0) % 360.0 - 180.0, phi2
 
 
 def phi12_to_radec(
@@ -119,23 +141,40 @@ def phi12_to_radec(
     Parameters
     ----------
     phi1, phi2 : array_like
-        Coordinates in the stream frame (deg).
+        Coordinates in the stream frame (deg). Broadcast together.
     rotation_matrix : numpy.ndarray, shape (3, 3)
         Stream frame (see the module docstring).
 
     Returns
     -------
     ra : numpy.ndarray
-        ICRS right ascension (deg), in [0, 360).
+        ICRS right ascension (deg), in [0, 360). Same shape as the broadcast
+        ``phi1`` and ``phi2``.
     dec : numpy.ndarray
         ICRS declination (deg), in [-90, 90].
 
     Notes
     -----
-    Code to reuse: celestial_currents ``frame_utils.py::phi12_to_radec``
-    (applies the transpose of ``R``).
+    Adapted from celestial_currents ``frame_utils.py::phi12_to_radec``: the
+    transpose of ``R`` takes the stream frame back to ICRS.
     """
-    raise NotImplementedError
+    vectors = _unit_vectors(phi1, phi2) @ np.asarray(rotation_matrix)  # R.T @ v, for each v
+    ra, dec = _lonlat(vectors)
+    return ra % 360.0, dec
+
+
+def _unit_vectors(lon: ArrayLike, lat: ArrayLike) -> NDArray[np.float64]:
+    """Cartesian unit vectors of (lon, lat) in degrees: shape (..., 3)."""
+    lon, lat = np.broadcast_arrays(np.radians(lon), np.radians(lat))
+    return np.stack(
+        [np.cos(lat) * np.cos(lon), np.cos(lat) * np.sin(lon), np.sin(lat)], axis=-1
+    )
+
+
+def _lonlat(vectors: NDArray[np.float64]) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """(lon, lat) in degrees of unit vectors of shape (..., 3); lon in (-180, 180]."""
+    x, y, z = np.moveaxis(vectors, -1, 0)
+    return np.degrees(np.arctan2(y, x)), np.degrees(np.arcsin(np.clip(z, -1.0, 1.0)))
 
 
 def phi12_bin_centres(
