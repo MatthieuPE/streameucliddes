@@ -67,7 +67,7 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
     match_filter_list : list of dict, optional
         ``{"name": ..., "reference_band": (namespace, band), "color_bands":
         [(namespace, band), ...]}``; the stars must be inside the polygon of every
-        colour. Default: DEFAULT_MATCH_FILTERS (DES g vs g - r).
+        colour. Default: DEFAULT_MATCH_FILTERS (Euclid VIS vs VIS - H).
     **kwargs
         - keys of STREAM_CONFIG (e.g. ``surface_brightness``, ``N``,
           ``distance_modulus``): update the stream configuration, nested

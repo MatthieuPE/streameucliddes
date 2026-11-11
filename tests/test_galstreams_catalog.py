@@ -103,10 +103,18 @@ def test_dm_along_track(gc_frame):
     assert galstreams_dm_along_track(track, np.zeros((3, 4))).shape == (3, 4)
 
 
-# An Ibata et al. 2024 track has no distance in galstreams (1 kpc): NaN
+# hold_ends: beyond the track, the distance modulus of its nearest end; inside, unchanged
+def test_dm_along_track_hold_ends(gc_frame):
+    track = _synthetic_track(gc_frame)  # 20 kpc at phi1 = -10 to 30 kpc at phi1 = 10
+    dm = galstreams_dm_along_track(track, [-30.0, -10.5, 0.0, 10.5, 30.0], hold_ends=True)
+    np.testing.assert_allclose(dm, [_dm(20.0), _dm(20.0), _dm(25.0), _dm(30.0), _dm(30.0)], atol=1e-6)
+
+
+# An Ibata et al. 2024 track has no distance in galstreams (1 kpc): NaN, ends held or not
 def test_dm_along_track_ibata2024(gc_frame):
     track = _synthetic_track(gc_frame, distance_kpc=(1.0, 1.0), ref="ibata2024")
     assert np.isnan(galstreams_dm_along_track(track, [-9.0, 0.0, 9.0])).all()
+    assert np.isnan(galstreams_dm_along_track(track, [-30.0, 0.0], hold_ends=True)).all()
 
 
 # A track with only a mean distance (InfoFlags distance bit 0): constant distance modulus

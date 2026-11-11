@@ -249,12 +249,15 @@ def galstreams_phi12_window(
     )
 
 
-def galstreams_dm_along_track(track: galstreams.Track6D, phi1: ArrayLike) -> NDArray[np.float64]:
+def galstreams_dm_along_track(
+    track: galstreams.Track6D, phi1: ArrayLike, *, hold_ends: bool = False
+) -> NDArray[np.float64]:
     """Distance modulus of a galstreams track at given phi1.
 
     Interpolates linearly the distance moduli of the track points in phi1, in
-    the track's frame. NaN outside the phi1 range of the track (no
-    extrapolation), and for the Ibata et al. 2024 tracks (no distances).
+    the track's frame. Outside the phi1 range of the track: NaN (no
+    extrapolation), or the distance modulus of the nearest end with
+    ``hold_ends``. NaN for the Ibata et al. 2024 tracks (no distances).
     Constant when galstreams only has a mean distance (see the module
     docstring).
 
@@ -264,6 +267,9 @@ def galstreams_dm_along_track(track: galstreams.Track6D, phi1: ArrayLike) -> NDA
         One track of ``load_galstreams()``.
     phi1 : array_like
         phi1 in the track's ``stream_frame`` (deg).
+    hold_ends : bool, optional
+        Beyond the ends of the track, the distance modulus of the nearest
+        end instead of NaN.
 
     Returns
     -------
@@ -274,7 +280,8 @@ def galstreams_dm_along_track(track: galstreams.Track6D, phi1: ArrayLike) -> NDA
     dm = _track_distance_moduli(track)
     track_phi1, _ = _track_phi12(track)
     order = np.argsort(track_phi1)
-    return np.interp(phi1, track_phi1[order], dm[order], left=np.nan, right=np.nan)
+    beyond = {} if hold_ends else {"left": np.nan, "right": np.nan}  # np.interp holds the ends by default
+    return np.interp(phi1, track_phi1[order], dm[order], **beyond)
 
 
 def _is_ibata2024(track: galstreams.Track6D) -> bool:

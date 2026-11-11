@@ -17,7 +17,7 @@ from streameucliddes.analysis.catalog_preparation import (
     prepare_match_filter_catalog,
     resolve_mag_columns,
 )
-from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER
+from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, DES_GR_MATCH_FILTER
 from streameucliddes.stream_frames import radec_to_phi12
 
 pytestmark = pytest.mark.catalog_preparation
@@ -31,21 +31,21 @@ MATCH_FILTER_GRI = {
 
 @pytest.fixture
 def catalog(rng):
-    """Stars around the conftest stream (dec -20 to -30), DES g, r, i with errors."""
+    """Stars around the conftest stream (dec -20 to -30), DES g, r, i and Euclid VIS, H, with errors."""
     n = 5000
     columns = {"ra": rng.uniform(35.0, 65.0, n), "dec": rng.uniform(-40.0, -10.0, n), "other": np.arange(n)}
-    for band in "gri":
-        columns[f"des_yr6_{band}_obs"] = rng.uniform(18.0, 26.0, n)
-        columns[f"des_yr6_{band}_err"] = rng.uniform(0.0, 0.4, n)
+    for band in ["des_yr6_g", "des_yr6_r", "des_yr6_i", "euclid_q1_VIS", "euclid_q1_H"]:
+        columns[f"{band}_obs"] = rng.uniform(18.0, 26.0, n)
+        columns[f"{band}_err"] = rng.uniform(0.0, 0.4, n)
     return pd.DataFrame(columns, index=np.arange(n) + 100)
 
 
 def _full_sky_catalog(rng, n, n_extra_columns=0):
-    """Stars uniform on the whole sky, DES g and r with errors, and extra columns."""
+    """Stars uniform on the whole sky, Euclid VIS and H with errors, and extra columns."""
     columns = {"ra": rng.uniform(0.0, 360.0, n), "dec": np.degrees(np.arcsin(rng.uniform(-1.0, 1.0, n)))}
-    for band in "gr":
-        columns[f"des_yr6_{band}_obs"] = rng.uniform(18.0, 26.0, n)
-        columns[f"des_yr6_{band}_err"] = rng.uniform(0.0, 0.4, n)
+    for band in ["euclid_q1_VIS", "euclid_q1_H"]:
+        columns[f"{band}_obs"] = rng.uniform(18.0, 26.0, n)
+        columns[f"{band}_err"] = rng.uniform(0.0, 0.4, n)
     for i in range(n_extra_columns):
         columns[f"extra_{i}"] = rng.normal(size=n)
     return pd.DataFrame(columns)
@@ -84,7 +84,8 @@ def test_resolve_mag_columns():
 
 # Errors <= 0.2 on every band of the match filter
 def test_default_error_cuts():
-    assert default_error_cuts() == {"des_yr6_g_err": DEFAULT_ERR_CUT, "des_yr6_r_err": DEFAULT_ERR_CUT}
+    assert default_error_cuts() == {"euclid_q1_VIS_err": DEFAULT_ERR_CUT, "euclid_q1_H_err": DEFAULT_ERR_CUT}
+    assert list(default_error_cuts(DES_GR_MATCH_FILTER)) == ["des_yr6_g_err", "des_yr6_r_err"]
     assert DEFAULT_ERR_CUT == (None, 0.2)
     assert list(default_error_cuts(MATCH_FILTER_GRI)) == ["des_yr6_g_err", "des_yr6_r_err", "des_yr6_i_err"]
 
@@ -92,8 +93,8 @@ def test_default_error_cuts():
 # Every missing column is named in the error
 def test_check_columns(catalog):
     check_columns(catalog, ["ra", "des_yr6_g_obs"])
-    with pytest.raises(KeyError, match=r"\['euclid_q1_VIS_obs', 'phi1'\]"):
-        check_columns(catalog, ["ra", "euclid_q1_VIS_obs", "phi1"])
+    with pytest.raises(KeyError, match=r"\['euclid_q1_Y_obs', 'phi1'\]"):
+        check_columns(catalog, ["ra", "euclid_q1_Y_obs", "phi1"])
 
 
 # ===================================================
@@ -104,9 +105,11 @@ def test_check_columns(catalog):
 # Default: the error cuts of the default match filter, and only the columns needed
 def test_prepare_default_cuts(catalog):
     stars = prepare_match_filter_catalog(catalog)
-    passing = (catalog["des_yr6_g_err"] <= 0.2) & (catalog["des_yr6_r_err"] <= 0.2)
+    passing = (catalog["euclid_q1_VIS_err"] <= 0.2) & (catalog["euclid_q1_H_err"] <= 0.2)
     assert stars.index.equals(catalog.index[passing])  # index of the catalog kept
-    assert list(stars.columns) == ["des_yr6_g_obs", "des_yr6_r_obs", "des_yr6_g_err", "des_yr6_r_err"]
+    assert list(stars.columns) == ["euclid_q1_VIS_obs", "euclid_q1_H_obs", "euclid_q1_VIS_err", "euclid_q1_H_err"]
+    des = prepare_match_filter_catalog(catalog, DES_GR_MATCH_FILTER)
+    assert list(des.columns) == ["des_yr6_g_obs", "des_yr6_r_obs", "des_yr6_g_err", "des_yr6_r_err"]
     assert len(prepare_match_filter_catalog(catalog, cuts={})) == len(catalog)  # no cut
 
 
@@ -135,8 +138,8 @@ def test_prepare_stream_frame_window(catalog, gc_frame):
 
 # Errors: missing columns (all named), a window without frame
 def test_prepare_errors(catalog):
-    with pytest.raises(KeyError, match="euclid_q1_VIS_obs"):
-        prepare_match_filter_catalog(catalog, {**DEFAULT_MATCH_FILTER, "color_bands": [("euclid_q1", "VIS")]})
+    with pytest.raises(KeyError, match="euclid_q1_Y_obs"):
+        prepare_match_filter_catalog(catalog, {**DEFAULT_MATCH_FILTER, "color_bands": [("euclid_q1", "Y")]})
     with pytest.raises(KeyError, match="SPURIOUS"):
         prepare_match_filter_catalog(catalog, cuts={"SPURIOUS_FLAG_euclid": 0})
     with pytest.raises(KeyError, match=r"\['ra', 'dec'\]"):
@@ -166,7 +169,7 @@ def test_prepare_window_brute_force(rng, monkeypatch, frame_name, window):
     np.testing.assert_array_equal(stars.index, catalog.index[inside])
     np.testing.assert_allclose(stars["phi1"], phi1[inside])
     np.testing.assert_allclose(stars["phi2"], phi2[inside])
-    np.testing.assert_array_equal(stars["des_yr6_g_obs"], catalog["des_yr6_g_obs"][inside])
+    np.testing.assert_array_equal(stars["euclid_q1_VIS_obs"], catalog["euclid_q1_VIS_obs"][inside])
 
 
 # The window pre-selection: only the stars near the window are transformed to phi1/phi2
@@ -205,7 +208,7 @@ def test_prepare_does_not_modify(catalog, gc_frame):
     before = catalog.copy()
     stars = prepare_match_filter_catalog(catalog, stream_frame=gc_frame, window=(-5.0, 5.0, -2.0, 2.0))
     pd.testing.assert_frame_equal(catalog, before)
-    assert not np.shares_memory(stars["des_yr6_g_obs"].to_numpy(), catalog["des_yr6_g_obs"].to_numpy())
+    assert not np.shares_memory(stars["euclid_q1_VIS_obs"].to_numpy(), catalog["euclid_q1_VIS_obs"].to_numpy())
 
 
 # Peak memory: the stars kept, plus a few bytes per star of the catalog (the masks, 3

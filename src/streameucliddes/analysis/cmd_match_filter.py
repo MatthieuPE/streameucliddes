@@ -30,9 +30,15 @@ if TYPE_CHECKING:
     import pandas as pd
     from numpy.typing import ArrayLike, NDArray
 
-# DES g vs g - r, as the DES search of Shipp et al. 2018
+# Euclid VIS vs VIS - H
 DEFAULT_MATCH_FILTER = {
-    "name": "default_des_gr",
+    "name": "default_euclid_vis_h",
+    "reference_band": ("euclid_q1", "VIS"),
+    "color_bands": [("euclid_q1", "H")],
+}
+# DES g vs g - r, as the DES search of Shipp et al. 2018
+DES_GR_MATCH_FILTER = {
+    "name": "des_gr",
     "reference_band": ("des_yr6", "g"),
     "color_bands": [("des_yr6", "r")],
 }

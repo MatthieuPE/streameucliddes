@@ -9,10 +9,10 @@
 # distance_moduli: {start: 15.0, stop: 22.0, step: 0.1}   # plan, section 1
 #
 # # See analysis.cmd_match_filter.select_stars_in_match_filter
-# match_filter:
-#   name: des_gr
-#   reference_band: [des_yr6, g]
-#   color_bands: [[des_yr6, r]]
+# match_filter:               # default: Euclid VIS vs VIS - H
+#   name: euclid_vis_h
+#   reference_band: [euclid_q1, VIS]
+#   color_bands: [[euclid_q1, H]]
 #
 # # Default grid, for the streams without a known age or [Fe/H]. One set of
 # # maps (and one video, one maps file) per isochrone. Default: the DES search

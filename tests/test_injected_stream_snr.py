@@ -63,6 +63,7 @@ def mock_background(monkeypatch):
     vis = r - rng.uniform(-0.3, 0.7, n)
     y = vis - rng.uniform(0.0, 1.0, n)
     j = y - rng.uniform(-0.2, 0.6, n)
+    h = j - rng.uniform(-0.2, 0.6, n)
     mags = {
         "des_yr6_g": g,
         "des_yr6_r": r,
@@ -70,6 +71,7 @@ def mock_background(monkeypatch):
         "euclid_q1_VIS": vis,
         "euclid_q1_Y": y,
         "euclid_q1_J": j,
+        "euclid_q1_H": h,
     }
 
     columns = {
