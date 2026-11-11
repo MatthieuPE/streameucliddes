@@ -54,11 +54,12 @@ def known_stream_isochrone_parameters(
 ) -> list[dict[str, float]]:
     """Isochrones of a known stream: its own age and [Fe/H] when known.
 
-    The age and [Fe/H] come from the population table
-    (``catalogs/stream_populations.csv``). [Fe/H] is converted to Z with
-    ``unit_conversions.convert_FeH_to_z``. When the age or the [Fe/H] is
-    missing (NaN), it takes every value of the default grid, and the known
-    one is kept. Values are never invented.
+    The age and the metallicity Z come from the population table
+    (``catalogs/stream_populations.csv``, columns ``age_gyr`` and ``z``; Z is
+    given there by the paper or converted from [Fe/H] with
+    ``unit_conversions.convert_FeH_to_z``). When the age or Z is missing
+    (NaN), it takes every value of the default grid, and the known one is
+    kept. Values are never invented.
 
     Parameters
     ----------
