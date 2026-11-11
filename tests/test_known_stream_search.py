@@ -30,7 +30,11 @@ from streameucliddes.analysis.known_stream_search import (
 )
 from streameucliddes.analysis.star_density_maps import star_density_phi12
 from streameucliddes.catalogs import isochrone_parameters
-from streameucliddes.catalogs.galstreams_catalog import galstreams_dm_along_track, galstreams_phi12_window
+from streameucliddes.catalogs.galstreams_catalog import (
+    galstreams_dm_along_track,
+    galstreams_phi12_window,
+    select_galstreams_in_footprint,
+)
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.catalogs.survey_footprint import survey_footprint_phi12_mask
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
@@ -106,16 +110,15 @@ def _track(frame, dm_of_phi1, phi1_range=(-6.0, 6.0), ref="synthetic", stream_na
 
 
 class _MockMWStreams(dict):
-    """galstreams.MWStreams-like: tracks by track name, the default ('On') ones listed."""
+    """galstreams.MWStreams-like: tracks by track name, and the summary table (stream, default track)."""
 
     def __init__(self, tracks, on):
         super().__init__({track.track_name: track for track in tracks})
-        self.on = set(on)
-
-    def get_track_names_for_stream(self, StreamName, On_only=False):
-        # As galstreams: any stream whose name contains StreamName
-        return [name for name, track in self.items()
-                if StreamName in track.stream_name and (name in self.on or not On_only)]
+        self.summary = pd.DataFrame({
+            "TrackName": [track.track_name for track in tracks],
+            "Name": [track.stream_name for track in tracks],
+            "On": [track.track_name in on for track in tracks],
+        }).set_index("TrackName", drop=False)
 
 
 @pytest.fixture(scope="module")
@@ -270,6 +273,33 @@ def test_dm_scan_stream_name(stream_catalog, gc_frame, mock_mws):
     np.testing.assert_array_equal(result["density"], explicit["density"])
 
 
+# With a HEALPix footprint, the distance moduli are those of the part of the track in it
+# (select_galstreams_in_footprint), +- 1 mag; a track outside the footprint is an error
+def test_dm_scan_stream_name_footprint(stream_catalog, gc_frame):
+    track = _track(gc_frame, lambda phi1: 17.0 + 0.1 * phi1)  # 16.4 to 17.6 from phi1 -6 to 6
+    mws = _MockMWStreams([track], on=["Mock-T00"])
+    nside = 64
+    ra, dec = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    pixel_phi1 = coord.SkyCoord(ra=ra * u.deg, dec=dec * u.deg).transform_to(gc_frame).phi1.deg
+    footprint_mask = pixel_phi1 > 0.0  # True outside: only phi1 < 0, distance moduli 16.4 to 17.0
+
+    distance_moduli = [dm for dm, _ in known_stream_search_dm_scan(
+        stream_catalog, stream_name="Mock", mws=mws, population_table=_population_table(),
+        footprint_mask=footprint_mask, nest=False, bin_size_deg=1.0, smoothing_deg=0.0,
+    )]
+    row = select_galstreams_in_footprint(mws, footprint_mask, nest=False, dm_range=None, min_length_deg=0.0).iloc[0]
+    assert row["dm_max"] < 17.05  # the half in the footprint
+    low, high = np.floor((row["dm_min"] - 1.0) * 10) / 10, np.ceil((row["dm_max"] + 1.0) * 10) / 10
+    assert distance_moduli == list(np.round(np.arange(low, high + 0.05, 0.1), 1))
+    assert distance_moduli[0] == 15.4 and distance_moduli[-1] <= 18.1  # not 18.6: the half outside is left out
+
+    with pytest.raises(ValueError, match="does not cross the footprint"):
+        known_stream_search_single_dm(
+            stream_catalog, stream_name="Mock", mws=mws, footprint_mask=np.ones(hp.nside2npix(nside), dtype=bool),
+            nest=False,
+        )
+
+
 # The given values are kept: window, distance moduli, isochrone
 def test_dm_scan_stream_name_given_values(stream_catalog, mock_mws):
     results = list(known_stream_search_dm_scan(
@@ -294,6 +324,7 @@ def test_dm_scan_stream_name_isochrones(stream_catalog, mock_mws, monkeypatch):
 
 
 # Track names work too, and stream names are exact: "Mock" is neither MockTwo nor Mock-T01
+# (single_dm: the middle of the distance moduli of the track)
 def test_stream_name_resolution(stream_catalog, mock_mws):
     kwargs = {"mws": mock_mws, "population_table": _population_table(), "bin_size_deg": BIN}
     assert known_stream_search_single_dm(stream_catalog, stream_name="Mock", **kwargs)["track_name"] == "Mock-T00"
