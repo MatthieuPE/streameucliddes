@@ -175,25 +175,50 @@ def test_dm_along_track_mean_distance(gc_frame):
 # ===================================================
 
 
-# The track plus the padding, and at least +/- min_phi2_half_width_deg in phi2
+# The track plus the padding; phi2 centred on the track, at least min_phi2_half_width_deg
+# on each side of its centre (not of phi2 = 0)
 def test_phi12_window(gc_frame):
     track = _synthetic_track(gc_frame, phi2_range=(-1.0, 4.0))  # phi1 -10 to 10, phi2 -1 to 4
     window = galstreams_phi12_window(track, padding_phi1_deg=1.0, padding_phi2_deg=0.5, min_phi2_half_width_deg=0.0)
     np.testing.assert_allclose(window, (-11.0, 11.0, -1.5, 4.5), atol=1e-6)
-    window = galstreams_phi12_window(track, padding_phi1_deg=3.0, padding_phi2_deg=0.5, min_phi2_half_width_deg=2.0)
-    np.testing.assert_allclose(window, (-13.0, 13.0, -2.0, 4.5), atol=1e-6)  # phi2 at least -2
+    window = galstreams_phi12_window(track, padding_phi1_deg=3.0, padding_phi2_deg=0.5, min_phi2_half_width_deg=4.0)
+    np.testing.assert_allclose(window, (-13.0, 13.0, -2.5, 5.5), atol=1e-6)  # centre 1.5, +- 4
+
+    # A track far from phi2 = 0: the window stays on it
+    far = _synthetic_track(gc_frame, phi2_range=(-15.0, -10.0))
+    window = galstreams_phi12_window(far, padding_phi1_deg=3.0, padding_phi2_deg=0.5, min_phi2_half_width_deg=4.0)
+    np.testing.assert_allclose(window, (-13.0, 13.0, -16.5, -8.5), atol=1e-6)
 
     # Defaults: those of the signature, whatever their values
     defaults = {name: parameter.default for name, parameter in inspect.signature(galstreams_phi12_window).parameters.items()
                 if parameter.default is not inspect.Parameter.empty}
     np.testing.assert_allclose(galstreams_phi12_window(track), galstreams_phi12_window(track, **defaults))
+    half_width = max(2.5 + defaults["padding_phi2_deg"], defaults["min_phi2_half_width_deg"])
     expected = (
         -10.0 - defaults["padding_phi1_deg"],
         10.0 + defaults["padding_phi1_deg"],
-        min(-1.0 - defaults["padding_phi2_deg"], -defaults["min_phi2_half_width_deg"]),
-        max(4.0 + defaults["padding_phi2_deg"], defaults["min_phi2_half_width_deg"]),
+        1.5 - half_width,
+        1.5 + half_width,
     )
     np.testing.assert_allclose(galstreams_phi12_window(track), expected, atol=1e-6)
+
+
+# With a footprint: around the part of the track inside it only (phi1 > 2: phi2 from 1.5
+# to 4), to the precision of the pixels
+def test_phi12_window_footprint(gc_frame):
+    track = _synthetic_track(gc_frame, phi2_range=(-1.0, 4.0))  # phi2 = 1.5 + phi1 / 4
+    footprint = _footprint_in_frame(gc_frame, lambda phi1, phi2: phi1 > 2.0)
+    window = galstreams_phi12_window(track, footprint_mask=footprint, nest=False, padding_phi1_deg=1.0,
+                                     padding_phi2_deg=0.5, min_phi2_half_width_deg=0.0)
+    pixel = np.degrees(hp.nside2resol(NSIDE))
+    np.testing.assert_allclose(window, (1.0, 11.0, 1.5, 4.5), atol=pixel)
+    np.testing.assert_allclose(galstreams_phi12_window(track, footprint_mask=np.zeros_like(footprint), nest=False),
+                               galstreams_phi12_window(track))  # whole sky: the whole track
+
+    with pytest.raises(ValueError, match="nest"):
+        galstreams_phi12_window(track, footprint_mask=footprint)
+    with pytest.raises(ValueError, match="No part"):
+        galstreams_phi12_window(track, footprint_mask=np.ones_like(footprint), nest=False)
 
 
 # ===================================================

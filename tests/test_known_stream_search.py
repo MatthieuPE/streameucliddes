@@ -276,7 +276,8 @@ def test_dm_scan_stream_name(stream_catalog, gc_frame, mock_mws):
 
 
 # With a HEALPix footprint, the distance moduli are those of the part of the track in it
-# (select_galstreams_in_footprint), +- 1 mag; a track not selected is an error
+# (select_galstreams_in_footprint), +- 1 mag, and the window is around that part; a track
+# not selected is an error
 def test_dm_scan_stream_name_footprint(stream_catalog, gc_frame):
     track = _track(gc_frame, lambda phi1: 17.0 + 0.1 * phi1)  # 16.4 to 17.6 from phi1 -6 to 6
     mws = _MockMWStreams([track], on=["Mock-T00"])
@@ -285,10 +286,15 @@ def test_dm_scan_stream_name_footprint(stream_catalog, gc_frame):
     pixel_phi1 = coord.SkyCoord(ra=ra * u.deg, dec=dec * u.deg).transform_to(gc_frame).phi1.deg
     footprint_mask = pixel_phi1 > 0.0  # True outside: only phi1 < 0, distance moduli 16.4 to 17.0
 
-    distance_moduli = [dm for dm, _ in known_stream_search_dm_scan(
+    results = list(known_stream_search_dm_scan(
         stream_catalog, stream_name="Mock", mws=mws, population_table=_population_table(),
         footprint_mask=footprint_mask, nest=False, bin_size_deg=1.0, smoothing_deg=0.0,
-    )]
+    ))
+    distance_moduli = [dm for dm, _ in results]
+    # The window: around the half of the track in the footprint
+    window = results[0][1]["window"]
+    assert window == galstreams_phi12_window(track, footprint_mask=footprint_mask, nest=False)
+    assert window[1] < galstreams_phi12_window(track)[1] - 5.0
     row = select_galstreams_in_footprint(mws, footprint_mask, nest=False, dm_range=None, min_length_deg=0.0).iloc[0]
     assert row["dm_max"] < 17.05  # the half in the footprint
     low, high = np.floor((row["dm_min"] - 1.0) * 10) / 10, np.ceil((row["dm_max"] + 1.0) * 10) / 10

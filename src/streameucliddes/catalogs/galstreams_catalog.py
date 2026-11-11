@@ -213,20 +213,29 @@ def select_galstreams_in_footprint(
 def galstreams_phi12_window(
     track: galstreams.Track6D,
     *,
+    footprint_mask: NDArray[np.bool_] | None = None,
+    nest: bool | None = None,
     padding_phi1_deg: float = 5.0,
     padding_phi2_deg: float = 2.0,
     min_phi2_half_width_deg: float = 5.0,
 ) -> tuple[float, float, float, float]:
     """phi1/phi2 window of the maps of a known stream, in its galstreams frame.
 
-    phi1 covers the track, plus ``padding_phi1_deg`` on each side. phi2
-    covers the track plus ``padding_phi2_deg``, and at least
-    ``-min_phi2_half_width_deg`` to ``+min_phi2_half_width_deg``.
+    Around the track, or, with ``footprint_mask``, around its part inside
+    the footprint (the segments of ``galstreams_track_length_in_footprint``,
+    without distance cut): where there are both data and the track. phi1
+    covers it plus ``padding_phi1_deg`` on each side. phi2 is centred on it:
+    its extent plus ``padding_phi2_deg`` on each side, and at least
+    ``min_phi2_half_width_deg`` on each side of its centre.
 
     Parameters
     ----------
     track : galstreams.Track6D
         One track of ``load_galstreams()``.
+    footprint_mask : numpy.ndarray of bool, optional
+        HEALPix mask, True outside the footprint (needs ``nest``).
+    nest : bool, optional
+        HEALPix ordering of ``footprint_mask``.
     padding_phi1_deg, padding_phi2_deg : float, optional
         Margins around the track (deg).
     min_phi2_half_width_deg : float, optional
@@ -237,19 +246,38 @@ def galstreams_phi12_window(
     window : tuple of float
         ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg).
 
+    Raises
+    ------
+    ValueError
+        ``footprint_mask`` without ``nest``, or no part of the track in the
+        footprint.
+
     Notes
     -----
     Adapted from celestial_currents
     ``visualization.py::get_stream_phi12_bounds`` (its phi1 padding is 10
-    deg, 5 deg here; same phi2 defaults). Its per-stream overrides are left
-    out: pass another window instead.
+    deg, 5 deg here; same phi2 defaults, but its phi2 range always includes
+    -5 to 5 deg, around phi2 = 0, not around the track). Its per-stream
+    overrides are left out: pass another window instead.
     """
     phi1, phi2 = _track_phi12(track)
+    if footprint_mask is not None:
+        if nest is None:
+            raise ValueError("A footprint_mask needs nest.")
+        _, kept, _ = _segments_in_footprint(track, footprint_mask, nest=nest, dm_range=None)
+        if not kept.any():
+            raise ValueError(f"No part of the track {track.track_name} is in the footprint.")
+        in_footprint = np.zeros(phi1.size, dtype=bool)  # both ends of the segments kept
+        in_footprint[:-1] |= kept
+        in_footprint[1:] |= kept
+        phi1, phi2 = phi1[in_footprint], phi2[in_footprint]
+    phi2_centre = (phi2.min() + phi2.max()) / 2
+    phi2_half_width = max((phi2.max() - phi2.min()) / 2 + padding_phi2_deg, min_phi2_half_width_deg)
     return (
         float(phi1.min() - padding_phi1_deg),
         float(phi1.max() + padding_phi1_deg),
-        float(min(phi2.min() - padding_phi2_deg, -min_phi2_half_width_deg)),
-        float(max(phi2.max() + padding_phi2_deg, min_phi2_half_width_deg)),
+        float(phi2_centre - phi2_half_width),
+        float(phi2_centre + phi2_half_width),
     )
 
 

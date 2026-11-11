@@ -154,7 +154,8 @@ def prepare_search(
     those not given come from ``catalogs.galstreams_catalog``:
 
     - ``stream_frame``: the ``stream_frame`` of the track;
-    - ``window``: ``galstreams_phi12_window``;
+    - ``window``: ``galstreams_phi12_window``, around the part of the track
+      in a HEALPix ``footprint_mask``;
     - ``distance_moduli``: from ``dm_min - TRACK_DM_MARGIN`` to
       ``dm_max + TRACK_DM_MARGIN`` every ``DM_STEP``, ``dm_min`` and
       ``dm_max`` being those of the track in the footprint
@@ -241,8 +242,12 @@ def prepare_search(
     dm_min = dm_max = np.nan
     if track is not None:
         stream_frame = track.stream_frame if stream_frame is None else stream_frame
-        window = galstreams_phi12_window(track) if window is None else window
         dm_min, dm_max = _dm_range_in_footprint(track, footprint_mask, nest, selection_kwargs)
+        if window is None:  # around the track where there are data (a HEALPix footprint)
+            healpix = footprint_mask is not None and np.ndim(footprint_mask) == 1
+            window = galstreams_phi12_window(
+                track, footprint_mask=footprint_mask if healpix else None, nest=nest if healpix else None
+            )
     elif stream_name is not None and (window is None or (stream_frame is None and stars is None)):
         raise ValueError(f"{stream_name!r} is not in galstreams: give its stream_frame and window.")
     if window is None:

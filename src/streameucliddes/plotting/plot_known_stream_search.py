@@ -30,6 +30,9 @@ FOOTPRINT_GREY = "0.88"
 FOOTPRINT_OUTSIDE_GREY = "0.85"  # single-dm maps: bins outside the footprint
 DENSITY_PERCENTILES = (1.0, 99.5)  # single-dm maps: default colour scale
 COLORBAR_BOUNDS = (1.01, 0.0, 0.015, 1.0)  # single-dm maps: colour bar, in map axes fractions
+# single-dm maps: decimals of the colour-bar labels, fixed so that the labels, and so the
+# map, keep their size from one frame of a gif to the next
+COLORBAR_DECIMALS = 2
 INK = "0.15"  # text
 # Positions tried for a label, as fractions along the part of the track inside the footprint
 LABEL_FRACTIONS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9)
@@ -110,7 +113,7 @@ def plot_known_stream_search_single_dm(
                       aspect="equal", interpolation="nearest")
     # inset of the map: the height of the map, and seen by constrained layout (no crop when saved)
     colorbar_ax = ax.inset_axes(COLORBAR_BOUNDS)
-    fig.colorbar(image, cax=colorbar_ax, label="Counts (smoothed)")
+    fig.colorbar(image, cax=colorbar_ax, label="Counts (smoothed)", format=f"%.{COLORBAR_DECIMALS}f")
 
     if track_phi12 is not None:
         ax.plot(*track_phi12, color=TRACK_COLOR, lw=1.0, ls="--", alpha=0.8,

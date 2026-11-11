@@ -123,6 +123,24 @@ def test_plot_single_dm_colorbar_inside_figure(search):
     plt.close(fig)
 
 
+# The colour-bar labels have COLORBAR_DECIMALS decimals: maps of other colour scales (other
+# ticks) keep the same size, for regular gifs
+def test_plot_single_dm_colorbar_decimals(search):
+    result = known_stream_search_single_dm(distance_modulus=17.0, search=search)
+    positions = []
+    for scale in (1.0, 1.7, 3.1):
+        scaled = {**result, "density": result["density"] * scale}
+        with plt.rc_context({"figure.constrained_layout.use": True}):
+            fig, ax = plot_known_stream_search_single_dm(scaled)
+            fig.canvas.draw()
+        labels = [label.get_text() for label in ax.child_axes[0].get_yticklabels() if label.get_text()]
+        decimals = plot_known_stream_search.COLORBAR_DECIMALS
+        assert labels and all(len(label.split(".")[1]) == decimals for label in labels)
+        positions.append(ax.get_position().bounds)
+        plt.close(fig)
+    np.testing.assert_allclose(positions[1:], positions[:1] * 2)
+
+
 # Tracks: the stream's dashed, the others in their colours, all in the legend; the given
 # vmax, title and axes are used
 def test_plot_single_dm_tracks(search):
