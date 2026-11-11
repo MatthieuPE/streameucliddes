@@ -44,6 +44,9 @@ LOGGER = logging.getLogger(__name__)
 GALSTREAMS_CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "galstreams"
 
 IBATA2024_REFERENCE = "ibata2024"  # galstreams reference of the Ibata et al. 2024 tracks
+# galstreams_dm_along_track(extrapolate=True): line fitted to the track points within this
+# distance of an end (deg)
+EXTRAPOLATION_BASELINE_DEG = 1.0
 
 SELECTION_COLUMNS = [
     "track_name",
@@ -250,16 +253,17 @@ def galstreams_phi12_window(
 
 
 def galstreams_dm_along_track(
-    track: galstreams.Track6D, phi1: ArrayLike, *, hold_ends: bool = False
+    track: galstreams.Track6D, phi1: ArrayLike, *, extrapolate: bool = False
 ) -> NDArray[np.float64]:
     """Distance modulus of a galstreams track at given phi1.
 
     Interpolates linearly the distance moduli of the track points in phi1, in
-    the track's frame. Outside the phi1 range of the track: NaN (no
-    extrapolation), or the distance modulus of the nearest end with
-    ``hold_ends``. NaN for the Ibata et al. 2024 tracks (no distances).
-    Constant when galstreams only has a mean distance (see the module
-    docstring).
+    the track's frame. Outside the phi1 range of the track: NaN, or with
+    ``extrapolate`` the line fitted to the track points within
+    ``EXTRAPOLATION_BASELINE_DEG`` of the nearest end (to follow a possible
+    extension of the stream). NaN for the Ibata et al. 2024 tracks (no
+    distances). Constant when galstreams only has a mean distance (see the
+    module docstring).
 
     Parameters
     ----------
@@ -267,9 +271,9 @@ def galstreams_dm_along_track(
         One track of ``load_galstreams()``.
     phi1 : array_like
         phi1 in the track's ``stream_frame`` (deg).
-    hold_ends : bool, optional
-        Beyond the ends of the track, the distance modulus of the nearest
-        end instead of NaN.
+    extrapolate : bool, optional
+        Beyond the ends of the track, extrapolate the distance modulus
+        linearly instead of NaN.
 
     Returns
     -------
@@ -277,11 +281,19 @@ def galstreams_dm_along_track(
         Same shape as ``phi1``.
     """
     phi1 = np.asarray(phi1, dtype=float)
-    dm = _track_distance_moduli(track)
     track_phi1, _ = _track_phi12(track)
     order = np.argsort(track_phi1)
-    beyond = {} if hold_ends else {"left": np.nan, "right": np.nan}  # np.interp holds the ends by default
-    return np.interp(phi1, track_phi1[order], dm[order], **beyond)
+    track_phi1, track_dm = track_phi1[order], _track_distance_moduli(track)[order]
+    dm = np.interp(phi1, track_phi1, track_dm, left=np.nan, right=np.nan)
+    if not extrapolate or np.isnan(track_dm).any():
+        return dm
+    for end, beyond in ((track_phi1[0], phi1 < track_phi1[0]), (track_phi1[-1], phi1 > track_phi1[-1])):
+        near_end = np.abs(track_phi1 - end) <= EXTRAPOLATION_BASELINE_DEG
+        if near_end.sum() < 2:  # sparse track: its two points nearest to the end
+            near_end = np.argsort(np.abs(track_phi1 - end))[:2]
+        slope, intercept = np.polyfit(track_phi1[near_end], track_dm[near_end], 1)
+        dm[beyond] = intercept + slope * phi1[beyond]
+    return dm
 
 
 def _is_ibata2024(track: galstreams.Track6D) -> bool:

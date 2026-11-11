@@ -5,34 +5,27 @@ on a phi1/phi2 grid in the stream frame, for each distance modulus. No
 polynomial background is subtracted. Magnitudes are used as they are: the
 Euclid x DES magnitudes are already dereddened.
 
-Built from the shared pieces: ``catalog_preparation.prepare_match_filter_catalog``
-(columns, cuts, phi1/phi2, window), ``cmd_match_filter.select_stars_in_match_filter``
-and ``star_density_maps.star_density_phi12``.
+Every search starts with ``prepare_search``, done once: the values not given
+taken from galstreams and the population table, the catalog prepared
+(``catalog_preparation.prepare_match_filter_catalog``), the footprint put on
+the grid. Then each map is ``cmd_match_filter.select_stars_in_match_filter``
+and ``star_density_maps.star_density_phi12`` on the prepared stars:
 
-Every argument but the catalog is optional. With ``stream_name``, a
-galstreams stream (its default track, galstreams ``On`` flag, e.g.
-``"AAU-ATLAS"``) or track (e.g. ``"AAU-ATLAS-L21"``), the values not given
-come from ``catalogs.galstreams_catalog``:
+- ``known_stream_search_single_dm``: one map;
+- ``known_stream_search_dm_scan``: ``single_dm`` over a grid of distance
+  moduli, for each isochrone of the stream, yielding ``(dm, result)`` one at
+  a time;
+- ``known_stream_search_dm_along_track``: maps following the distance of the
+  track along phi1.
 
-- the frame: the ``stream_frame`` of the track;
-- the window: ``galstreams_phi12_window``;
-- the distance moduli: ``dm_min`` to ``dm_max`` of the part of the track in
-  the footprint (``select_galstreams_in_footprint``), +- ``TRACK_DM_MARGIN``;
-
-and the isochrones from ``catalogs.isochrone_parameters.known_stream_isochrone_parameters``.
-A given value is always kept: a stream not in galstreams works with its
-``stream_frame`` and ``window``. The prepared stars can be passed (``stars``)
-to prepare a catalog only once.
-
-Mirrors ``generic_stream_search``: ``_single_dm`` gives one map;
-``_dm_scan`` calls it over a grid of distance moduli (and the isochrones of
-the stream) and yields ``(dm, result)`` one at a time; the workflows build
-the stacks.
+Each takes the arguments of ``prepare_search``, or a ``search`` already
+prepared (e.g. for several calls on the same stream).
 """
 
 from __future__ import annotations
 
 import functools
+import inspect
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -72,32 +65,107 @@ DM_STEP = 0.1  # step of the default grids of distance moduli
 TRACK_DM_MARGIN = 1.0  # default grid: the distance moduli of the track in the footprint, +- this margin
 # Default grid without a track distance: the plan's 15 to 22
 DEFAULT_DISTANCE_MODULI = tuple(np.round(np.arange(15.0, 22.0 + DM_STEP / 2, DM_STEP), 1))
+# Arguments of select_galstreams_in_footprint that prepare_search passes on when given
+SELECTION_ARGUMENTS = tuple(
+    name for name, parameter in inspect.signature(select_galstreams_in_footprint).parameters.items()
+    if parameter.kind is inspect.Parameter.KEYWORD_ONLY and name != "nest"
+)
 
 
-def known_stream_search_single_dm(
+# ===================================================
+# Preparation
+# ===================================================
+
+
+@dataclass(frozen=True)
+class PreparedSearch:
+    """Everything a known-stream search uses, from ``prepare_search``.
+
+    Attributes
+    ----------
+    stars : pandas.DataFrame
+        The prepared catalog: stars of the window passing the cuts, with
+        ``phi1``, ``phi2`` and the magnitudes of the match filter.
+    stream_frame : astropy.coordinates.BaseCoordinateFrame or None
+        Frame of the maps (None when only prepared stars were given).
+    window : tuple of float
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg).
+    bin_size_deg : float
+        Bin size of the grid (deg).
+    phi1_centres, phi2_centres : numpy.ndarray
+        Bins of the grid (``stream_frames.phi12_bin_centres``).
+    footprint_mask : numpy.ndarray of bool or None
+        Footprint on the grid, True outside.
+    match_filter : dict
+        See ``cmd_match_filter``.
+    isochrones : list of dict
+        ``{"age", "metallicity"}``, one set of maps each.
+    distance_moduli : list of float
+        Grid of distance moduli of the scan.
+    track : galstreams.Track6D or None
+        The galstreams track; None for a stream not in galstreams.
+    track_name : str or None
+        Its name.
+    dm_min, dm_max : float
+        Distance moduli of the track in the footprint
+        (``select_galstreams_in_footprint``); NaN without a track distance.
+    """
+
+    stars: Any
+    stream_frame: Any
+    window: tuple[float, float, float, float]
+    bin_size_deg: float
+    phi1_centres: Any
+    phi2_centres: Any
+    footprint_mask: Any
+    match_filter: dict
+    isochrones: list
+    distance_moduli: list
+    track: Any = None
+    track_name: str | None = None
+    dm_min: float = np.nan
+    dm_max: float = np.nan
+
+
+def prepare_search(
     catalog: pd.DataFrame | None = None,
     stream_frame: coord.BaseCoordinateFrame | None = None,
     window: tuple[float, float, float, float] | None = None,
-    distance_modulus: float | None = None,
-    isochrone: Mapping[str, float] | None = None,
-    match_filter: Mapping[str, Any] | None = None,
     *,
     stream_name: str | None = None,
+    track: galstreams.Track6D | None = None,
+    match_filter: Mapping[str, Any] | None = None,
+    isochrone: Mapping[str, float] | None = None,
+    distance_moduli: Iterable[float] | None = None,
+    cuts: Mapping[str, Any] | None = None,
+    stars: pd.DataFrame | None = None,
     mws: galstreams.MWStreams | None = None,
     population_table: pd.DataFrame | None = None,
-    stars: pd.DataFrame | None = None,
-    cuts: Mapping[str, Any] | None = None,
     bin_size_deg: float = DEFAULT_BIN_SIZE_DEG,
-    smoothing_deg: float = DEFAULT_SMOOTHING_DEG,
     footprint_mask: NDArray[np.bool_] | None = None,
     nest: bool | None = None,
-) -> dict[str, Any]:
-    """Matched-filter map of a stream at one distance modulus.
+    **selection_kwargs: Any,
+) -> PreparedSearch:
+    """Prepare a known-stream search: its values, its stars, its footprint.
 
-    Prepares the catalog (``catalog_preparation.prepare_match_filter_catalog``),
-    selects the stars in the match filter of one isochrone
-    (``cmd_match_filter.select_stars_in_match_filter``), and counts them on
-    the phi1/phi2 grid (``star_density_maps.star_density_phi12``).
+    Every value given is kept. With a galstreams ``stream_name`` (a stream:
+    its default track, galstreams ``On`` flag; or a track) or ``track``,
+    those not given come from ``catalogs.galstreams_catalog``:
+
+    - ``stream_frame``: the ``stream_frame`` of the track;
+    - ``window``: ``galstreams_phi12_window``;
+    - ``distance_moduli``: from ``dm_min - TRACK_DM_MARGIN`` to
+      ``dm_max + TRACK_DM_MARGIN`` every ``DM_STEP``, ``dm_min`` and
+      ``dm_max`` being those of the track in the footprint
+      (``select_galstreams_in_footprint``, with its defaults or
+      ``selection_kwargs``; on the whole sky without a HEALPix footprint).
+      Without a track distance: ``DEFAULT_DISTANCE_MODULI`` (15 to 22).
+
+    The isochrones: ``isochrone``, else those of the stream
+    (``catalogs.isochrone_parameters.known_stream_isochrone_parameters``),
+    else ``default_isochrone_grid``. Then the catalog is prepared once
+    (``catalog_preparation.prepare_match_filter_catalog``) and the footprint
+    put on the grid (``catalogs.survey_footprint.survey_footprint_phi12_mask``).
 
     Parameters
     ----------
@@ -106,51 +174,148 @@ def known_stream_search_single_dm(
         match filter, e.g. ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
         Not needed when ``stars`` is given.
     stream_frame : astropy.coordinates.BaseCoordinateFrame, optional
-        Stream frame (e.g. a gala ``GreatCircleICRSFrame``). Default: the
-        ``stream_frame`` of the galstreams track of ``stream_name``.
+        Stream frame, e.g. a gala ``GreatCircleICRSFrame``.
     window : tuple of float, optional
-        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` of the map (deg).
-        Default: ``catalogs.galstreams_catalog.galstreams_phi12_window`` of
-        the track.
-    distance_modulus : float, optional
-        Distance modulus of the match filter. Default: the middle of
-        ``dm_min`` and ``dm_max`` of the track in the footprint, rounded to
-        ``DM_STEP``.
-    isochrone : mapping, optional
-        ``{"age": age (Gyr), "metallicity": Z}``. Default: the first isochrone
-        of ``catalogs.isochrone_parameters.known_stream_isochrone_parameters``
-        for the stream (the default grid for a stream not in the population
-        table, or without ``stream_name``).
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` of the maps (deg).
+    stream_name : str, optional
+        galstreams stream or track name; or the name of a stream not in
+        galstreams (then ``stream_frame`` and ``window`` are needed), for its
+        isochrones.
+    track : galstreams.Track6D, optional
+        The track itself, instead of ``stream_name``.
     match_filter : mapping, optional
         See ``cmd_match_filter``. Default: ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
-    stream_name : str, optional
-        galstreams stream or track name, to fill the arguments not given
-        (see the module docstring); or the name of a stream not in
-        galstreams, for its isochrones.
+    isochrone : mapping, optional
+        The one isochrone of the search, ``{"age": age (Gyr), "metallicity": Z}``.
+    distance_moduli : iterable of float, optional
+        Grid of distance moduli of the scan.
+    cuts : mapping, optional
+        Cuts of the preparation (default: errors <= 0.2 on the bands of the
+        match filter). Ignored with ``stars``.
+    stars : pandas.DataFrame, optional
+        The catalog already prepared with this frame, window, match filter
+        and cuts: used instead of ``catalog``.
     mws : galstreams.MWStreams, optional
         Default: ``catalogs.galstreams_catalog.load_galstreams()``, read only
         for ``stream_name``.
     population_table : pandas.DataFrame, optional
         See ``known_stream_isochrone_parameters``.
-    stars : pandas.DataFrame, optional
-        The catalog already prepared by ``prepare_match_filter_catalog`` with
-        this frame, window, match filter and cuts: used instead of
-        ``catalog``.
-    cuts : mapping, optional
-        Cuts of the preparation (default: errors <= 0.2 on the bands of the
-        match filter). Ignored with ``stars``.
     bin_size_deg : float, optional
         Bin size of the grid (deg).
-    smoothing_deg : float, optional
-        Standard deviation of the Gaussian smoothing (deg).
     footprint_mask : numpy.ndarray of bool, optional
         True outside the footprint: a HEALPix mask
         (``catalogs.survey_footprint.survey_footprint_healpix_mask``, needs
-        ``nest``), put on the grid and used for the distance moduli of the
-        track in the footprint; or a mask on the grid, shape (n_phi1,
-        n_phi2) (``survey_footprint_phi12_mask``).
+        ``nest``); or a mask on the grid, shape (n_phi1, n_phi2).
     nest : bool, optional
         HEALPix ordering of a HEALPix ``footprint_mask``.
+    **selection_kwargs
+        Arguments of ``select_galstreams_in_footprint`` (``SELECTION_ARGUMENTS``:
+        ``dm_range``, ``min_length_deg``, ``add_ibata2024``), only when given.
+
+    Returns
+    -------
+    search : PreparedSearch
+
+    Raises
+    ------
+    ValueError
+        A value needed is neither given nor found in galstreams, or the
+        track is not selected by ``select_galstreams_in_footprint``.
+    TypeError
+        An argument that ``select_galstreams_in_footprint`` does not take.
+    """
+    unknown = set(selection_kwargs) - set(SELECTION_ARGUMENTS)
+    if unknown:
+        raise TypeError(f"Unexpected arguments {sorted(unknown)}; select_galstreams_in_footprint takes {SELECTION_ARGUMENTS}.")
+
+    # Values not given: from galstreams
+    if track is None and stream_name is not None:
+        track = _galstreams_track(stream_name, mws)
+    dm_min = dm_max = np.nan
+    if track is not None:
+        stream_frame = track.stream_frame if stream_frame is None else stream_frame
+        window = galstreams_phi12_window(track) if window is None else window
+        dm_min, dm_max = _dm_range_in_footprint(track, footprint_mask, nest, selection_kwargs)
+    elif stream_name is not None and (window is None or (stream_frame is None and stars is None)):
+        raise ValueError(f"{stream_name!r} is not in galstreams: give its stream_frame and window.")
+    if window is None:
+        raise ValueError("Give a window, or a galstreams stream_name.")
+    window = tuple(float(value) for value in window)
+    if distance_moduli is None:
+        distance_moduli = _distance_moduli_grid(dm_min, dm_max)
+
+    if isochrone is not None:
+        isochrones = [dict(isochrone)]
+    elif track is not None or stream_name is not None:
+        isochrones = known_stream_isochrone_parameters(
+            track.stream_name if track is not None else stream_name, population_table
+        )
+    else:
+        isochrones = default_isochrone_grid()
+    match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
+
+    # Stars and footprint, once
+    if stars is None:
+        if catalog is None:
+            raise ValueError("Give a catalog or the prepared stars.")
+        if stream_frame is None:
+            raise ValueError("A catalog needs a stream_frame (or a galstreams stream_name), for phi1/phi2.")
+        stars = prepare_match_filter_catalog(catalog, match_filter, cuts=cuts, stream_frame=stream_frame, window=window)
+    if footprint_mask is not None and np.ndim(footprint_mask) == 1:  # HEALPix: put on the grid
+        if nest is None or stream_frame is None:
+            raise ValueError("A HEALPix footprint_mask needs nest and a stream_frame.")
+        footprint_mask = survey_footprint_phi12_mask(footprint_mask, stream_frame, window, bin_size_deg, nest=nest)
+    phi1_centres, phi2_centres = phi12_bin_centres(window, bin_size_deg)
+
+    return PreparedSearch(
+        stars=stars, stream_frame=stream_frame, window=window, bin_size_deg=bin_size_deg,
+        phi1_centres=phi1_centres, phi2_centres=phi2_centres, footprint_mask=footprint_mask,
+        match_filter=match_filter, isochrones=list(isochrones), distance_moduli=[float(dm) for dm in distance_moduli],
+        track=track, track_name=None if track is None else track.track_name, dm_min=dm_min, dm_max=dm_max,
+    )
+
+
+# ===================================================
+# Searches
+# ===================================================
+
+
+def known_stream_search_single_dm(
+    catalog: pd.DataFrame | None = None,
+    stream_frame: coord.BaseCoordinateFrame | None = None,
+    window: tuple[float, float, float, float] | None = None,
+    distance_modulus: float | None = None,
+    isochrone: Mapping[str, float] | None = None,
+    *,
+    search: PreparedSearch | None = None,
+    smoothing_deg: float = DEFAULT_SMOOTHING_DEG,
+    **prepare_kwargs: Any,
+) -> dict[str, Any]:
+    """Matched-filter map of a stream at one distance modulus.
+
+    Selects the prepared stars in the match filter of one isochrone
+    (``cmd_match_filter.select_stars_in_match_filter``), and counts them on
+    the phi1/phi2 grid (``star_density_maps.star_density_phi12``).
+
+    Parameters
+    ----------
+    catalog, stream_frame, window
+        See ``prepare_search``.
+    distance_modulus : float, optional
+        Distance modulus of the match filter. Default: the middle of
+        ``dm_min`` and ``dm_max`` of the track in the footprint, rounded to
+        ``DM_STEP``.
+    isochrone : mapping, optional
+        ``{"age": age (Gyr), "metallicity": Z}``. Default: the first
+        isochrone of the search.
+    search : PreparedSearch, optional
+        From ``prepare_search``; else prepared here from the other arguments.
+    smoothing_deg : float, optional
+        Standard deviation of the Gaussian smoothing (deg).
+    **prepare_kwargs
+        Other arguments of ``prepare_search`` (e.g. ``stream_name``,
+        ``match_filter``, ``cuts``, ``bin_size_deg``, ``footprint_mask``,
+        ``nest``); not with ``search``.
 
     Returns
     -------
@@ -165,31 +330,27 @@ def known_stream_search_single_dm(
     Raises
     ------
     ValueError
-        A value needed is neither given nor found in galstreams.
+        No distance modulus given nor in galstreams; preparation arguments
+        with ``search``; see ``prepare_search``.
 
     References
     ----------
     Rockosi et al. 2002, AJ 124, 349. Grillmair 2009, ApJ 693, 1118.
     Shipp et al. 2018, ApJ 862, 114.
     """
-    known = _find_galstreams_stream(stream_name, mws, footprint_mask, nest)
-    stream_frame, window = _frame_and_window(known, stream_name, stream_frame, window, stars)
+    search = _search(search, catalog, stream_frame, window, prepare_kwargs)
     if distance_modulus is None:
-        if known is None or np.isnan(known.dm_min):
+        if np.isnan(search.dm_min):
             raise ValueError("Give distance_modulus: no galstreams track distance to take it from.")
-        distance_modulus = _round_dm((known.dm_min + known.dm_max) / 2)
-    isochrone = _isochrones(isochrone, known, stream_name, population_table)[0]
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
-    stars = _search_stars(catalog, stars, stream_frame, window, match_filter, cuts)
-    grid_footprint = _grid_footprint(footprint_mask, stream_frame, window, bin_size_deg, nest)
+        distance_modulus = float(np.round(np.round((search.dm_min + search.dm_max) / 2 / DM_STEP) * DM_STEP, 1))
+    isochrone = search.isochrones[0] if isochrone is None else dict(isochrone)
 
-    selected = select_stars_in_match_filter(stars, distance_modulus, isochrone, match_filter)
-    result = _map_of_selected(stars, selected, window, bin_size_deg, smoothing_deg, grid_footprint)
+    selected = select_stars_in_match_filter(search.stars, distance_modulus, isochrone, search.match_filter)
+    result = _map_of_selected(search, selected, smoothing_deg)
     result.update(
         distance_modulus=float(distance_modulus),
         distance_kpc=float(convert_DM_to_kpc(distance_modulus).value),
-        isochrone=dict(isochrone), match_filter=match_filter,
-        track_name=None if known is None else known.track_name,
+        isochrone=isochrone,
     )
     return result
 
@@ -200,49 +361,37 @@ def known_stream_search_dm_scan(
     window: tuple[float, float, float, float] | None = None,
     distance_moduli: Iterable[float] | None = None,
     isochrone: Mapping[str, float] | None = None,
-    match_filter: Mapping[str, Any] | None = None,
     *,
-    stream_name: str | None = None,
-    mws: galstreams.MWStreams | None = None,
-    population_table: pd.DataFrame | None = None,
-    stars: pd.DataFrame | None = None,
-    cuts: Mapping[str, Any] | None = None,
-    bin_size_deg: float = DEFAULT_BIN_SIZE_DEG,
+    search: PreparedSearch | None = None,
     smoothing_deg: float = DEFAULT_SMOOTHING_DEG,
-    footprint_mask: NDArray[np.bool_] | None = None,
-    nest: bool | None = None,
     n_workers: int = 1,
+    **prepare_kwargs: Any,
 ) -> Iterator[tuple[float, dict[str, Any]]]:
     """Matched-filter maps of a stream over a grid of distance moduli, per isochrone.
 
-    The values not given are taken once (see the module docstring), the
-    catalog prepared and the footprint put on the grid once; then each
-    isochrone and distance modulus is a call of
-    ``known_stream_search_single_dm`` on the prepared stars. The maps are
-    yielded one at a time: the caller can save or plot each one and drop
-    it before the next one.
+    The search is prepared once (``prepare_search``); then each isochrone
+    and distance modulus is a call of ``known_stream_search_single_dm``.
+    The maps are yielded one at a time: the caller can save or plot each
+    one and drop it before the next one.
 
     Parameters
     ----------
-    catalog, stream_frame, window, match_filter
-        See ``known_stream_search_single_dm``.
+    catalog, stream_frame, window
+        See ``prepare_search``.
     distance_moduli : iterable of float, optional
-        Grid of distance moduli. Default: from ``dm_min - TRACK_DM_MARGIN``
-        to ``dm_max + TRACK_DM_MARGIN`` of the track in the footprint, every
-        ``DM_STEP``; without a track distance, ``DEFAULT_DISTANCE_MODULI``
-        (15 to 22).
+        Grid of distance moduli. Default: that of the search (see
+        ``prepare_search``).
     isochrone : mapping, optional
-        The one isochrone of the scan. Default: every isochrone of
-        ``known_stream_isochrone_parameters`` for the stream (the default
-        grid without ``stream_name``).
-    stream_name, mws, population_table, stars, cuts
-        See ``known_stream_search_single_dm``.
-    bin_size_deg, smoothing_deg, footprint_mask, nest
+        The one isochrone of the scan. Default: every isochrone of the search.
+    search : PreparedSearch, optional
+        From ``prepare_search``; else prepared here from the other arguments.
+    smoothing_deg : float, optional
         See ``known_stream_search_single_dm``.
     n_workers : int, optional
         Processes computing the maps in parallel (1: none). Each process
-        receives the prepared stars once. The results are still yielded in
-        order.
+        receives the search once. The results are still yielded in order.
+    **prepare_kwargs
+        Other arguments of ``prepare_search``; not with ``search``.
 
     Yields
     ------
@@ -258,27 +407,20 @@ def known_stream_search_dm_scan(
     Processes pay off for large windows: a map takes about 0.15 s for
     300 000 stars in the window, and a process takes a few seconds to start.
     """
-    known = _find_galstreams_stream(stream_name, mws, footprint_mask, nest)
-    stream_frame, window = _frame_and_window(known, stream_name, stream_frame, window, stars)
-    if distance_moduli is None:
-        distance_moduli = _distance_moduli_grid(known)
-    isochrones = _isochrones(isochrone, known, stream_name, population_table)
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
-    stars = _search_stars(catalog, stars, stream_frame, window, match_filter, cuts)
-    grid_footprint = _grid_footprint(footprint_mask, stream_frame, window, bin_size_deg, nest)
+    search = _search(search, catalog, stream_frame, window, prepare_kwargs)
+    distance_moduli = search.distance_moduli if distance_moduli is None else [float(dm) for dm in distance_moduli]
+    isochrones = search.isochrones if isochrone is None else [dict(isochrone)]
+    tasks = [(isochrone, dm) for isochrone in isochrones for dm in distance_moduli]
 
-    single_dm = functools.partial(
-        _single_dm_on_stars, window=window, match_filter=match_filter, bin_size_deg=bin_size_deg,
-        smoothing_deg=smoothing_deg, footprint_mask=grid_footprint,
-        track_name=None if known is None else known.track_name,
-    )
-    tasks = [(isochrone, float(dm)) for isochrone in isochrones for dm in distance_moduli]
     if n_workers <= 1:
-        for task in tasks:
-            yield task[1], single_dm(task, stars=stars)
+        for isochrone, dm in tasks:
+            yield dm, known_stream_search_single_dm(
+                distance_modulus=dm, isochrone=isochrone, search=search, smoothing_deg=smoothing_deg
+            )
         return
-    with ProcessPoolExecutor(max_workers=n_workers, initializer=_set_worker_stars, initargs=(stars,)) as executor:
-        yield from zip((dm for _, dm in tasks), executor.map(functools.partial(_worker_single_dm, single_dm), tasks))
+    single_dm = functools.partial(_worker_single_dm, smoothing_deg=smoothing_deg)
+    with ProcessPoolExecutor(max_workers=n_workers, initializer=_set_worker_search, initargs=(search,)) as executor:
+        yield from zip((dm for _, dm in tasks), executor.map(single_dm, tasks))
 
 
 def known_stream_search_dm_along_track(
@@ -287,47 +429,46 @@ def known_stream_search_dm_along_track(
     stream_frame: coord.BaseCoordinateFrame | None = None,
     window: tuple[float, float, float, float] | None = None,
     isochrone: Mapping[str, float] | None = None,
-    match_filter: Mapping[str, Any] | None = None,
     *,
-    stream_name: str | None = None,
-    mws: galstreams.MWStreams | None = None,
-    population_table: pd.DataFrame | None = None,
-    stars: pd.DataFrame | None = None,
+    search: PreparedSearch | None = None,
     dm_offsets: Iterable[float] = (0.0,),
     dm_step: float = DM_STEP,
-    cuts: Mapping[str, Any] | None = None,
-    bin_size_deg: float = DEFAULT_BIN_SIZE_DEG,
     smoothing_deg: float = DEFAULT_SMOOTHING_DEG,
-    footprint_mask: NDArray[np.bool_] | None = None,
-    nest: bool | None = None,
+    **prepare_kwargs: Any,
 ) -> Iterator[tuple[float, dict[str, Any]]]:
     """Matched-filter maps that follow the distance of the track along phi1, per isochrone.
 
     In each phi1 bin, the match filter is at the distance modulus of the
-    track there plus an offset: one map per offset. The distance moduli are
-    those of ``catalogs.galstreams_catalog.galstreams_dm_along_track``,
-    held at the ends of the track, rounded to ``dm_step``: the stars of the
-    phi1 bins sharing a distance modulus go through one filter.
+    track there plus an offset: one map per offset. Along the track, its
+    distance moduli; beyond its ends, over the rest of the window, their
+    linear extrapolation, to follow a possible extension of the stream
+    (``catalogs.galstreams_catalog.galstreams_dm_along_track`` with
+    ``extrapolate``). They are rounded to ``dm_step``: the stars of the phi1
+    bins sharing a distance modulus go through one filter.
 
     Parameters
     ----------
-    catalog, window, match_filter
-        See ``known_stream_search_single_dm``.
+    catalog : pandas.DataFrame, optional
+        See ``prepare_search``.
     track : galstreams.Track6D, optional
         Track of the stream. Default: the galstreams track of ``stream_name``.
     stream_frame : astropy.coordinates.BaseCoordinateFrame, optional
         Frame of the maps; its phi1 must be the track's. Default:
         ``track.stream_frame``.
+    window : tuple of float, optional
+        See ``prepare_search``.
     isochrone : mapping, optional
         See ``known_stream_search_dm_scan``.
-    stream_name, mws, population_table, stars
-        See ``known_stream_search_single_dm``.
+    search : PreparedSearch, optional
+        From ``prepare_search`` with a track; else prepared here.
     dm_offsets : iterable of float, optional
         Offsets added to the distance modulus of the track.
     dm_step : float, optional
         Rounding step of the distance moduli of the track.
-    cuts, bin_size_deg, smoothing_deg, footprint_mask, nest
+    smoothing_deg : float, optional
         See ``known_stream_search_single_dm``.
+    **prepare_kwargs
+        Other arguments of ``prepare_search``; not with ``search``.
 
     Yields
     ------
@@ -346,194 +487,116 @@ def known_stream_search_dm_along_track(
         tracks).
     """
     if track is not None:
-        known = _galstreams_stream_of_track(track, footprint_mask, nest)
-    else:
-        known = _find_galstreams_stream(stream_name, mws, footprint_mask, nest)
-        if known is None:
-            raise ValueError("Give a track or a galstreams stream_name: the distance follows the track.")
-    stream_frame, window = _frame_and_window(known, stream_name, stream_frame, window, stars)
-    isochrones = _isochrones(isochrone, known, stream_name, population_table)
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
-    stars = _search_stars(catalog, stars, stream_frame, window, match_filter, cuts)
-    grid_footprint = _grid_footprint(footprint_mask, stream_frame, window, bin_size_deg, nest)
-
-    phi1_centres, _ = phi12_bin_centres(window, bin_size_deg)
-    dm_along_phi1 = galstreams_dm_along_track(known.track, phi1_centres, hold_ends=True)
+        prepare_kwargs["track"] = track
+    search = _search(search, catalog, stream_frame, window, prepare_kwargs)
+    if search.track is None:
+        raise ValueError("Give a track or a galstreams stream_name: the distance follows the track.")
+    dm_along_phi1 = galstreams_dm_along_track(search.track, search.phi1_centres, extrapolate=True)
     if np.isnan(dm_along_phi1).any():
-        raise ValueError(f"Track {known.track_name} has no distance in galstreams.")
+        raise ValueError(f"Track {search.track_name} has no distance in galstreams.")
     dm_along_phi1 = np.round(dm_along_phi1 / dm_step) * dm_step
 
+    stars = search.stars
     # phi1 bin of each star (the last bin may end within half a bin of the window)
     star_bin = np.clip(
-        np.floor((stars["phi1"].to_numpy() - window[0]) / bin_size_deg).astype(int), 0, phi1_centres.size - 1
+        np.floor((stars["phi1"].to_numpy() - search.window[0]) / search.bin_size_deg).astype(int),
+        0, search.phi1_centres.size - 1,
     )
     star_dm = dm_along_phi1[star_bin]
+    isochrones = search.isochrones if isochrone is None else [dict(isochrone)]
     for isochrone in isochrones:
         for dm_offset in dm_offsets:
             selected = np.zeros(len(stars), dtype=bool)
             for dm in np.unique(star_dm):
                 selected |= select_stars_in_match_filter(
-                    stars, dm + dm_offset, isochrone, match_filter, mask=star_dm == dm
+                    stars, dm + dm_offset, isochrone, search.match_filter, mask=star_dm == dm
                 )
-            result = _map_of_selected(stars, selected, window, bin_size_deg, smoothing_deg, grid_footprint)
-            result.update(
-                dm_along_phi1=dm_along_phi1 + dm_offset, dm_offset=float(dm_offset),
-                isochrone=dict(isochrone), match_filter=match_filter, track_name=known.track_name,
-            )
+            result = _map_of_selected(search, selected, smoothing_deg)
+            result.update(dm_along_phi1=dm_along_phi1 + dm_offset, dm_offset=float(dm_offset), isochrone=isochrone)
             yield float(dm_offset), result
 
 
 # ===================================================
-# Values from galstreams
+# Helpers
 # ===================================================
 
 
-@dataclass(frozen=True)
-class _GalstreamsStream:
-    """What ``catalogs.galstreams_catalog`` gives for one galstreams track."""
+def _search(search, catalog, stream_frame, window, prepare_kwargs):
+    """The search given, else prepared from the arguments."""
+    if search is None:
+        return prepare_search(catalog, stream_frame, window, **prepare_kwargs)
+    given = [name for name, value in (("catalog", catalog), ("stream_frame", stream_frame), ("window", window))
+             if value is not None]
+    if given or prepare_kwargs:
+        raise ValueError(f"Already in the search: {given + sorted(prepare_kwargs)}; give them to prepare_search.")
+    return search
 
-    track_name: str
-    stream_name: str  # galstreams stream name: the key of the population table
-    track: Any  # galstreams.Track6D
-    window: tuple[float, float, float, float]  # galstreams_phi12_window
-    dm_min: float  # of the track in the footprint (select_galstreams_in_footprint); NaN without distance
-    dm_max: float
 
-
-def _find_galstreams_stream(stream_name, mws, footprint_mask, nest):
+def _galstreams_track(stream_name, mws):
     """The galstreams track of a track name, or the default ('On') track of a stream name; None if neither."""
-    if stream_name is None:
-        return None
     mws = load_galstreams() if mws is None else mws
     if stream_name in mws:  # a track name
-        return _galstreams_stream_of_track(mws[stream_name], footprint_mask, nest)
+        return mws[stream_name]
     summary = mws.summary  # one row per track: its stream ("Name") and default track ("On")
     default_tracks = summary.loc[(summary["Name"] == stream_name) & summary["On"], "TrackName"]
-    if default_tracks.empty:
-        return None
-    return _galstreams_stream_of_track(mws[default_tracks.iloc[0]], footprint_mask, nest)
+    return mws[default_tracks.iloc[0]] if len(default_tracks) else None
 
 
-def _galstreams_stream_of_track(track, footprint_mask, nest):
-    """Window and distance moduli of a track in the footprint (the whole sky without a HEALPix footprint)."""
+def _dm_range_in_footprint(track, footprint_mask, nest, selection_kwargs):
+    """dm_min, dm_max of the track in the footprint, from select_galstreams_in_footprint."""
     if footprint_mask is not None and np.ndim(footprint_mask) == 1:
         if nest is None:
             raise ValueError("A HEALPix footprint_mask needs nest.")
         healpix_mask, healpix_nest = footprint_mask, nest
-    else:
-        healpix_mask, healpix_nest = np.zeros(hp.nside2npix(1), dtype=bool), False  # whole sky
+    else:  # no HEALPix footprint: the whole sky
+        healpix_mask, healpix_nest = np.zeros(hp.nside2npix(1), dtype=bool), False
     selection = select_galstreams_in_footprint(
-        {track.track_name: track}, healpix_mask, nest=healpix_nest,
-        dm_range=None, min_length_deg=0.0, add_ibata2024=True,
+        {track.track_name: track}, healpix_mask, nest=healpix_nest, **selection_kwargs
     )
     if selection.empty:
-        raise ValueError(f"Track {track.track_name} does not cross the footprint.")
-    return _GalstreamsStream(
-        track_name=track.track_name, stream_name=track.stream_name, track=track,
-        window=galstreams_phi12_window(track),
-        dm_min=float(selection["dm_min"].iloc[0]), dm_max=float(selection["dm_max"].iloc[0]),
-    )
+        raise ValueError(
+            f"Track {track.track_name} is not selected by select_galstreams_in_footprint "
+            f"(arguments {selection_kwargs or 'by default'}): not enough of it in the footprint, "
+            "in the dm range, or an Ibata et al. 2024 track without add_ibata2024=True."
+        )
+    return float(selection["dm_min"].iloc[0]), float(selection["dm_max"].iloc[0])
 
 
-def _frame_and_window(known, stream_name, stream_frame, window, stars):
-    """The given frame and window, else those of the galstreams track."""
-    if known is not None:
-        stream_frame = known.track.stream_frame if stream_frame is None else stream_frame
-        window = known.window if window is None else window
-    elif stream_name is not None and (window is None or (stream_frame is None and stars is None)):
-        raise ValueError(f"{stream_name!r} is not in galstreams: give its stream_frame and window.")
-    if window is None:
-        raise ValueError("Give a window, or a galstreams stream_name.")
-    return stream_frame, tuple(window)
-
-
-def _distance_moduli_grid(known):
-    """dm_min - TRACK_DM_MARGIN to dm_max + TRACK_DM_MARGIN of the track, every DM_STEP; 15 to 22 without."""
-    if known is None or np.isnan(known.dm_min):
+def _distance_moduli_grid(dm_min, dm_max):
+    """dm_min - TRACK_DM_MARGIN to dm_max + TRACK_DM_MARGIN, every DM_STEP; 15 to 22 without them."""
+    if np.isnan(dm_min):
         return list(DEFAULT_DISTANCE_MODULI)
-    low = np.floor((known.dm_min - TRACK_DM_MARGIN) / DM_STEP) * DM_STEP
-    high = np.ceil((known.dm_max + TRACK_DM_MARGIN) / DM_STEP) * DM_STEP
+    low = np.floor((dm_min - TRACK_DM_MARGIN) / DM_STEP) * DM_STEP
+    high = np.ceil((dm_max + TRACK_DM_MARGIN) / DM_STEP) * DM_STEP
     return list(np.round(np.arange(low, high + DM_STEP / 2, DM_STEP), 1))
 
 
-def _round_dm(distance_modulus):
-    return float(np.round(np.round(distance_modulus / DM_STEP) * DM_STEP, 1))
-
-
-# ===================================================
-# Isochrones, stars and footprint of a search
-# ===================================================
-
-
-def _isochrones(isochrone, known, stream_name, population_table):
-    """The given isochrone, else those of the stream in the population table, else the default grid."""
-    if isochrone is not None:
-        return [dict(isochrone)]
-    name = known.stream_name if known is not None else stream_name
-    if name is None:
-        return default_isochrone_grid()
-    return known_stream_isochrone_parameters(name, population_table)
-
-
-def _search_stars(catalog, stars, stream_frame, window, match_filter, cuts):
-    """The prepared stars given, else the catalog prepared for this frame and window."""
-    if stars is not None:
-        return stars
-    if catalog is None:
-        raise ValueError("Give a catalog or the prepared stars.")
-    if stream_frame is None:
-        raise ValueError("A catalog needs a stream_frame (or a galstreams stream_name), for phi1/phi2.")
-    return prepare_match_filter_catalog(catalog, match_filter, cuts=cuts, stream_frame=stream_frame, window=window)
-
-
-def _grid_footprint(footprint_mask, stream_frame, window, bin_size_deg, nest):
-    """The footprint on the phi1/phi2 grid: a HEALPix mask put on it, a grid mask as it is."""
-    if footprint_mask is None or np.ndim(footprint_mask) == 2:
-        return footprint_mask
-    if nest is None or stream_frame is None:
-        raise ValueError("A HEALPix footprint_mask needs nest and a stream_frame.")
-    return survey_footprint_phi12_mask(footprint_mask, stream_frame, window, bin_size_deg, nest=nest)
-
-
-def _map_of_selected(stars, selected, window, bin_size_deg, smoothing_deg, grid_footprint):
-    """Map of the selected stars on the grid of the window, with the numbers of stars."""
+def _map_of_selected(search, selected, smoothing_deg):
+    """Map of the selected stars on the grid of the search, with the parameters of the search."""
+    stars = search.stars
     density = star_density_phi12(
-        stars["phi1"].to_numpy()[selected], stars["phi2"].to_numpy()[selected], window, bin_size_deg,
-        smoothing_deg=smoothing_deg, footprint_mask=grid_footprint,
+        stars["phi1"].to_numpy()[selected], stars["phi2"].to_numpy()[selected], search.window,
+        search.bin_size_deg, smoothing_deg=smoothing_deg, footprint_mask=search.footprint_mask,
     )
-    phi1_centres, phi2_centres = phi12_bin_centres(window, bin_size_deg)
     return {
-        "density": density, "phi1_centres": phi1_centres, "phi2_centres": phi2_centres,
-        "n_stars": len(stars), "n_selected": int(selected.sum()), "window": tuple(window),
-        "bin_size_deg": bin_size_deg, "smoothing_deg": smoothing_deg,
+        "density": density, "phi1_centres": search.phi1_centres, "phi2_centres": search.phi2_centres,
+        "n_stars": len(stars), "n_selected": int(selected.sum()), "window": search.window,
+        "bin_size_deg": search.bin_size_deg, "smoothing_deg": smoothing_deg,
+        "match_filter": search.match_filter, "track_name": search.track_name,
     }
 
 
-# ===================================================
-# Scan: one known_stream_search_single_dm call per (isochrone, distance modulus)
-# ===================================================
+# Search of a worker process, set once by its initializer
+_WORKER_SEARCH = None
 
 
-def _single_dm_on_stars(task, *, stars, window, match_filter, bin_size_deg, smoothing_deg, footprint_mask,
-                        track_name):
-    """known_stream_search_single_dm of one (isochrone, distance modulus) on the prepared stars."""
+def _set_worker_search(search):
+    global _WORKER_SEARCH
+    _WORKER_SEARCH = search
+
+
+def _worker_single_dm(task, *, smoothing_deg):
     isochrone, distance_modulus = task
-    result = known_stream_search_single_dm(
-        None, None, window, distance_modulus, isochrone, match_filter, stars=stars,
-        bin_size_deg=bin_size_deg, smoothing_deg=smoothing_deg, footprint_mask=footprint_mask,
+    return known_stream_search_single_dm(
+        distance_modulus=distance_modulus, isochrone=isochrone, search=_WORKER_SEARCH, smoothing_deg=smoothing_deg
     )
-    result["track_name"] = track_name
-    return result
-
-
-# Prepared stars of a worker process, set once by its initializer
-_WORKER_STARS = None
-
-
-def _set_worker_stars(stars):
-    global _WORKER_STARS
-    _WORKER_STARS = stars
-
-
-def _worker_single_dm(single_dm, task):
-    return single_dm(task, stars=_WORKER_STARS)

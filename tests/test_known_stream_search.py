@@ -24,9 +24,11 @@ from streameucliddes.analysis.cmd_match_filter import (
 )
 from streameucliddes.analysis.known_stream_search import (
     DEFAULT_DISTANCE_MODULI,
+    PreparedSearch,
     known_stream_search_dm_along_track,
     known_stream_search_dm_scan,
     known_stream_search_single_dm,
+    prepare_search,
 )
 from streameucliddes.analysis.star_density_maps import star_density_phi12
 from streameucliddes.catalogs import isochrone_parameters
@@ -274,7 +276,7 @@ def test_dm_scan_stream_name(stream_catalog, gc_frame, mock_mws):
 
 
 # With a HEALPix footprint, the distance moduli are those of the part of the track in it
-# (select_galstreams_in_footprint), +- 1 mag; a track outside the footprint is an error
+# (select_galstreams_in_footprint), +- 1 mag; a track not selected is an error
 def test_dm_scan_stream_name_footprint(stream_catalog, gc_frame):
     track = _track(gc_frame, lambda phi1: 17.0 + 0.1 * phi1)  # 16.4 to 17.6 from phi1 -6 to 6
     mws = _MockMWStreams([track], on=["Mock-T00"])
@@ -293,7 +295,7 @@ def test_dm_scan_stream_name_footprint(stream_catalog, gc_frame):
     assert distance_moduli == list(np.round(np.arange(low, high + 0.05, 0.1), 1))
     assert distance_moduli[0] == 15.4 and distance_moduli[-1] <= 18.1  # not 18.6: the half outside is left out
 
-    with pytest.raises(ValueError, match="does not cross the footprint"):
+    with pytest.raises(ValueError, match="not selected by select_galstreams_in_footprint"):
         known_stream_search_single_dm(
             stream_catalog, stream_name="Mock", mws=mws, footprint_mask=np.ones(hp.nside2npix(nside), dtype=bool),
             nest=False,
@@ -346,10 +348,73 @@ def test_stream_name_not_in_galstreams(stream_catalog, gc_frame, mock_mws):
 # A track without distance (Ibata et al. 2024): the default grid of distance moduli, 15 to 22
 def test_dm_scan_stream_name_no_distance(stream_catalog, mock_mws):
     distance_moduli = [dm for dm, _ in known_stream_search_dm_scan(
-        stream_catalog, stream_name="NoDistance", mws=mock_mws, bin_size_deg=1.0, smoothing_deg=0.0
+        stream_catalog, stream_name="NoDistance", mws=mock_mws, bin_size_deg=1.0, smoothing_deg=0.0,
+        add_ibata2024=True,  # select_galstreams_in_footprint leaves them out by default
     )]
     assert distance_moduli == list(DEFAULT_DISTANCE_MODULI)
     assert (distance_moduli[0], distance_moduli[-1], len(distance_moduli)) == (15.0, 22.0, 71)
+
+
+# ===================================================
+# Test prepare_search
+# ===================================================
+
+
+# The values of the search: those of galstreams, the population table and the defaults
+def test_prepare_search(stream_catalog, gc_frame, mock_mws):
+    search = prepare_search(
+        stream_catalog, stream_name="Mock", mws=mock_mws, population_table=_population_table(12.0, 0.0001),
+        bin_size_deg=BIN,
+    )
+    track = mock_mws["Mock-T00"]
+    assert isinstance(search, PreparedSearch)
+    assert search.track is track and search.track_name == "Mock-T00" and search.stream_frame is gc_frame
+    assert search.window == galstreams_phi12_window(track)
+    assert (search.dm_min, search.dm_max) == pytest.approx((STREAM_DM, STREAM_DM))
+    assert search.distance_moduli == list(np.round(np.arange(16.0, 18.05, 0.1), 1))
+    assert search.isochrones == [{"age": 12.0, "metallicity": 0.0001}]
+    assert search.match_filter == DEFAULT_MATCH_FILTER
+    expected_stars = prepare_match_filter_catalog(stream_catalog, stream_frame=gc_frame, window=search.window)
+    pd.testing.assert_frame_equal(search.stars, expected_stars)
+
+
+# A prepared search gives the same maps; preparation arguments with it are refused
+def test_prepared_search_reused(stream_catalog, gc_frame):
+    search = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN)
+    from_search = known_stream_search_single_dm(distance_modulus=STREAM_DM, search=search)
+    direct = known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN)
+    np.testing.assert_array_equal(from_search["density"], direct["density"])
+    (_, scanned), = known_stream_search_dm_scan(distance_moduli=[STREAM_DM], search=search)
+    np.testing.assert_array_equal(scanned["density"], direct["density"])
+    with pytest.raises(ValueError, match="Already in the search"):
+        known_stream_search_single_dm(stream_catalog, distance_modulus=STREAM_DM, search=search)
+    with pytest.raises(ValueError, match="Already in the search"):
+        known_stream_search_single_dm(distance_modulus=STREAM_DM, search=search, bin_size_deg=0.5)
+
+
+# The arguments of select_galstreams_in_footprint are passed on only when given: its
+# defaults otherwise (dm > 14, at least 1 deg, no Ibata et al. 2024 track)
+def test_prepare_search_selection_arguments(stream_catalog, gc_frame):
+    track = _track(gc_frame, lambda phi1: 17.0 + 0.1 * phi1)  # 16.4 to 17.6
+    mws = _MockMWStreams([track], on=["Mock-T00"])
+    by_default = prepare_search(stream_catalog, stream_name="Mock", mws=mws, population_table=_population_table())
+    assert (by_default.dm_min, by_default.dm_max) == pytest.approx((16.4, 17.6), abs=0.01)
+    in_range = prepare_search(
+        stream_catalog, stream_name="Mock", mws=mws, population_table=_population_table(), dm_range=(17.0, None)
+    )
+    assert in_range.dm_min == pytest.approx(17.0, abs=0.01) and in_range.distance_moduli[0] == 16.0
+    with pytest.raises(ValueError, match="not selected"):
+        prepare_search(stream_catalog, stream_name="Mock", mws=mws, dm_range=(18.0, None))
+    with pytest.raises(TypeError, match="padding"):
+        prepare_search(stream_catalog, stream_name="Mock", mws=mws, padding=3.0)
+
+
+# An Ibata et al. 2024 track is only searched with add_ibata2024=True, as in the selection
+def test_prepare_search_ibata2024(stream_catalog, mock_mws):
+    with pytest.raises(ValueError, match="add_ibata2024"):
+        prepare_search(stream_catalog, stream_name="NoDistance", mws=mock_mws)
+    search = prepare_search(stream_catalog, stream_name="NoDistance", mws=mock_mws, add_ibata2024=True)
+    assert np.isnan(search.dm_min) and search.distance_moduli == list(DEFAULT_DISTANCE_MODULI)
 
 
 # ===================================================
@@ -380,8 +445,8 @@ def test_dm_along_track_stream_name(stream_catalog, mock_mws):
     assert by_name["track_name"] == "Mock-T00"
 
 
-# Distance moduli along phi1: those of galstreams_dm_along_track, held at the ends of the
-# track, rounded, plus each offset
+# Distance moduli along phi1: those of galstreams_dm_along_track, extrapolated beyond the
+# ends of the track (a possible extension), rounded, plus each offset
 def test_dm_along_track_distance_moduli(stream_catalog, gc_frame):
     track = _track(gc_frame, lambda phi1: 17.0 + 0.1 * phi1)  # 16.4 to 17.6 from phi1 -6 to 6
     offsets = (-0.5, 0.0, 0.5)
@@ -391,8 +456,8 @@ def test_dm_along_track_distance_moduli(stream_catalog, gc_frame):
     ))
     assert [dm_offset for dm_offset, _ in results] == list(offsets)
     phi1_centres = results[0][1]["phi1_centres"]
-    expected = np.round(galstreams_dm_along_track(track, phi1_centres, hold_ends=True) / 0.1) * 0.1
-    np.testing.assert_allclose(expected[[0, -1]], [16.4, 17.6])  # held at the ends
+    expected = np.round(galstreams_dm_along_track(track, phi1_centres, extrapolate=True) / 0.1) * 0.1
+    np.testing.assert_allclose(expected[[0, -1]], [16.0, 18.0])  # phi1 -9.9 and 9.9: beyond the track
     for dm_offset, result in results:
         np.testing.assert_allclose(result["dm_along_phi1"], expected + dm_offset)
 
@@ -414,9 +479,25 @@ def test_dm_along_track_follows_the_stream(gc_frame):
     assert along["n_selected"] - fixed["n_selected"] > 0.2 * n_stream
 
 
+# Beyond the measured track, the extrapolated distance follows an extension of the stream:
+# a stream measured over phi1 -3 to 3 only, but extending to -8 to 8 with the same gradient
+def test_dm_along_track_extension(gc_frame):
+    dm_of_phi1 = lambda phi1: 17.0 + 0.2 * np.asarray(phi1)
+    catalog = _catalog(np.random.default_rng(3), gc_frame, dm_of_phi1)
+    track = _track(gc_frame, dm_of_phi1, phi1_range=(-3.0, 3.0))
+    (_, result), = known_stream_search_dm_along_track(
+        catalog, track, window=WINDOW, bin_size_deg=BIN, population_table=_population_table()
+    )
+    phi1, phi2 = np.meshgrid(result["phi1_centres"], result["phi2_centres"], indexing="ij")
+    extension = (np.abs(phi2) < 0.3) & (np.abs(phi1) > 5.0) & (np.abs(phi1) < 8.0)
+    contrast = result["density"][extension].mean() / result["density"][np.abs(phi2) > 1.5].mean()
+    assert contrast > 7.0  # 11 measured; 5 with the end distances held over the extension
+
+
 # No track, or a track without distance: nothing to follow
 def test_dm_along_track_errors(stream_catalog, gc_frame, mock_mws):
     with pytest.raises(ValueError, match="track"):
         next(known_stream_search_dm_along_track(stream_catalog, None, gc_frame, WINDOW))
     with pytest.raises(ValueError, match="no distance"):
-        next(known_stream_search_dm_along_track(stream_catalog, stream_name="NoDistance", mws=mock_mws))
+        next(known_stream_search_dm_along_track(stream_catalog, stream_name="NoDistance", mws=mock_mws,
+                                                add_ibata2024=True))
