@@ -1,4 +1,4 @@
-"""Generic stream search over a grid of distance moduli: figures, gif and results."""
+"""Generic stream search over the footprint: maps per isochrone over the dm grid, figures, gifs."""
 
 from __future__ import annotations
 
@@ -13,112 +13,165 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.parquet as pq
 
-from streameucliddes.analysis.generic_stream_search import generic_search_dm_scan
-from streameucliddes.plotting.make_videos import make_gif
+from streameucliddes.analysis.generic_stream_search import (
+    CMD_SAMPLE_SIZE,
+    DEFAULT_POLYNOMIAL_DEGREE,
+    DEFAULT_SMOOTHING_DEG,
+    generic_search_cmd_stars,
+    generic_search_dm_scan,
+    prepare_generic_search,
+)
+from streameucliddes.plotting.make_videos import make_gif_from_plots
 from streameucliddes.plotting.plot_generic_search import plot_generic_search_result
-
-from streameucliddes.workflows.run_known_stream_search import _json_value, _same
+from streameucliddes.workflows.run_known_stream_search import (
+    FIGURE_DPI,
+    FRAME_DURATION_MS,
+    _cmd_ranges,
+    _json_value,
+    _same,
+    _save,
+)
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable
+    from collections.abc import Iterable, Iterator
+
+    from streameucliddes.analysis.generic_stream_search import PreparedGenericSearch
     from typing import Any
+
+DEFAULT_OUTPUT_DIR = "figures/outputs/generic_search"  # gitignored
+DEFAULT_NAME = "generic"
 
 
 def run_generic_search(
-    data,
-    distance_modulus_array,
-    match_filter_parameters,
-    find_stream_kwargs=None,
-    plot=False,
-    save_figures=False,
-    fig_folder="../../figures",
-    plot_kwargs=None,
-    make_gif_flag=False,
-    gif_kwargs=None,
-    keep_results=False,
-    verbose=True,
-):
-    """
-    Run generic_search_single_dm() over a grid of distance moduli, optionally plotting
-    (and saving) each frame and building a gif from the saved figures.
+    catalog: pd.DataFrame | None = None,
+    *,
+    search: PreparedGenericSearch | None = None,
+    distance_moduli: Iterable[float] | None = None,
+    isochrone: Mapping[str, float] | None = None,
+    smoothing_deg: float = DEFAULT_SMOOTHING_DEG,
+    polynomial_degree: int = DEFAULT_POLYNOMIAL_DEGREE,
+    n_workers: int = 1,
+    map_key: str = "residual",
+    cmd_sample_size: int = CMD_SAMPLE_SIZE,
+    output_dir: str | Path = DEFAULT_OUTPUT_DIR,
+    name: str = DEFAULT_NAME,
+    frame_duration_ms: int = FRAME_DURATION_MS,
+    dpi: int = FIGURE_DPI,
+    **prepare_kwargs: Any,
+) -> dict[str, Any]:
+    """Generic search over the footprint, with its figures, gif and maps file, per isochrone.
 
-    The scan itself (dust correction and cuts computed once, then one search per
-    distance modulus) is analysis.generic_stream_search.generic_search_dm_scan.
+    The search is prepared once
+    (``analysis.generic_stream_search.prepare_generic_search``), or given
+    (``search``). Then, for each isochrone, in
+    ``output_dir/<name>/age<age>_z<Z>/``:
+
+    - one figure per distance modulus
+      (``plotting.plot_generic_search.plot_generic_search_result``: CMD
+      selection, map before correction, fitted background, corrected map) in
+      ``frames/``, and their gif ``<name>.gif``
+      (``plotting.make_videos.make_gif_from_plots``, from the frames of this
+      run only);
+    - the map ``map_key`` of every distance modulus in one file,
+      ``<name>_<map_key>.parquet`` (``save_generic_search_healpix_maps``).
+
+    The maps are computed one at a time
+    (``analysis.generic_stream_search.generic_search_dm_scan``): each is
+    drawn, written to the file, then dropped. The CMD panel shows at most
+    ``cmd_sample_size`` stars (``generic_search_cmd_stars``), with ranges
+    fixed over the scan.
 
     Parameters
     ----------
-    data : pandas.DataFrame
-    distance_modulus_array : iterable of float
-    match_filter_parameters : dict
-        Base kwargs for match_filter.build_match_filter; 'distance_modulus'
-        is overridden for each value in `distance_modulus_array`.
-    find_stream_kwargs : dict, optional
-        Extra kwargs forwarded to generic_search_single_dm() (e.g. mag_cols, cuts,
-        use_dust_corrected, nside...).
-    plot : bool
-        If True, display each frame (via plot_generic_search_result, show=True).
-    save_figures : bool
-        If True, save each frame to `fig_folder`.
-    plot_kwargs : dict, optional
-        Extra kwargs forwarded to plot_generic_search_result().
-    make_gif_flag : bool
-        If True, build a gif from `fig_folder` once the scan is done
-        (requires save_figures=True).
-    gif_kwargs : dict, optional
-        Extra kwargs forwarded to make_gif().
-    keep_results : bool
-        If True, retain the full generic_search_single_dm() output (HEALPix maps, etc.)
-        for every distance modulus. Default False: only a lightweight summary
-        ('distance_kpc', 'n_selected', 'fname') is kept per distance modulus,
-        and the heavy per-frame result is dropped as soon as it has been
-        plotted/saved -- important when scanning many distance moduli over a
-        large catalog, since retaining every frame's HEALPix maps would
-        otherwise grow without bound.
+    catalog : pandas.DataFrame, optional
+        Stars: prepared here. Not with ``search``.
+    search : PreparedGenericSearch, optional
+        The search, prepared once, e.g. in a notebook.
+    distance_moduli : iterable of float, optional
+        Default: those of the search.
+    isochrone : mapping, optional
+        The one isochrone ``{"age", "metallicity"}``. Default: those of the
+        search.
+    smoothing_deg, polynomial_degree
+        See ``generic_search_single_dm``.
+    n_workers : int, optional
+        Processes over the maps (see ``generic_search_dm_scan``).
+    map_key : str, optional
+        Map saved in the Parquet file: ``"residual"``, ``"density"`` or
+        ``"background"``.
+    cmd_sample_size : int, optional
+        Maximum number of stars of the CMD panel.
+    output_dir : str or pathlib.Path, optional
+        Directory of the outputs.
+    name : str, optional
+        Name of the run folder and files.
+    frame_duration_ms : int, optional
+        Time per distance modulus in the gif (ms).
+    dpi : int, optional
+        Resolution of the frames.
+    **prepare_kwargs
+        Arguments of ``prepare_generic_search`` (``match_filter``, ``cuts``,
+        ``default_grid``, ``nside``, ``footprint_mask``, ``nest``, ...). Not
+        with ``search``.
 
     Returns
     -------
-    results_by_dm : dict[float, dict]
-        generic_search_single_dm() output (or the lightweight summary, see `keep_results`)
-        keyed by distance modulus.
+    summary : dict
+        ``name``, and ``isochrones``: one dict per isochrone, with
+        ``isochrone``, ``distance_moduli``, ``figure_paths``, ``gif_path`` and
+        ``maps_path``.
+
+    Raises
+    ------
+    ValueError
+        Preparation arguments with ``search``.
+
+    Notes
+    -----
+    Adapted from the old ``run_generic_search`` (loop over the scan, figures,
+    gif) and ``workflows.run_known_stream_search.run_known_stream_search``.
     """
-    plot_kwargs = dict(plot_kwargs or {})
-    gif_kwargs = dict(gif_kwargs or {})
+    if search is None:
+        if catalog is None:
+            raise ValueError("Give a catalog or a prepared search.")
+        search = prepare_generic_search(catalog, **prepare_kwargs)
+    elif catalog is not None or prepare_kwargs:
+        given = (["catalog"] if catalog is not None else []) + list(prepare_kwargs)
+        raise ValueError(f"{given} prepare a search: not with search")
+    distance_moduli = search.distance_moduli if distance_moduli is None else [float(dm) for dm in distance_moduli]
+    isochrones = search.isochrones if isochrone is None else [dict(isochrone)]
+    cmd_stars = generic_search_cmd_stars(search, cmd_sample_size)
 
-    results_by_dm = {}
-    for dm, results in generic_search_dm_scan(
-        data,
-        distance_modulus_array,
-        match_filter_parameters,
-        find_stream_kwargs=find_stream_kwargs,
-        verbose=verbose,
-    ):
-        fname_path = None
-        if plot or save_figures:
-            _, _, fname_path = plot_generic_search_result(
-                results,
-                save=save_figures,
-                show=plot,
-                fig_folder=fig_folder,
-                **plot_kwargs,
-            )
+    summaries = []
+    for isochrone in isochrones:
+        folder = Path(output_dir) / name / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+        (folder / "frames").mkdir(parents=True, exist_ok=True)
+        color_lim, mag_lim = _cmd_ranges(cmd_stars, search.match_filter, distance_moduli, isochrone)
+        figure_paths = []
 
-        if keep_results:
-            results_by_dm[dm] = results
-        else:
-            results_by_dm[dm] = {
-                "distance_kpc": results["distance_kpc"],
-                "n_selected": results["n_selected"],
-                "fname": fname_path,
-            }
-            del results
+        def drawn(scan: Iterator[tuple[float, dict]]) -> Iterator[tuple[float, dict]]:
+            """The scan, each map drawn and saved before it goes on to the maps file."""
+            for dm, result in scan:
+                fig, _ = plot_generic_search_result(result, cmd_stars=cmd_stars, color_lim=color_lim, mag_lim=mag_lim)
+                # 05.2f: the names sort as the distance moduli
+                figure_paths.append(_save(fig, folder / "frames" / f"{name}_dm{dm:05.2f}.png", dpi))
+                yield dm, result
+                gc.collect()  # the maps of this distance modulus, before the next one
 
-        # Release any lingering matplotlib/array reference cycles before the next frame.
-        gc.collect()
-
-    if make_gif_flag:
-        make_gif(figures_folder=fig_folder, **gif_kwargs)
-
-    return results_by_dm
+        maps_path = save_generic_search_healpix_maps(
+            drawn(generic_search_dm_scan(
+                distance_moduli=distance_moduli, isochrone=isochrone, search=search,
+                smoothing_deg=smoothing_deg, polynomial_degree=polynomial_degree, n_workers=n_workers,
+            )),
+            folder / f"{name}_{map_key}.parquet", map_key=map_key, metadata={"name": name},
+        )
+        gif_path = folder / f"{name}.gif"
+        make_gif_from_plots(gif_path, pattern=figure_paths, duration=frame_duration_ms)
+        summaries.append({
+            "isochrone": dict(isochrone), "distance_moduli": list(distance_moduli),
+            "figure_paths": figure_paths, "gif_path": gif_path, "maps_path": maps_path,
+        })
+    return {"name": name, "isochrones": summaries}
 
 
 def save_generic_search_healpix_maps(

@@ -17,6 +17,7 @@ from streameucliddes.analysis.catalog_preparation import default_error_cuts
 from streameucliddes.analysis.cmd_match_filter import build_match_filter_polygon, select_stars_in_match_filter
 from streameucliddes.analysis.generic_stream_search import (
     PreparedGenericSearch,
+    generic_search_cmd_stars,
     generic_search_dm_scan,
     generic_search_single_dm,
     prepare_generic_search,
@@ -289,3 +290,23 @@ def test_memory(monkeypatch):
         tracemalloc.stop()
     assert prepare_peak < 5 * n + 60 * chunk_size < 8 * n
     assert map_peak - start < 60 * chunk_size + 150 * hp.nside2npix(NSIDE) < 8 * n
+
+
+# ===================================================
+# Test generic_search_cmd_stars
+# ===================================================
+
+
+# About max_stars stars (at most), all kept by the search, spread over the catalog, the same
+# at each call; the magnitude columns of the match filter, values and index of the catalog.
+# All the kept stars when there are fewer
+def test_cmd_stars(catalog, search):
+    stars = generic_search_cmd_stars(search, max_stars=1000)
+    assert 850 <= len(stars) <= 1000
+    pd.testing.assert_frame_equal(generic_search_cmd_stars(search, max_stars=1000), stars)
+    assert list(stars.columns) == [VIS, H]
+    rows = catalog.index.get_indexer(stars.index)
+    assert search.keep[rows].all()
+    assert rows.max() > 0.9 * len(catalog)  # spread over the catalog, not its first rows
+    pd.testing.assert_frame_equal(stars, catalog.loc[stars.index, [VIS, H]])
+    assert len(generic_search_cmd_stars(search, max_stars=10 * len(catalog))) == search.keep.sum()

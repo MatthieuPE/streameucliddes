@@ -92,7 +92,8 @@ src/streameucliddes/
     generic_stream_search.py     generic_search_single_dm  (old: pipeline.find_stream)
                                  generic_search_dm_scan    (old: compute part of
                                                             pipeline.scan_find_stream)
-                                 [NEW] prepare_generic_search, PreparedGenericSearch
+                                 [NEW] prepare_generic_search, PreparedGenericSearch,
+                                 generic_search_cmd_stars
                                  (generic-search branch: API mirrors known_stream_search;
                                   shared match filter, no copy of the catalog, chunks)
     known_stream_search.py       [NEW] known_stream_search_single_dm
@@ -112,7 +113,8 @@ src/streameucliddes/
                                  plot_overlapped_objects, plot_single_stream_track
                                  (old: plotting.py; last two missing, locate them)
     plot_generic_search.py       plot_generic_search_result
-                                 (old: plotting.plot_results_find_stream)
+                                 (old: plotting.plot_results_find_stream; generic-search
+                                  branch: CMD selection, map, background, corrected map)
     plot_known_stream_search.py  [NEW] plot_known_stream_search_single_dm
                                  [NEW] plot_galstreams_selection
     plot_injected_stream_snr.py  plot_snr_contours, plot_snr_maps + helpers
@@ -124,8 +126,9 @@ src/streameucliddes/
                                        as celestial_currents)
 
   workflows/
-    run_config.py                [NEW] KNOWN_STREAM_SEARCH_CONFIG (dict of the run arguments,
-                                       to copy and update), RunConfig (YAML overrides)
+    run_config.py                [NEW] KNOWN_STREAM_SEARCH_CONFIG, GENERIC_SEARCH_CONFIG (dicts
+                                       of the run arguments, to copy and update),
+                                       RunConfig (YAML overrides)
     run_generic_search.py        run_generic_search
                                  (old: loop, plots and gif of scan_find_stream)
                                  [NEW] save_generic_search_healpix_maps

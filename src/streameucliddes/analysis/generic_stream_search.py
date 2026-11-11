@@ -29,6 +29,7 @@ from typing import TYPE_CHECKING
 
 import healpy as hp
 import numpy as np
+import pandas as pd
 
 from streameucliddes.analysis.background_polynomial_fit import fit_background_model
 from streameucliddes.analysis.catalog_preparation import CHUNK_SIZE, check_columns, default_error_cuts
@@ -46,12 +47,14 @@ if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator, Mapping
     from typing import Any
 
-    import pandas as pd
     from numpy.typing import NDArray
 
 DEFAULT_NSIDE = 512  # pixels of about 0.11 deg
 DEFAULT_SMOOTHING_DEG = 0.3  # Gaussian sigma (deg), as the default of star_density_healpix
 DEFAULT_POLYNOMIAL_DEGREE = 5  # fixed degree for now (plan, section 1)
+# Stars drawn for a CMD of the search (its shape, not its counts): bounds the copy
+CMD_SAMPLE_SIZE = 200_000
+CMD_SAMPLE_SEED = 0
 
 
 # ===================================================
@@ -371,6 +374,45 @@ def generic_search_dm_scan(
                 yield dm, future.result()
     finally:
         _WORKER_SEARCH = None
+
+
+
+def generic_search_cmd_stars(
+    search: PreparedGenericSearch, max_stars: int = CMD_SAMPLE_SIZE
+) -> pd.DataFrame:
+    """Stars kept by a search, at most ``max_stars``: for a CMD of the search.
+
+    Each star that passes the cuts is drawn with the same probability (about
+    ``max_stars`` drawn; a fixed seed, ``CMD_SAMPLE_SEED``: the same stars at
+    each call), by chunks. Only the magnitude columns of the match filter are
+    copied: ``max_stars`` rows at most, whatever the size of the catalog. E.g.
+    ``plotting.plot_cmd.plot_match_filter(..., stars=generic_search_cmd_stars(search))``.
+
+    Parameters
+    ----------
+    search : PreparedGenericSearch
+    max_stars : int, optional
+        Maximum number of stars.
+
+    Returns
+    -------
+    stars : pandas.DataFrame
+        The magnitude columns of the match filter, with the index of the
+        catalog.
+    """
+    probability = min(1.0, max_stars / max(int(search.keep.sum()), 1))
+    rng = np.random.default_rng(CMD_SAMPLE_SEED)
+    parts = []
+    for start in range(0, search.keep.size, CHUNK_SIZE):
+        keep = search.keep[start:start + CHUNK_SIZE]
+        parts.append(np.flatnonzero(keep & (rng.random(keep.size) < probability)) + start)
+    rows = np.concatenate(parts)[:max_stars] if parts else np.empty(0, dtype=np.int64)
+    columns = match_filter_columns(search.match_filter)
+    return pd.DataFrame(
+        {column: search.catalog[column].to_numpy()[rows] for column in columns},
+        index=search.catalog.index.take(rows),
+        copy=False,
+    )
 
 
 # ===================================================

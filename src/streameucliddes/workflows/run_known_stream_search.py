@@ -158,7 +158,7 @@ def run_known_stream_search(
         folder = Path(output_dir) / name / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
         (folder / "maps").mkdir(parents=True, exist_ok=True)
         (folder / "cmd").mkdir(exist_ok=True)
-        color_lim, mag_lim = _cmd_ranges(search, distance_moduli, isochrone)
+        color_lim, mag_lim = _cmd_ranges(search.stars, search.match_filter, distance_moduli, isochrone)
 
         results, figure_paths, cmd_figure_paths = [], [], []
         for dm, result in known_stream_search_dm_scan(
@@ -279,20 +279,24 @@ def run_all_known_stream_searches(
 
 
 def _cmd_ranges(
-    search: PreparedSearch, distance_moduli: Sequence[float], isochrone: Mapping[str, float]
+    stars: pd.DataFrame,
+    match_filter: Mapping[str, Any],
+    distance_moduli: Sequence[float],
+    isochrone: Mapping[str, float],
 ) -> tuple[tuple[float, float], tuple[float, float]]:
     """Colour and magnitude ranges of the CMD frames of a scan: the same for every frame.
 
     Those of the polygons over the scan plus ``plotting.plot_cmd.MATCH_FILTER_MARGIN_MAG``;
-    the faint end at most the faintest star of the window plus that margin.
+    the faint end at most the faintest star plus that margin. Also used by the generic
+    search (``workflows.run_generic_search``).
     """
     vertices = np.concatenate([
-        polygon for dm in distance_moduli for polygon in match_filter_polygons(dm, isochrone, search.match_filter)
+        polygon for dm in distance_moduli for polygon in match_filter_polygons(dm, isochrone, match_filter)
     ])
     margin = MATCH_FILTER_MARGIN_MAG
     color_lim = (float(vertices[:, 0].min() - margin), float(vertices[:, 0].max() + margin))
     faint = vertices[:, 1].max() + margin
-    reference_mag = search.stars[match_filter_columns(search.match_filter)[0]].to_numpy()
+    reference_mag = stars[match_filter_columns(match_filter)[0]].to_numpy()
     if np.isfinite(reference_mag).any():
         faint = min(faint, np.nanmax(reference_mag) + margin)
     return color_lim, (float(vertices[:, 1].min() - margin), float(faint))

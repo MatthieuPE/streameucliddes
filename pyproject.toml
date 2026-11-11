@@ -58,6 +58,7 @@ markers = [
     "plot_known_stream_search: plotting/plot_known_stream_search.py (known-stream search figures)",
     "make_videos: plotting/make_videos.py (gifs from saved figures)",
     "plot_cmd: plotting/plot_cmd.py (colour-magnitude diagrams and match filters)",
+    "plot_generic_search: plotting/plot_generic_search.py (generic search figures)",
     "run_config: workflows/run_config.py (YAML run configurations)",
     "run_known_stream_search: workflows/run_known_stream_search.py (known-stream search runs)",
     "run_generic_search: workflows/run_generic_search.py (generic search runs and maps files)",
