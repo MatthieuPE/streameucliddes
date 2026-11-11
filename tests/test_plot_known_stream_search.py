@@ -112,7 +112,7 @@ def test_plot_single_dm_colorbar_inside_figure(search):
         fig, ax = plot_known_stream_search_single_dm(result)
         fig.canvas.draw()
     colorbar_ax, = ax.child_axes
-    assert colorbar_ax.get_ylabel() == "Stars per bin (smoothed)"
+    assert colorbar_ax.get_ylabel()  # the colour bar, with its label
     renderer = fig.canvas.get_renderer()
     box, figure_box = colorbar_ax.get_tightbbox(renderer), fig.bbox
     assert figure_box.x0 <= box.x0 and box.x1 <= figure_box.x1

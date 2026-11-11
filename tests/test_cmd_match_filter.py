@@ -71,6 +71,22 @@ def test_match_filter_columns():
     assert cmd_match_filter.match_filter_columns(MATCH_FILTER_GRI) == ["des_yr6_g_obs", "des_yr6_r_obs", "des_yr6_i_obs"]
 
 
+# One streamobs polygon per colour band, in their order; default: the default isochrone
+# and match filter (Euclid VIS - H)
+def test_match_filter_polygons():
+    polygons = cmd_match_filter.match_filter_polygons(17.0, ISOCHRONE, MATCH_FILTER_GRI)
+    assert len(polygons) == 2
+    np.testing.assert_allclose(polygons[0], _polygon(17.0, ISOCHRONE, "r"))
+    np.testing.assert_allclose(polygons[1], _polygon(17.0, ISOCHRONE, "i"))
+
+    default_isochrone = cmd_match_filter.default_isochrone_grid()[0]
+    default_polygon, = cmd_match_filter.match_filter_polygons(17.0)
+    np.testing.assert_allclose(default_polygon, build_match_filter(
+        distance_modulus=17.0, age=default_isochrone["age"], metallicity=default_isochrone["metallicity"],
+        band_1="VIS", band_2="H", survey_1="euclid", survey_2="euclid",
+    ))
+
+
 # Same stars as streamobs is_in_match_filter, in every colour of the filter
 def test_select_stars_in_match_filter(stars):
     g, r, i = (stars[f"des_yr6_{band}_obs"] for band in "gri")

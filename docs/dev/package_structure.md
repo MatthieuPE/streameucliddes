@@ -75,7 +75,7 @@ src/streameucliddes/
   analysis/
     cmd_match_filter.py          build_match_filter_polygon
                                  (old: data_manipulation._match_filter_polygon)
-                                 [NEW] select_stars_in_match_filter
+                                 [NEW] select_stars_in_match_filter, match_filter_polygons
                                  (selection only; preparation in catalog_preparation)
     catalog_preparation.py       [NEW] prepare_match_filter_catalog, check_columns,
                                  default_error_cuts; resolve_mag_columns and
@@ -102,6 +102,8 @@ src/streameucliddes/
   plotting/
     plot_style.py                unchanged
     plot_cmd.py                  plot_CMD                       (old: plotting.py)
+                                 [NEW] plot_match_filter        (polygons on the CMD; gif:
+                                       frames + make_gif_from_plots)
     plot_sky_density.py          plot_2D_density, plot_2D_density_from_hp,
                                  plot_overlapped_objects, plot_single_stream_track
                                  (old: plotting.py; last two missing, locate them)

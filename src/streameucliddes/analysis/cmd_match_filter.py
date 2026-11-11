@@ -85,6 +85,52 @@ def match_filter_columns(match_filter: Mapping[str, Any] | None = None) -> list[
     return [f"{namespace}_{band}_obs" for namespace, band in bands]
 
 
+def match_filter_polygons(
+    distance_modulus: float,
+    isochrone: Mapping[str, float] | None = None,
+    match_filter: Mapping[str, Any] | None = None,
+) -> list[NDArray[np.float64]]:
+    """Polygons of a match filter at one distance modulus, one per colour band.
+
+    Built for one isochrone and cached (``build_match_filter_polygon``).
+
+    Parameters
+    ----------
+    distance_modulus : float
+        Distance modulus of the filter.
+    isochrone : mapping, optional
+        ``{"age": age (Gyr), "metallicity": Z}``. Default: the first
+        isochrone of ``catalogs.isochrone_parameters.default_isochrone_grid``.
+    match_filter : mapping, optional
+        See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
+
+    Returns
+    -------
+    polygons : list of numpy.ndarray, shape (n_vertices, 2)
+        In the order of ``match_filter["color_bands"]``. Vertices are
+        (colour, magnitude) pairs: colour ``reference_band - color_band``,
+        magnitude ``reference_band`` (``streamobs.match_filter.build_match_filter``).
+        Read-only: shared between calls.
+    """
+    isochrone = default_isochrone_grid()[0] if isochrone is None else isochrone
+    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    namespace_1, band_1 = match_filter["reference_band"]
+    return [
+        build_match_filter_polygon(
+            float(distance_modulus),
+            float(isochrone["age"]),
+            float(isochrone["metallicity"]),
+            band_1,
+            band_2,
+            namespace_1.split("_")[0],  # isochrone survey: "des_yr6" -> "des"
+            namespace_2.split("_")[0],
+            color_cut=match_filter.get("color_cut", True),
+            red_cap_value=match_filter.get("red_cap_value", None),
+        )
+        for namespace_2, band_2 in match_filter["color_bands"]
+    ]
+
+
 def select_stars_in_match_filter(
     catalog: pd.DataFrame,
     distance_modulus: float,
@@ -96,9 +142,8 @@ def select_stars_in_match_filter(
     """Stars inside the colour-magnitude match filter at one distance modulus.
 
     A star is selected when it is inside the polygon of every colour of
-    ``match_filter``, built for one isochrone and cached
-    (``build_match_filter_polygon``). Each polygon test only runs on the
-    stars still selected.
+    ``match_filter`` (``match_filter_polygons``). Each polygon test only runs
+    on the stars still selected.
 
     Parameters
     ----------
@@ -127,25 +172,13 @@ def select_stars_in_match_filter(
     Rockosi et al. 2002, AJ 124, 349. Grillmair 2009, ApJ 693, 1118.
     Shipp et al. 2018, ApJ 862, 114.
     """
-    isochrone = default_isochrone_grid()[0] if isochrone is None else isochrone
     match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
     reference_column, *color_columns = match_filter_columns(match_filter)
-    namespace_1, band_1 = match_filter["reference_band"]
+    polygons = match_filter_polygons(distance_modulus, isochrone, match_filter)
 
     selected = np.ones(len(catalog), dtype=bool) if mask is None else np.array(mask, dtype=bool)
     reference_mag = catalog[reference_column].to_numpy()
-    for (namespace_2, band_2), color_column in zip(match_filter["color_bands"], color_columns):
-        polygon = build_match_filter_polygon(
-            float(distance_modulus),
-            float(isochrone["age"]),
-            float(isochrone["metallicity"]),
-            band_1,
-            band_2,
-            namespace_1.split("_")[0],  # isochrone survey: "des_yr6" -> "des"
-            namespace_2.split("_")[0],
-            color_cut=match_filter.get("color_cut", True),
-            red_cap_value=match_filter.get("red_cap_value", None),
-        )
+    for polygon, color_column in zip(polygons, color_columns):
         idx = np.flatnonzero(selected)
         selected[idx] = is_in_match_filter(
             reference_mag[idx], catalog[color_column].to_numpy()[idx], polygon_vertices=polygon
