@@ -3,15 +3,24 @@
 from __future__ import annotations
 
 import gc
+import json
+from collections.abc import Mapping
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+import numpy as np
+import pandas as pd
+import pyarrow as pa
+import pyarrow.parquet as pq
 
 from streameucliddes.analysis.generic_stream_search import generic_search_dm_scan
 from streameucliddes.plotting.make_videos import make_gif
 from streameucliddes.plotting.plot_generic_search import plot_generic_search_result
 
+from streameucliddes.workflows.run_known_stream_search import _json_value, _same
+
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
-    from pathlib import Path
+    from collections.abc import Iterable
     from typing import Any
 
 
@@ -116,39 +125,96 @@ def save_generic_search_healpix_maps(
     results: Mapping[float, Mapping[str, Any]] | Iterable[tuple[float, Mapping[str, Any]]],
     output_path: str | Path,
     *,
-    map_key: str = "residual_map",
-    nest: bool,
+    map_key: str = "residual",
+    metadata: Mapping[str, Any] | None = None,
 ) -> Path:
     """Save the HEALPix maps of a generic search, one per distance modulus, in one file.
 
-    Parquet table in the format of the ugali and celestial_currents outputs:
-    a column ``hpx<nside>`` of pixel indices, in NESTED ordering, and one column
-    per distance modulus, named by its string (e.g. ``"16.5"``). Only the
-    pixels inside the footprint are written.
+    For one isochrone. Parquet table in the format of the celestial_currents
+    outputs: a column ``hpx<nside>`` of the pixels inside the footprint, in
+    the ordering of the maps (RING for ``generic_search_single_dm``: no
+    conversion), and one column per distance modulus, named by its value
+    with two decimals (e.g. ``"16.50"``). The parameters are in the file
+    metadata (key ``"streameucliddes"``, JSON): ``map_key``, ``nside``,
+    ``nest``, isochrone, match filter, smoothing, polynomial degree, plus the
+    ``metadata`` given.
+
+    Read it back with ``pandas.read_parquet`` and
+    ``json.loads(pyarrow.parquet.read_schema(path).metadata[b"streameucliddes"])``.
 
     Parameters
     ----------
     results : mapping or iterable of (distance_modulus, result)
-        Output of ``run_generic_search(..., keep_results=True)``, or the pairs
-        yielded by ``analysis.generic_stream_search.generic_search_dm_scan``:
-        then only the map ``map_key`` of each distance modulus is kept, not
-        the whole result.
+        Results of ``analysis.generic_stream_search.generic_search_dm_scan``
+        (or ``generic_search_single_dm``), for one isochrone: read one at a
+        time, only the map ``map_key`` of each is kept.
     output_path : str or pathlib.Path
-        Parquet file to write.
+        Parquet file to write (its folder is created).
     map_key : str, optional
-        Map to save: ``"residual_map"``, ``"data_map"`` or ``"fit_map"``.
-    nest : bool
-        HEALPix ordering of the maps in ``results``: False for the maps of
-        ``star_density_healpix`` (RING). The file is written NESTED.
+        Map to save: ``"residual"``, ``"density"`` or ``"background"``.
+    metadata : mapping, optional
+        Added to the file metadata. JSON-serialisable.
 
     Returns
     -------
     output_path : pathlib.Path
         The file written.
 
+    Raises
+    ------
+    ValueError
+        No result, or results of several isochrones, footprints or
+        parameters.
+
     Notes
     -----
-    Code to reuse: the output block of celestial_currents
-    ``scripts/run_matched_filter_maps.py::main``.
+    Adapted from the output block of celestial_currents
+    ``scripts/run_matched_filter_maps.py::main`` (one Parquet table per
+    isochrone, a column of pixels and one per distance modulus); there in
+    NESTED, here in the ordering of the maps.
     """
-    raise NotImplementedError
+    items = results.items() if isinstance(results, Mapping) else results
+    columns, first = {}, None
+    for dm, result in items:  # one map at a time: a generator is not kept
+        if first is None:
+            first = result
+            inside = ~np.asarray(result["footprint_mask"], dtype=bool)
+            columns[f"hpx{result['nside']}"] = np.flatnonzero(inside)
+        else:
+            for name in SAME_IN_A_MAPS_FILE:
+                if not _same(result[name], first[name]):
+                    raise ValueError(
+                        f"Results with different {name}: save one file per isochrone "
+                        f"({first[name]!r} and {result[name]!r})."
+                    )
+            if not np.array_equal(result["footprint_mask"], first["footprint_mask"]):
+                raise ValueError("Results with different footprints.")
+        name = f"{float(dm):.2f}"
+        if name in columns:
+            raise ValueError(f"Distance modulus {name} twice.")
+        columns[name] = np.ma.getdata(result[map_key])[inside].astype(float)
+    if first is None:
+        raise ValueError("No result to save.")
+
+    info = {
+        "map_key": map_key,
+        "nside": first["nside"],
+        "nest": first["nest"],
+        "isochrone": dict(first["isochrone"]),
+        "match_filter": first["match_filter"],
+        "smoothing_deg": first["smoothing_deg"],
+        "polynomial_degree": first["polynomial_degree"],
+        **dict(metadata or {}),
+    }
+    table = pa.Table.from_pandas(pd.DataFrame(columns, copy=False), preserve_index=False)
+    table = table.replace_schema_metadata(
+        {**(table.schema.metadata or {}), b"streameucliddes": json.dumps(info, default=_json_value).encode()}
+    )
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    pq.write_table(table, output_path)
+    return output_path
+
+
+# Parameters shared by every map of a maps file
+SAME_IN_A_MAPS_FILE = ("isochrone", "match_filter", "nside", "nest", "smoothing_deg", "polynomial_degree")
