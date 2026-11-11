@@ -210,6 +210,31 @@ def select_galstreams_in_footprint(
     return selection.sort_values("length_in_footprint_deg", ascending=False, ignore_index=True)
 
 
+def galstreams_default_tracks(selection: pd.DataFrame, mws: galstreams.MWStreams) -> pd.DataFrame:
+    """One track per stream of a selection: its default track, else its longest one.
+
+    The default track of a stream is the one galstreams flags ``On`` in
+    ``mws.summary``. When it is not in the selection (e.g. not enough of it
+    in the footprint), the longest selected track of the stream is kept.
+
+    Parameters
+    ----------
+    selection : pandas.DataFrame
+        From ``select_galstreams_in_footprint`` (longest track first).
+    mws : galstreams.MWStreams
+        The library of the selection, from ``load_galstreams``.
+
+    Returns
+    -------
+    tracks : pandas.DataFrame
+        The rows of the tracks kept, in the order of ``selection``.
+    """
+    is_default = selection["track_name"].map(mws.summary["On"]).fillna(False).astype(bool)
+    # the selection is sorted longest first: a stable sort keeps that order among the others
+    preferred = selection.assign(is_default=is_default).sort_values("is_default", ascending=False, kind="stable")
+    return preferred.drop_duplicates("stream_name").drop(columns="is_default").sort_index()
+
+
 def galstreams_phi12_window(
     track: galstreams.Track6D,
     *,

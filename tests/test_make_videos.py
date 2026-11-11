@@ -62,3 +62,17 @@ def test_make_gif_from_plots_no_frame(tmp_path):
     with pytest.raises(FileNotFoundError, match="No images found"):
         make_gif_from_plots(output, pattern=tmp_path / "*.png")
     assert not output.exists()
+
+
+# A list of frames: those only (another matching file is left out), in the order given;
+# paths may be str or pathlib.Path. An empty list: FileNotFoundError
+def test_make_gif_from_plots_list(frames):
+    Image.new("RGB", (20, 10), (255, 255, 255)).save(frames / "frame_dm99.00.png")  # e.g. from an older run
+    listed = [frames / "frame_dm17.00.png", str(frames / "frame_dm15.00.png")]
+    output = frames / "scan.gif"
+    make_gif_from_plots(output, pattern=listed, duration=200)
+    colours, durations, _ = _gif_frames(output)
+    assert colours == [COLOURS[2], COLOURS[0]]
+    assert durations == [200, 200]
+    with pytest.raises(FileNotFoundError):
+        make_gif_from_plots(frames / "empty.gif", pattern=[])

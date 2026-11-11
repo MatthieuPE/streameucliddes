@@ -13,11 +13,13 @@ import astropy.coordinates as coord
 import astropy.units as u
 import healpy as hp
 import numpy as np
+import pandas as pd
 import pytest
 
 from streameucliddes.catalogs import galstreams_catalog
 from streameucliddes.catalogs.galstreams_catalog import (
     SELECTION_COLUMNS,
+    galstreams_default_tracks,
     galstreams_dm_along_track,
     galstreams_phi12_window,
     galstreams_track_length_in_footprint,
@@ -168,6 +170,29 @@ def test_dm_along_track_ibata2024(gc_frame):
 def test_dm_along_track_mean_distance(gc_frame):
     track = _synthetic_track(gc_frame, distance_kpc=(17.5, 17.5), info_flags="1011")
     np.testing.assert_allclose(galstreams_dm_along_track(track, [-9.0, 0.0, 9.0]), _dm(17.5))
+
+
+# ===================================================
+# Test galstreams_default_tracks
+# ===================================================
+
+
+# One track per stream: its default ("On") track even if shorter; else its longest selected
+# track; the rows in the order of the selection
+def test_default_tracks():
+    selection = pd.DataFrame({  # longest first, as select_galstreams_in_footprint
+        "track_name": ["A-T01", "B-T02", "A-T00", "B-T01", "C-T00"],
+        "stream_name": ["A", "B", "A", "B", "C"],
+        "length_in_footprint_deg": [30.0, 20.0, 10.0, 5.0, 2.0],
+    })
+    summary = pd.DataFrame({
+        "TrackName": ["A-T00", "A-T01", "B-T00", "B-T01", "B-T02", "C-T00"],
+        "On": [True, False, True, False, False, True],  # B-T00: default, not selected
+    }).set_index("TrackName", drop=False)
+    tracks = galstreams_default_tracks(selection, SimpleNamespace(summary=summary))
+    assert list(tracks["track_name"]) == ["B-T02", "A-T00", "C-T00"]
+    assert list(tracks.columns) == list(selection.columns)
+    assert galstreams_default_tracks(selection.iloc[:0], SimpleNamespace(summary=summary)).empty
 
 
 # ===================================================

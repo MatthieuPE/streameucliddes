@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import glob
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
@@ -18,7 +17,11 @@ from streameucliddes.analysis.known_stream_search import (
     known_stream_search_dm_scan,
     prepare_search,
 )
-from streameucliddes.catalogs.galstreams_catalog import load_galstreams, select_galstreams_in_footprint
+from streameucliddes.catalogs.galstreams_catalog import (
+    galstreams_default_tracks,
+    load_galstreams,
+    select_galstreams_in_footprint,
+)
 from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 from streameucliddes.plotting.make_videos import make_gif_from_plots
 from streameucliddes.plotting.plot_cmd import MATCH_FILTER_MARGIN_MAG, plot_match_filter
@@ -71,7 +74,8 @@ def run_known_stream_search(
       (``analysis.known_stream_search.known_stream_search_dm_scan``), drawn
       (``plotting.plot_known_stream_search.plot_known_stream_search_single_dm``)
       in ``maps/``, and their gif ``<name>.gif``
-      (``plotting.make_videos.make_gif_from_plots``);
+      (``plotting.make_videos.make_gif_from_plots``, from the frames of this
+      run only);
     - the match filter on the CMD of the stars of the window at each distance
       modulus (``plotting.plot_cmd.plot_match_filter``, fixed colour and
       magnitude ranges: those of the filters of the scan) in ``cmd/``, and
@@ -162,19 +166,17 @@ def run_known_stream_search(
             smoothing_deg=smoothing_deg, n_workers=n_workers,
         ):
             results.append((dm, result))
-            frame = f"{name}_dm{dm:05.2f}.png"  # 05.2f: the names sort as the distance moduli
+            frame = f"{name}_dm{dm:05.2f}.png"  # 05.2f: the names sort as the distance moduli (gif from a pattern)
             fig, _ = plot_known_stream_search_single_dm(result, track_phi12=track_phi12)
             figure_paths.append(_save(fig, folder / "maps" / frame, dpi))
             fig, _ = plot_match_filter(dm, isochrone, search.match_filter, stars=search.stars,
                                        color_lim=color_lim, mag_lim=mag_lim)
             cmd_figure_paths.append(_save(fig, folder / "cmd" / frame, dpi))
 
+        # From the frames of this run only: not those of an earlier run in the folder
         gif_path, cmd_gif_path = folder / f"{name}.gif", folder / f"{name}_cmd.gif"
-        frames = f"{glob.escape(name)}_dm*.png"
-        make_gif_from_plots(gif_path, pattern=Path(glob.escape(str(folder / "maps"))) / frames,
-                            duration=frame_duration_ms)
-        make_gif_from_plots(cmd_gif_path, pattern=Path(glob.escape(str(folder / "cmd"))) / frames,
-                            duration=frame_duration_ms)
+        make_gif_from_plots(gif_path, pattern=figure_paths, duration=frame_duration_ms)
+        make_gif_from_plots(cmd_gif_path, pattern=cmd_figure_paths, duration=frame_duration_ms)
         maps_path = save_known_stream_search_maps(results, folder / f"{name}_maps.npz", metadata={"name": name})
         summaries.append({
             "isochrone": dict(isochrone), "distance_moduli": list(distance_moduli),
@@ -198,8 +200,9 @@ def run_all_known_stream_searches(
 
     Selects the tracks crossing the footprint
     (``catalogs.galstreams_catalog.select_galstreams_in_footprint``), keeps
-    one per stream: its galstreams default track (``On``), else its longest
-    selected track; or the ``track_names`` given. Then runs
+    one per stream (``catalogs.galstreams_catalog.galstreams_default_tracks``:
+    its galstreams default track, else its longest selected track); or the
+    ``track_names`` given. Then runs
     ``run_known_stream_search`` for each, from the full catalog: only the
     stars of its window are kept, one stream at a time.
 
@@ -253,7 +256,7 @@ def run_all_known_stream_searches(
     selection_kwargs = {key: run_kwargs[key] for key in SELECTION_ARGUMENTS if key in run_kwargs}
     selection = select_galstreams_in_footprint(mws, footprint_mask, nest=nest, **selection_kwargs)
     if track_names is None:
-        tracks = _default_tracks(selection, mws)
+        tracks = galstreams_default_tracks(selection, mws)
     else:
         missing = sorted(set(track_names) - set(selection["track_name"]))
         if missing:
@@ -273,14 +276,6 @@ def run_all_known_stream_searches(
                 "maps_path": outputs["maps_path"],
             })
     return pd.DataFrame(rows, columns=[*selection.columns, "age", "metallicity", "gif_path", "cmd_gif_path", "maps_path"])
-
-
-def _default_tracks(selection: pd.DataFrame, mws: galstreams.MWStreams) -> pd.DataFrame:
-    """One selected track per stream: its default ('On') track, else its longest selected one."""
-    is_default = selection["track_name"].map(mws.summary["On"]).fillna(False).astype(bool)
-    # the selection is sorted longest first: a stable sort keeps that order among the others
-    preferred = selection.assign(is_default=is_default).sort_values("is_default", ascending=False, kind="stable")
-    return preferred.drop_duplicates("stream_name").drop(columns="is_default").sort_index()
 
 
 def _cmd_ranges(

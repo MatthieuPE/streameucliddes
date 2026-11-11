@@ -65,6 +65,7 @@ src/streameucliddes/
     galstreams_catalog.py        [NEW] load_galstreams
                                  [NEW] galstreams_track_length_in_footprint
                                  [NEW] select_galstreams_in_footprint
+                                 [NEW] galstreams_default_tracks (one track per stream)
                                  [NEW] galstreams_phi12_window
                                  [NEW] galstreams_dm_along_track
     isochrone_parameters.py      [NEW] default_isochrone_grid

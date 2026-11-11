@@ -175,13 +175,16 @@ def _gif_frames(path):
 
 
 # For each isochrone, in output_dir/<name>/age<age>_z<Z>/: one map and one CMD frame per
-# distance modulus, in the order of the distance moduli, their gifs, and the maps file
-# equal to the scan
+# distance modulus, in the order of the distance moduli, their gifs (from these frames only,
+# not those of an earlier run), and the maps file equal to the scan
 def test_run_outputs(search, tmp_path):
     distance_moduli = [9.5, 16.5, 17.0]  # 9.5: the frame names still sort as the distance moduli
-    summary = run_known_stream_search(search=search, distance_moduli=distance_moduli, output_dir=tmp_path, name="Mock")
     isochrone = search.isochrones[0]
     folder = tmp_path / "Mock" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+    for subfolder in ("maps", "cmd"):  # frames of an earlier run, on another grid
+        (folder / subfolder).mkdir(parents=True)
+        Image.new("RGB", (20, 10)).save(folder / subfolder / "Mock_dm21.00.png")
+    summary = run_known_stream_search(search=search, distance_moduli=distance_moduli, output_dir=tmp_path, name="Mock")
     assert summary["name"] == "Mock" and summary["track_name"] is None and summary["window"] == search.window
     outputs, = summary["isochrones"]
     assert outputs["isochrone"] == isochrone and outputs["distance_moduli"] == distance_moduli
