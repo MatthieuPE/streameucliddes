@@ -1,262 +1,464 @@
-"""Generic stream search: match filter, smoothed HEALPix map, polynomial background fit."""
+"""Generic stream search over the survey footprint: match filter, smoothed HEALPix map,
+polynomial background, residual.
 
+Mirrors ``analysis.known_stream_search``: the search is prepared once
+(``prepare_generic_search``), then one map per distance modulus and isochrone
+(``generic_search_single_dm``, ``generic_search_dm_scan``). The match filter
+is the shared one (``analysis.cmd_match_filter``, default Euclid VIS vs
+VIS - H, ``<namespace>_<band>_obs`` columns used as they are: the Euclid x DES
+magnitudes are already dereddened).
+
+Every star of the catalog is in the search, and the catalog may be huge: it
+is neither copied nor modified. The preparation keeps, per star, whether it
+passes the cuts (1 byte) and its HEALPix pixel (4 bytes); each map then reads
+the magnitude columns by chunks of ``CHUNK_SIZE`` stars (views) and counts the
+selected stars in their pixels.
+
+HEALPix maps are in RING ordering (``nest=False``), as ``healpy.smoothing``
+needs.
+"""
+
+from __future__ import annotations
+
+import collections
+import functools
+import multiprocessing
+from concurrent.futures import ProcessPoolExecutor
+from dataclasses import dataclass, field
+from typing import TYPE_CHECKING
+
+import healpy as hp
 import numpy as np
-from streamobs import match_filter
 
-from streameucliddes.analysis import background_polynomial_fit
-from streameucliddes.analysis.background_polynomial_fit import SimpleLonLatProj
-from streameucliddes.analysis.catalog_preparation import ensure_dust_corrected, resolve_mag_columns
-from streameucliddes.analysis.star_density_maps import star_density_healpix
+from streameucliddes.analysis.background_polynomial_fit import fit_background_model
+from streameucliddes.analysis.catalog_preparation import CHUNK_SIZE, check_columns, default_error_cuts
+from streameucliddes.analysis.cmd_match_filter import (
+    DEFAULT_MATCH_FILTER,
+    match_filter_columns,
+    select_stars_in_match_filter,
+)
+from streameucliddes.analysis.known_stream_search import DEFAULT_DISTANCE_MODULI
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
+from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.unit_conversions import convert_DM_to_kpc
 
-DEFAULT_MODEL_TYPE_FIT = {"polynomial": {"degree": 5}}
+if TYPE_CHECKING:
+    from collections.abc import Iterable, Iterator, Mapping
+    from typing import Any
 
-# Stateless -> shared across calls instead of re-instantiating on every generic_search_single_dm() call.
-_PROJ = SimpleLonLatProj()
+    import pandas as pd
+    from numpy.typing import NDArray
+
+DEFAULT_NSIDE = 512  # pixels of about 0.11 deg
+DEFAULT_SMOOTHING_DEG = 0.3  # Gaussian sigma (deg), as the default of star_density_healpix
+DEFAULT_POLYNOMIAL_DEGREE = 5  # fixed degree for now (plan, section 1)
 
 
-def generic_search_single_dm(
-    data,
-    match_filter_parameters,
-    mag_cols=("mag_g", "mag_r"),
-    use_dust_corrected=True,
-    dust_correction_kwargs=None,
-    ensure_dust_correction=True,
-    cuts=None,
-    flag_cuts=None,
-    nside=512,
-    smoothing=True,
-    smoothing_scale_degrees=0.3,
-    model_type_fit=None,
-    fit_method="polyfit2d",
-    ra_col="coord_ra",
-    dec_col="coord_dec",
-    footprint_bounds=None,
-    fit_kwargs=None,
-    verbose=False,
-):
+# ===================================================
+# Preparation
+# ===================================================
+
+
+@dataclass(frozen=True)
+class PreparedGenericSearch:
+    """A generic search prepared once, reused for every distance modulus and isochrone.
+
+    Attributes
+    ----------
+    catalog : pandas.DataFrame
+        The catalog itself (a reference, not a copy).
+    keep : numpy.ndarray of bool
+        Stars passing the cuts, with finite coordinates.
+    pixels : numpy.ndarray of int32
+        HEALPix pixel (RING, ``nside``) of each star; 0 where not kept.
+    nside : int
+    footprint_mask : numpy.ndarray of bool
+        HEALPix mask (RING), True outside the footprint.
+    footprint_centre_lon : float
+        Mean longitude of the footprint (deg): the background polynomial is
+        fitted on the longitude around it, so that ra = 0 does not cut the
+        footprint.
+    match_filter : dict
+    isochrones : list of dict
+    distance_moduli : list of float
     """
-    Run the full pipeline for a single distance modulus: dust correction,
-    match filter, cuts, smoothed HEALPix map, polynomial background fit,
-    residual.
+
+    catalog: Any
+    keep: Any
+    pixels: Any
+    nside: int
+    footprint_mask: Any
+    footprint_centre_lon: float
+    match_filter: dict
+    isochrones: list
+    distance_moduli: list
+    # smoothed footprint, per smoothing scale: the same for every map
+    _smoothed_footprint: dict = field(default_factory=dict, compare=False, repr=False)
+
+
+def prepare_generic_search(
+    catalog: pd.DataFrame,
+    *,
+    match_filter: Mapping[str, Any] | None = None,
+    isochrone: Mapping[str, float] | None = None,
+    default_grid: Iterable[Mapping[str, float]] | None = None,
+    distance_moduli: Iterable[float] | None = None,
+    cuts: Mapping[str, Any] | None = None,
+    nside: int = DEFAULT_NSIDE,
+    footprint_mask: NDArray[np.bool_] | None = None,
+    nest: bool | None = None,
+    ra_col: str = "ra",
+    dec_col: str = "dec",
+) -> PreparedGenericSearch:
+    """Prepare a generic search: the stars kept, their pixels, the footprint.
+
+    The catalog is neither copied nor modified: its columns are read by
+    chunks of ``CHUNK_SIZE`` stars. Kept per star: whether it passes the cuts
+    (1 byte) and its HEALPix pixel (4 bytes).
 
     Parameters
     ----------
-    data : pandas.DataFrame
-        Catalog with magnitude and (ra, dec) columns. Mutated in place to add
-        '<col>_corrected' columns when `use_dust_corrected=True` and they are
-        not already present.
-    match_filter_parameters : dict
-        Passed to match_filter.build_match_filter (must include 'distance_modulus').
-    mag_cols : tuple of str
-        Base (g, r) magnitude column names.
-    use_dust_corrected : bool
-        If True, use '<col>_corrected' columns instead of the raw ones.
-    dust_correction_kwargs : dict, optional
-        Extra kwargs forwarded to dust_correction.correct_dust_map (e.g.
-        'ebv_map' or 'ebv_map_path') when the correction needs to be computed.
-    ensure_dust_correction : bool
-        If True (default) and `use_dust_corrected`, compute the missing
-        '<col>_corrected' columns in place before resolving magnitude columns.
-        Set to False when the correction has already been applied upfront
-        (e.g. by generic_search_dm_scan) to skip the per-call existence check.
-    cuts : dict, optional
-        Selection applied on top of the match filter, as ``{column: spec}``
-        (see catalog_cuts.get_cut_mask), e.g. ``{"mag_g_corrected": (None, 24.0)}``
-        for a faint-end magnitude cut. Column names are used as is: name the
-        '<col>_corrected' column to cut on a dust-corrected magnitude.
-        Ignored if `flag_cuts` is provided. Default: no cuts.
-    flag_cuts : array-like of bool, optional
-        Precomputed mask of `cuts` (same length as `data`). If provided,
-        the internal call to catalog_cuts.get_cut_mask is skipped
-        -- useful when scanning several distance moduli, since the cuts
-        do not depend on distance modulus and only need computing once.
-    nside, smoothing, smoothing_scale_degrees : HEALPix map parameters.
-    model_type_fit : dict
-        Passed to background_polynomial_fit.fit_background_model (default: degree-5 polynomial).
-    fit_method : str
-        Passed to background_polynomial_fit.fit_background_model (default: "polyfit2d").
-    footprint_bounds : tuple (ra_min, ra_max, dec_min, dec_max), optional
-        If None, inferred from the match-filtered + cut selection.
+    catalog : pandas.DataFrame
+        Stars, with ``ra_col``, ``dec_col`` (deg) and the magnitude columns of
+        the match filter, e.g. ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
+    match_filter : mapping, optional
+        See ``analysis.cmd_match_filter``. Default:
+        ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
+    isochrone : mapping, optional
+        The one isochrone of the search, ``{"age": age (Gyr), "metallicity": Z}``.
+    default_grid : iterable of mapping, optional
+        The isochrones otherwise. Default:
+        ``catalogs.isochrone_parameters.default_isochrone_grid()``.
+    distance_moduli : iterable of float, optional
+        Grid of the scan. Default: ``known_stream_search.DEFAULT_DISTANCE_MODULI``
+        (15 to 22, every 0.1).
+    cuts : mapping, optional
+        Format of ``catalogs.catalog_cuts.get_cut_mask``. Default: errors
+        <= 0.2 on the bands of the match filter
+        (``catalog_preparation.default_error_cuts``); ``{}`` for no cut.
+    nside : int, optional
+        HEALPix resolution of the maps.
+    footprint_mask : numpy.ndarray of bool, optional
+        HEALPix mask, True outside the footprint (needs ``nest``), e.g.
+        ``catalogs.survey_footprint.survey_footprint_healpix_mask``. Default:
+        the pixels with at least one star of the catalog (as
+        ``survey_footprint_healpix_mask`` with ``min_count=1``), counted by
+        chunks.
+    nest : bool, optional
+        HEALPix ordering of ``footprint_mask``.
+    ra_col, dec_col : str, optional
+        Coordinate columns (deg).
 
     Returns
     -------
-    results : dict
-        Includes 'data_map', 'fit_map', 'residual_map' (masked HEALPix maps),
-        plus lightweight metadata needed to reproduce/plot them (CMD selection
-        mask, polygon, footprint). Heavy intermediates (full-row selection,
-        per-pixel lon/lat grids, the raw fit-solver workspace) are dropped
-        rather than returned, to keep memory bounded when scanning many
-        distance moduli over a large catalog.
+    search : PreparedGenericSearch
+
+    Raises
+    ------
+    KeyError
+        Columns missing from the catalog (all of them listed).
+    ValueError
+        ``footprint_mask`` without ``nest``, or an empty footprint.
     """
-    if model_type_fit is None:
-        model_type_fit = DEFAULT_MODEL_TYPE_FIT
-    fit_kwargs = dict(fit_kwargs or {})
+    match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
+    cuts = default_error_cuts(match_filter) if cuts is None else cuts
+    check_columns(catalog, [*match_filter_columns(match_filter), ra_col, dec_col, *cuts])
 
-    if use_dust_corrected and ensure_dust_correction:
-        ensure_dust_corrected(
-            data, mag_cols, ra_col, dec_col, dust_correction_kwargs, verbose=verbose
-        )
+    keep = np.zeros(len(catalog), dtype=bool)  # 1 byte per star
+    pixels = np.zeros(len(catalog), dtype=np.int32)  # 4 bytes per star
+    npix = hp.nside2npix(nside)
+    star_counts = np.zeros(npix, dtype=np.int64) if footprint_mask is None else None
+    ra, dec = catalog[ra_col].to_numpy(), catalog[dec_col].to_numpy()  # views
+    for start in range(0, len(catalog), CHUNK_SIZE):
+        chunk = slice(start, start + CHUNK_SIZE)
+        finite = np.isfinite(ra[chunk]) & np.isfinite(dec[chunk])
+        chunk_pixels = hp.ang2pix(nside, ra[chunk][finite], dec[chunk][finite], lonlat=True, nest=False)
+        pixels[chunk][finite] = chunk_pixels
+        keep[chunk] = get_cut_mask(catalog.iloc[chunk], cuts) & finite  # temporaries of a chunk only
+        if star_counts is not None:  # every star with coordinates, cut or not
+            star_counts += np.bincount(chunk_pixels, minlength=npix)
 
-    mag_to_use = resolve_mag_columns(data, mag_cols, use_dust_corrected)
-    if verbose:
-        print(f"Magnitudes used for cut and match filter: {mag_to_use}")
-
-    # --- Match filter + cuts ---
-    polygon_vertices = match_filter.build_match_filter(**match_filter_parameters)
-    flag_match = match_filter.is_in_match_filter(
-        data[mag_to_use[0]],
-        data[mag_to_use[1]],
-        polygon_vertices=polygon_vertices,
-        verbose=verbose,
-    )
-    if flag_cuts is None:
-        flag_cuts = get_cut_mask(data, cuts or {})
-    selection_flag = flag_match & flag_cuts
-    del flag_match, flag_cuts
-
-    # Only pull the two coordinate columns for the selected rows, instead of a
-    # full-row copy of (potentially very wide) `data` via `data.loc[mask]`.
-    ra_values = data[ra_col].to_numpy()[selection_flag]
-    dec_values = data[dec_col].to_numpy()[selection_flag]
-    n_selected = int(ra_values.size)
-
-    if verbose:
-        print(f"Selected {n_selected}/{len(data)} stars in match filter + cuts")
-
-    if footprint_bounds is None:
-        ra_min = float(np.min(ra_values))
-        ra_max = float(np.max(ra_values))
-        dec_min = float(np.min(dec_values))
-        dec_max = float(np.max(dec_values))
+    if footprint_mask is None:
+        footprint_mask = star_counts < 1
     else:
-        ra_min, ra_max, dec_min, dec_max = footprint_bounds
+        footprint_mask = _ring_mask(footprint_mask, nside, nest)
+    if footprint_mask.all():
+        raise ValueError("Empty footprint: no pixel inside.")
+    inside_lon, _ = hp.pix2ang(nside, np.flatnonzero(~footprint_mask), lonlat=True)
+    centre_lon = np.degrees(np.arctan2(np.sin(np.radians(inside_lon)).mean(), np.cos(np.radians(inside_lon)).mean()))
 
-    # --- Smoothed HEALPix map ---
-    data_map, lon, lat, npix = star_density_healpix(
-        {ra_col: ra_values, dec_col: dec_values},
-        columns=[ra_col, dec_col],
-        nside=nside,
-        smoothing=smoothing,
-        smoothing_scale_degrees=smoothing_scale_degrees,
-    )
-    del ra_values, dec_values
-
-    footprint_mask = (lon < ra_min) | (lon > ra_max) | (lat < dec_min) | (lat > dec_max)
-    del lon, lat
-
-    partial_data = np.ma.array(data_map, mask=footprint_mask)
-    del data_map
-
-    # --- Polynomial background fit + residual ---
-    params_fit, solver_res, prepared_fit = background_polynomial_fit.fit_background_model(
-        partial_data,
-        method=fit_method,
-        model_type=model_type_fit,
-        proj=_PROJ,
-        nside=nside,
-        sigma=0.0,
-        percent=None,
-        mask=footprint_mask,
-        **fit_kwargs,
+    if isochrone is not None:
+        isochrones = [dict(isochrone)]
+    else:
+        isochrones = default_isochrone_grid() if default_grid is None else [dict(item) for item in default_grid]
+    distance_moduli = DEFAULT_DISTANCE_MODULI if distance_moduli is None else distance_moduli
+    return PreparedGenericSearch(
+        catalog=catalog, keep=keep, pixels=pixels, nside=nside, footprint_mask=footprint_mask,
+        footprint_centre_lon=float(centre_lon % 360.0), match_filter=match_filter, isochrones=list(isochrones),
+        distance_moduli=[float(dm) for dm in distance_moduli],
     )
 
-    model_map = np.asarray(prepared_fit["background_map"].filled(np.nan))
-    residual_map = partial_data.filled(0.0) - model_map
-    del prepared_fit
 
-    distance_modulus = match_filter_parameters["distance_modulus"]
+def _ring_mask(footprint_mask, nside, nest):
+    """A HEALPix mask (True outside) in RING at nside; a pixel is outside if any part of it is."""
+    if nest is None:
+        raise ValueError("A footprint_mask needs nest.")
+    footprint_mask = np.asarray(footprint_mask, dtype=bool)
+    if nest:
+        footprint_mask = hp.reorder(footprint_mask, n2r=True)
+    if hp.npix2nside(footprint_mask.size) != nside:
+        footprint_mask = hp.ud_grade(footprint_mask.astype(float), nside, order_in="RING", order_out="RING") > 0
+    return footprint_mask
 
+
+# ===================================================
+# Searches
+# ===================================================
+
+
+def generic_search_single_dm(
+    catalog: pd.DataFrame | None = None,
+    distance_modulus: float | None = None,
+    isochrone: Mapping[str, float] | None = None,
+    *,
+    search: PreparedGenericSearch | None = None,
+    smoothing_deg: float = DEFAULT_SMOOTHING_DEG,
+    polynomial_degree: int = DEFAULT_POLYNOMIAL_DEGREE,
+    **prepare_kwargs: Any,
+) -> dict[str, Any]:
+    """Matched-filter HEALPix map at one distance modulus, its background and residual.
+
+    The stars in the match filter
+    (``analysis.cmd_match_filter.select_stars_in_match_filter``) are counted
+    in their pixels, by chunks. The counts are smoothed with a Gaussian and
+    divided by the smoothed footprint: no drop at the footprint edges. A 2D
+    polynomial of the log density
+    (``analysis.background_polynomial_fit.fit_background_model``, method
+    ``"polyfit2d"``), on (longitude around the footprint centre, latitude),
+    gives the background; the residual is the density minus the background.
+
+    Parameters
+    ----------
+    catalog : pandas.DataFrame, optional
+        Stars: prepared here (``prepare_generic_search``). Not with ``search``.
+    distance_modulus : float
+        Distance modulus of the match filter.
+    isochrone : mapping, optional
+        ``{"age", "metallicity"}``. Default: the first isochrone of the search.
+    search : PreparedGenericSearch, optional
+        The search, prepared once for many maps.
+    smoothing_deg : float, optional
+        Gaussian sigma (deg); 0 for no smoothing.
+    polynomial_degree : int, optional
+        Degree of the background polynomial (in each coordinate).
+    **prepare_kwargs
+        Arguments of ``prepare_generic_search``. Not with ``search``.
+
+    Returns
+    -------
+    result : dict
+        ``density``, ``background``, ``residual``: HEALPix maps (RING, masked
+        outside the footprint; stars per pixel); ``footprint_mask``,
+        ``nside``, ``nest`` (False); ``n_selected``; ``distance_modulus``,
+        ``distance_kpc``, ``isochrone``, ``match_filter``, ``smoothing_deg``,
+        ``polynomial_degree``.
+
+    Raises
+    ------
+    ValueError
+        No ``distance_modulus``; preparation arguments with ``search``.
+
+    References
+    ----------
+    Rockosi et al. 2002, AJ 124, 349. Grillmair 2009, ApJ 693, 1118.
+    Shipp et al. 2018, ApJ 862, 114.
+    """
+    search = _search(search, catalog, prepare_kwargs)
+    if distance_modulus is None:
+        raise ValueError("Give a distance_modulus.")
+    isochrone = dict(search.isochrones[0] if isochrone is None else isochrone)
+
+    counts = _selected_counts(search, distance_modulus, isochrone)
+    density = _smoothed_density(counts, search, smoothing_deg)
+    background = _background(density, search, polynomial_degree)
     return {
-        "data": data,
-        "mag_to_use": mag_to_use,
-        "cuts": dict(cuts or {}),
-        "match_filter_parameters": dict(match_filter_parameters),
-        "distance_modulus": distance_modulus,
-        "distance_kpc": convert_DM_to_kpc(distance_modulus),
-        "polygon_vertices": polygon_vertices,
-        "selection_flag": selection_flag,
-        "n_selected": n_selected,
-        "footprint_bounds": (ra_min, ra_max, dec_min, dec_max),
-        "footprint_mask": footprint_mask,
-        "nside": nside,
-        "data_map": partial_data,
-        "fit_map": np.ma.array(model_map, mask=footprint_mask),
-        "residual_map": np.ma.array(residual_map, mask=footprint_mask),
-        "model_type_fit": model_type_fit,
-        "params_fit": params_fit,
-        "solver_res": solver_res,
+        "density": density,
+        "background": background,
+        "residual": density - background,
+        "footprint_mask": search.footprint_mask,
+        "nside": search.nside,
+        "nest": False,
+        "n_selected": int(counts.sum()),
+        "distance_modulus": float(distance_modulus),
+        "distance_kpc": float(convert_DM_to_kpc(distance_modulus).value),
+        "isochrone": isochrone,
+        "match_filter": search.match_filter,
+        "smoothing_deg": float(smoothing_deg),
+        "polynomial_degree": int(polynomial_degree),
     }
 
 
 def generic_search_dm_scan(
-    data,
-    distance_modulus_array,
-    match_filter_parameters,
-    find_stream_kwargs=None,
-    verbose=True,
-):
-    """
-    Run generic_search_single_dm() over a grid of distance moduli, one at a time.
+    catalog: pd.DataFrame | None = None,
+    distance_moduli: Iterable[float] | None = None,
+    isochrone: Mapping[str, float] | None = None,
+    *,
+    search: PreparedGenericSearch | None = None,
+    smoothing_deg: float = DEFAULT_SMOOTHING_DEG,
+    polynomial_degree: int = DEFAULT_POLYNOMIAL_DEGREE,
+    n_workers: int = 1,
+    **prepare_kwargs: Any,
+) -> Iterator[tuple[float, dict[str, Any]]]:
+    """Generic search over a grid of distance moduli, per isochrone, one map at a time.
 
-    The dust correction and the (distance-modulus-independent) cuts
-    are each computed once up front and reused for every distance modulus,
-    instead of being recomputed on every generic_search_single_dm() call.
+    ``generic_search_single_dm`` for every isochrone of the search (or
+    ``isochrone``), every distance modulus for the first, then the next.
+    The maps are yielded one at a time: save or plot each, then drop it.
 
-    The results are yielded one distance modulus at a time, so that the caller
-    can plot or save each one and drop its HEALPix maps before the next one is
-    computed: retaining every frame's maps would otherwise grow without bound
-    when scanning many distance moduli over a large catalog (see
-    workflows.run_generic_search.run_generic_search).
+    With ``n_workers`` > 1, the maps are computed in parallel by forked
+    processes: they share the catalog of the parent (copy on write), not a
+    copy of it; at most ``n_workers`` maps wait in memory to be yielded.
 
     Parameters
     ----------
-    data : pandas.DataFrame
-    distance_modulus_array : iterable of float
-    match_filter_parameters : dict
-        Base kwargs for match_filter.build_match_filter; 'distance_modulus'
-        is overridden for each value in `distance_modulus_array`.
-    find_stream_kwargs : dict, optional
-        Extra kwargs forwarded to generic_search_single_dm() (e.g. mag_cols, cuts,
-        use_dust_corrected, nside...).
-    verbose : bool
+    catalog : pandas.DataFrame, optional
+        Stars: prepared here (``prepare_generic_search``). Not with ``search``.
+    distance_moduli : iterable of float, optional
+        Default: those of the search.
+    isochrone : mapping, optional
+        The one isochrone. Default: those of the search.
+    search : PreparedGenericSearch, optional
+        The search, prepared once.
+    smoothing_deg, polynomial_degree
+        See ``generic_search_single_dm``.
+    n_workers : int, optional
+        Processes over the maps (needs the "fork" start method: Linux, macOS).
+    **prepare_kwargs
+        Arguments of ``prepare_generic_search``. Not with ``search``.
 
     Yields
     ------
     distance_modulus : float
-    results : dict
-        generic_search_single_dm() output for this distance modulus.
+    result : dict
+        Output of ``generic_search_single_dm``.
     """
-    find_stream_kwargs = dict(find_stream_kwargs or {})
+    search = _search(search, catalog, prepare_kwargs)
+    distance_moduli = search.distance_moduli if distance_moduli is None else [float(dm) for dm in distance_moduli]
+    isochrones = search.isochrones if isochrone is None else [dict(isochrone)]
+    tasks = [(isochrone, dm) for isochrone in isochrones for dm in distance_moduli]
+    single_dm = functools.partial(_worker_single_dm, smoothing_deg=smoothing_deg, polynomial_degree=polynomial_degree)
 
-    # --- Precompute what doesn't depend on distance modulus, once, for the whole scan ---
-    mag_cols = find_stream_kwargs.get("mag_cols", ("mag_g", "mag_r"))
-    ra_col = find_stream_kwargs.get("ra_col", "coord_ra")
-    dec_col = find_stream_kwargs.get("dec_col", "coord_dec")
-    use_dust_corrected = find_stream_kwargs.get("use_dust_corrected", True)
-    cuts = find_stream_kwargs.get("cuts")
+    if n_workers <= 1:
+        for isochrone, dm in tasks:
+            yield dm, generic_search_single_dm(
+                distance_modulus=dm, isochrone=isochrone, search=search,
+                smoothing_deg=smoothing_deg, polynomial_degree=polynomial_degree,
+            )
+        return
 
-    if use_dust_corrected:
-        ensure_dust_corrected(
-            data,
-            mag_cols,
-            ra_col,
-            dec_col,
-            find_stream_kwargs.get("dust_correction_kwargs"),
-            verbose=verbose,
+    global _WORKER_SEARCH
+    _WORKER_SEARCH = search  # inherited by the forked workers, not pickled
+    try:
+        with ProcessPoolExecutor(max_workers=n_workers, mp_context=multiprocessing.get_context("fork")) as executor:
+            pending = collections.deque()
+            for task in tasks:
+                pending.append((task[1], executor.submit(single_dm, task)))
+                if len(pending) >= n_workers:  # bounded: the maps not yet yielded stay few
+                    dm, future = pending.popleft()
+                    yield dm, future.result()
+            while pending:
+                dm, future = pending.popleft()
+                yield dm, future.result()
+    finally:
+        _WORKER_SEARCH = None
+
+
+# ===================================================
+# Helpers
+# ===================================================
+
+_WORKER_SEARCH = None  # the search of the forked workers of generic_search_dm_scan
+
+
+def _worker_single_dm(task, *, smoothing_deg, polynomial_degree):
+    """One map in a worker, from the search inherited at the fork."""
+    isochrone, dm = task
+    return generic_search_single_dm(
+        distance_modulus=dm, isochrone=isochrone, search=_WORKER_SEARCH,
+        smoothing_deg=smoothing_deg, polynomial_degree=polynomial_degree,
+    )
+
+
+def _search(search, catalog, prepare_kwargs):
+    """The prepared search: given, or prepared from the catalog."""
+    if search is None:
+        if catalog is None:
+            raise ValueError("Give a catalog or a prepared search.")
+        return prepare_generic_search(catalog, **prepare_kwargs)
+    if catalog is not None or prepare_kwargs:
+        given = (["catalog"] if catalog is not None else []) + list(prepare_kwargs)
+        raise ValueError(f"{given} prepare a search: not with search")
+    return search
+
+
+def _selected_counts(search, distance_modulus, isochrone):
+    """Stars in the match filter per HEALPix pixel, counted by chunks of the catalog."""
+    npix = hp.nside2npix(search.nside)
+    counts = np.zeros(npix)
+    for start in range(0, len(search.catalog), CHUNK_SIZE):
+        chunk = slice(start, start + CHUNK_SIZE)
+        keep = search.keep[chunk]
+        if not keep.any():
+            continue
+        selected = select_stars_in_match_filter(
+            search.catalog.iloc[chunk], distance_modulus, isochrone, search.match_filter, mask=keep
         )
-    find_stream_kwargs["ensure_dust_correction"] = False
+        counts += np.bincount(search.pixels[chunk][selected], minlength=npix)
+    return counts
 
-    find_stream_kwargs["flag_cuts"] = get_cut_mask(data, cuts or {})
-    if verbose:
-        print(f"Precomputed dust correction + cuts once for the scan (cuts: {cuts}).")
 
-    for dm in distance_modulus_array:
-        if verbose:
-            print(f"Processing distance modulus = {dm:.2f}")
+def _smoothed_density(counts, search, smoothing_deg):
+    """Counts smoothed and divided by the smoothed footprint, masked outside the footprint."""
+    outside = search.footprint_mask
+    if smoothing_deg <= 0:
+        return np.ma.array(counts, mask=outside)
+    sigma = np.radians(smoothing_deg)
+    if smoothing_deg not in search._smoothed_footprint:
+        search._smoothed_footprint[smoothing_deg] = hp.smoothing((~outside).astype(float), sigma=sigma)
+    weight = search._smoothed_footprint[smoothing_deg]
+    smoothed = hp.smoothing(np.where(outside, 0.0, counts), sigma=sigma)
+    density = np.divide(smoothed, weight, out=np.zeros_like(smoothed), where=~outside & (weight > 0))
+    return np.ma.array(density, mask=outside)
 
-        mf_params = dict(match_filter_parameters)
-        mf_params["distance_modulus"] = dm
 
-        yield dm, generic_search_single_dm(data, mf_params, **find_stream_kwargs)
+class _FootprintCentredProj:
+    """(longitude around the footprint centre, wrapped to [-180, 180), latitude), in deg.
+
+    The ``proj`` of ``fit_background_model``: ra = 0 does not cut a footprint across it.
+    """
+
+    def __init__(self, centre_lon):
+        self.centre_lon = centre_lon
+
+    def ang2xy(self, lon, lat, lonlat=True):
+        x = (np.asarray(lon, dtype=float) - self.centre_lon + 180.0) % 360.0 - 180.0
+        return x, np.asarray(lat, dtype=float)
+
+    def get_extent(self):
+        return (-180.0, 180.0, -90.0, 90.0)
+
+
+def _background(density, search, polynomial_degree):
+    """2D polynomial background of a density map, masked outside the footprint."""
+    _, _, prepared = fit_background_model(
+        density,
+        method="polyfit2d",
+        model_type={"polynomial": {"degree": int(polynomial_degree)}},
+        proj=_FootprintCentredProj(search.footprint_centre_lon),
+        nside=search.nside,
+        nest=False,
+        sigma=0.0,
+        percent=None,
+        mask=search.footprint_mask,
+    )
+    return np.ma.array(prepared["background_map"].filled(np.nan), mask=search.footprint_mask)

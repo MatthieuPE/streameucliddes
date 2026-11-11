@@ -92,6 +92,9 @@ src/streameucliddes/
     generic_stream_search.py     generic_search_single_dm  (old: pipeline.find_stream)
                                  generic_search_dm_scan    (old: compute part of
                                                             pipeline.scan_find_stream)
+                                 [NEW] prepare_generic_search, PreparedGenericSearch
+                                 (generic-search branch: API mirrors known_stream_search;
+                                  shared match filter, no copy of the catalog, chunks)
     known_stream_search.py       [NEW] known_stream_search_single_dm
                                  [NEW] known_stream_search_dm_scan
                                  [NEW] known_stream_search_dm_along_track
@@ -133,6 +136,8 @@ src/streameucliddes/
 scripts/                         [NEW] run_generic_search.py, run_known_stream_search.py
 configs/                         [NEW] generic_search.yaml, known_stream_search.yaml
 notebooks/                       [NEW] known_stream_search_example.ipynb (usage example)
+                                 [NEW] generic_search_example.ipynb (fake data first,
+                                       then the Euclid x DES stars)
 ```
 
 Naming rules used:
