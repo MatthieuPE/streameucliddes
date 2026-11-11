@@ -17,6 +17,9 @@ only selected with ``add_ibata2024``.
 
 from __future__ import annotations
 
+import logging
+import pickle
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import astropy.units as u
@@ -34,6 +37,12 @@ if TYPE_CHECKING:
 if TYPE_CHECKING:  # imported in load_galstreams only, so that the rest works without it
     import galstreams
 
+LOGGER = logging.getLogger(__name__)
+
+# Cache of the galstreams library (see load_galstreams), next to the catalogs (see
+# euclid_des_catalog.DEFAULT_DATA_PATH): the data/ folder of the repository, gitignored.
+GALSTREAMS_CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "galstreams"
+
 IBATA2024_REFERENCE = "ibata2024"  # galstreams reference of the Ibata et al. 2024 tracks
 
 SELECTION_COLUMNS = [
@@ -46,17 +55,23 @@ SELECTION_COLUMNS = [
 ]
 
 
-def load_galstreams(*, verbose: bool = False) -> galstreams.MWStreams:
+def load_galstreams(*, verbose: bool = False, use_cache: bool = True) -> galstreams.MWStreams:
     """galstreams library of the Milky Way stream tracks.
 
     One track per stream, the default one of galstreams (141 tracks in
-    galstreams 1.2.1). Slow (about 20 s): load it once and pass it to the
-    other functions.
+    galstreams 1.2.1). Building it takes about 15 s. With ``use_cache``, it
+    is built once and saved (pickle, about 80 MB) in ``GALSTREAMS_CACHE_DIR``,
+    one file per galstreams version, then read back in about 0.1 s. A cache
+    that cannot be read is rebuilt. The cache is a pickle: it is only meant
+    to hold the files this function writes.
 
     Parameters
     ----------
     verbose : bool, optional
-        Passed to ``galstreams.MWStreams``.
+        Passed to ``galstreams.MWStreams``, when the library is built.
+    use_cache : bool, optional
+        Read the library from the cache, or build it and save it there.
+        False: build it, without reading or writing the cache.
 
     Returns
     -------
@@ -69,7 +84,22 @@ def load_galstreams(*, verbose: bool = False) -> galstreams.MWStreams:
     """
     import galstreams
 
-    return galstreams.MWStreams(verbose=verbose)
+    cache_path = GALSTREAMS_CACHE_DIR / f"mwstreams_galstreams-{galstreams.__version__}.pkl"
+    if use_cache and cache_path.exists():
+        try:
+            with cache_path.open("rb") as file:
+                return pickle.load(file)
+        except (OSError, EOFError, AttributeError, ImportError, pickle.UnpicklingError) as error:
+            LOGGER.warning("galstreams cache %s unreadable (%s): rebuilt.", cache_path, error)
+
+    mws = galstreams.MWStreams(verbose=verbose)
+    if use_cache:
+        cache_path.parent.mkdir(parents=True, exist_ok=True)
+        partial_path = cache_path.with_suffix(".partial")
+        with partial_path.open("wb") as file:
+            pickle.dump(mws, file, protocol=pickle.HIGHEST_PROTOCOL)
+        partial_path.replace(cache_path)  # a complete file, or none
+    return mws
 
 
 def galstreams_track_length_in_footprint(

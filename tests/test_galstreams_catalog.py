@@ -5,6 +5,7 @@ give exact expectations. The real galstreams library (loaded once, about 20 s)
 checks the validation streams of the plan (ATLAS, Phoenix, Turranburra).
 """
 
+import sys
 from types import SimpleNamespace
 
 import astropy.coordinates as coord
@@ -13,6 +14,7 @@ import healpy as hp
 import numpy as np
 import pytest
 
+from streameucliddes.catalogs import galstreams_catalog
 from streameucliddes.catalogs.galstreams_catalog import (
     SELECTION_COLUMNS,
     galstreams_dm_along_track,
@@ -188,6 +190,58 @@ def test_select_galstreams_nothing(gc_frame):
     selection = select_galstreams_in_footprint(mws, footprint_mask, nest=False, min_length_deg=0.0)
     assert selection.empty
     assert list(selection.columns) == SELECTION_COLUMNS
+
+
+# ===================================================
+# Test load_galstreams: the cache
+# ===================================================
+
+
+class _CountingMWStreams(dict):
+    """Stand-in for galstreams.MWStreams: counts how many times the library is built."""
+
+    builds = 0
+
+    def __init__(self, verbose=False):
+        super().__init__({"Fake-T00": "track"})
+        type(self).builds += 1
+
+
+@pytest.fixture
+def fake_galstreams(monkeypatch, tmp_path):
+    """galstreams replaced by the stand-in, and the cache in a temporary folder."""
+    fake = SimpleNamespace(__version__="0.0.test", MWStreams=_CountingMWStreams)
+    monkeypatch.setitem(sys.modules, "galstreams", fake)
+    monkeypatch.setattr(galstreams_catalog, "GALSTREAMS_CACHE_DIR", tmp_path)
+    monkeypatch.setattr(_CountingMWStreams, "builds", 0)
+    return tmp_path
+
+
+# Built once, then read from the cache: one file, named with the galstreams version
+def test_load_galstreams_cache(fake_galstreams):
+    first = load_galstreams()
+    second = load_galstreams()
+    assert _CountingMWStreams.builds == 1
+    assert second == first
+    assert [path.name for path in fake_galstreams.iterdir()] == ["mwstreams_galstreams-0.0.test.pkl"]
+
+
+# Without the cache: built every time, nothing written
+def test_load_galstreams_without_cache(fake_galstreams):
+    load_galstreams(use_cache=False)
+    load_galstreams(use_cache=False)
+    assert _CountingMWStreams.builds == 2
+    assert not any(fake_galstreams.iterdir())
+
+
+# A cache that cannot be read is rebuilt, and written again
+def test_load_galstreams_unreadable_cache(fake_galstreams):
+    (fake_galstreams / "mwstreams_galstreams-0.0.test.pkl").write_bytes(b"not a pickle")
+    mws = load_galstreams()
+    assert _CountingMWStreams.builds == 1
+    assert "Fake-T00" in mws
+    assert load_galstreams() == mws
+    assert _CountingMWStreams.builds == 1
 
 
 # ===================================================
