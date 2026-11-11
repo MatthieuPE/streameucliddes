@@ -5,6 +5,7 @@ give exact expectations. The real galstreams library (loaded once, about 20 s)
 checks the validation streams of the plan (ATLAS, Phoenix, Turranburra).
 """
 
+import inspect
 import sys
 from types import SimpleNamespace
 
@@ -141,11 +142,23 @@ def test_dm_along_track_mean_distance(gc_frame):
 
 # The track plus the padding, and at least +/- min_phi2_half_width_deg in phi2
 def test_phi12_window(gc_frame):
-    track = _synthetic_track(gc_frame, phi2_range=(-1.0, 4.0))
-    window = galstreams_phi12_window(track)
-    np.testing.assert_allclose(window, (-20.0, 20.0, -5.0, 6.0), atol=1e-6)
+    track = _synthetic_track(gc_frame, phi2_range=(-1.0, 4.0))  # phi1 -10 to 10, phi2 -1 to 4
     window = galstreams_phi12_window(track, padding_phi1_deg=1.0, padding_phi2_deg=0.5, min_phi2_half_width_deg=0.0)
     np.testing.assert_allclose(window, (-11.0, 11.0, -1.5, 4.5), atol=1e-6)
+    window = galstreams_phi12_window(track, padding_phi1_deg=3.0, padding_phi2_deg=0.5, min_phi2_half_width_deg=2.0)
+    np.testing.assert_allclose(window, (-13.0, 13.0, -2.0, 4.5), atol=1e-6)  # phi2 at least -2
+
+    # Defaults: those of the signature, whatever their values
+    defaults = {name: parameter.default for name, parameter in inspect.signature(galstreams_phi12_window).parameters.items()
+                if parameter.default is not inspect.Parameter.empty}
+    np.testing.assert_allclose(galstreams_phi12_window(track), galstreams_phi12_window(track, **defaults))
+    expected = (
+        -10.0 - defaults["padding_phi1_deg"],
+        10.0 + defaults["padding_phi1_deg"],
+        min(-1.0 - defaults["padding_phi2_deg"], -defaults["min_phi2_half_width_deg"]),
+        max(4.0 + defaults["padding_phi2_deg"], defaults["min_phi2_half_width_deg"]),
+    )
+    np.testing.assert_allclose(galstreams_phi12_window(track), expected, atol=1e-6)
 
 
 # ===================================================

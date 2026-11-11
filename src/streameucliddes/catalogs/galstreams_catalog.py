@@ -213,7 +213,7 @@ def select_galstreams_in_footprint(
 def galstreams_phi12_window(
     track: galstreams.Track6D,
     *,
-    padding_phi1_deg: float = 10.0,
+    padding_phi1_deg: float = 5.0,
     padding_phi2_deg: float = 2.0,
     min_phi2_half_width_deg: float = 5.0,
 ) -> tuple[float, float, float, float]:
@@ -240,8 +240,9 @@ def galstreams_phi12_window(
     Notes
     -----
     Adapted from celestial_currents
-    ``visualization.py::get_stream_phi12_bounds`` (same defaults). Its
-    per-stream overrides are left out: pass another window instead.
+    ``visualization.py::get_stream_phi12_bounds`` (its phi1 padding is 10
+    deg, 5 deg here; same phi2 defaults). Its per-stream overrides are left
+    out: pass another window instead.
     """
     phi1, phi2 = _track_phi12(track)
     return (
