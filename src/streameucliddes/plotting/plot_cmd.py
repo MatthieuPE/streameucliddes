@@ -71,7 +71,7 @@ def plot_CMD(
         label = "N"
     elif norm == "log":
         norm = LogNorm()
-        label = "log10(N)"
+        label = "N"  # log scale: the ticks are N
     else:
         raise ValueError(f"Invalid norm: {norm}. Use None or 'log'.")
 

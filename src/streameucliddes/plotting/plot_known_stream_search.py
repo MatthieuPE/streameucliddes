@@ -110,7 +110,7 @@ def plot_known_stream_search_single_dm(
                       aspect="equal", interpolation="nearest")
     # inset of the map: the height of the map, and seen by constrained layout (no crop when saved)
     colorbar_ax = ax.inset_axes(COLORBAR_BOUNDS)
-    fig.colorbar(image, cax=colorbar_ax, label="Stars per bin (smoothed)")
+    fig.colorbar(image, cax=colorbar_ax, label="Counts (smoothed)")
 
     if track_phi12 is not None:
         ax.plot(*track_phi12, color=TRACK_COLOR, lw=1.0, ls="--", alpha=0.8,
