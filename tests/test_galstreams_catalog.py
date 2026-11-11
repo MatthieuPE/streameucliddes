@@ -26,7 +26,7 @@ from streameucliddes.catalogs.galstreams_catalog import (
 )
 from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12
-from streameucliddes.unit_conversions import convert_kpc_to_DM
+from streameucliddes.unit_conversions import convert_DM_to_kpc, convert_kpc_to_DM
 
 pytestmark = pytest.mark.galstreams_catalog
 
@@ -51,6 +51,21 @@ def _synthetic_track(frame, phi1_range=(-10.0, 10.0), phi2_range=(0.0, 0.0),
     return SimpleNamespace(
         track=points, stream_frame=frame, InfoFlags=info_flags,
         track_name=name, stream_name=name.rsplit("-", 1)[0], ref=ref,
+    )
+
+
+def _linear_dm_track(frame, phi1_range, dm_at_zero, dm_slope, name="Linear-T00"):
+    """Track along ``frame``, points every 0.01 deg, distance modulus exactly linear in phi1."""
+    phi1 = np.linspace(*phi1_range, round((phi1_range[1] - phi1_range[0]) / 0.01) + 1)
+    points = coord.SkyCoord(
+        phi1=phi1 * u.deg,
+        phi2=np.zeros(phi1.size) * u.deg,
+        distance=convert_DM_to_kpc(dm_at_zero + dm_slope * phi1),
+        frame=frame,
+    ).transform_to(coord.ICRS())
+    return SimpleNamespace(
+        track=points, stream_frame=frame, InfoFlags="1111",
+        track_name=name, stream_name=name.rsplit("-", 1)[0], ref="synthetic",
     )
 
 
@@ -120,6 +135,26 @@ def test_dm_along_track_extrapolate(gc_frame):
 
     constant = _synthetic_track(gc_frame, distance_kpc=(17.5, 17.5), info_flags="1011")
     np.testing.assert_allclose(galstreams_dm_along_track(constant, [-30.0, 30.0], extrapolate=True), _dm(17.5))
+
+
+# A track with a linear distance modulus profile over phi1 -5 to 5: the extrapolation
+# follows the same line beyond both ends, far from them too; inside, the profile itself
+@pytest.mark.parametrize("dm_slope", [0.15, -0.08, 0.0])
+def test_dm_along_track_extrapolate_linear_profile(gc_frame, dm_slope):
+    dm_at_zero = 17.0
+    track = _linear_dm_track(gc_frame, (-5.0, 5.0), dm_at_zero, dm_slope)
+    line = lambda phi1: dm_at_zero + dm_slope * phi1
+
+    inside = np.linspace(-4.9, 4.9, 50)
+    np.testing.assert_allclose(galstreams_dm_along_track(track, inside), line(inside), atol=1e-6)
+    beyond = np.concatenate([np.linspace(-25.0, -5.05, 40), np.linspace(5.05, 25.0, 40)])
+    assert np.isnan(galstreams_dm_along_track(track, beyond)).all()  # not without extrapolate
+    np.testing.assert_allclose(galstreams_dm_along_track(track, beyond, extrapolate=True), line(beyond), atol=1e-6)
+
+    # A whole window around the track, as dm_along_track uses it: the line everywhere
+    window_phi1 = np.linspace(-15.0, 15.0, 301)
+    np.testing.assert_allclose(galstreams_dm_along_track(track, window_phi1, extrapolate=True), line(window_phi1),
+                               atol=1e-6)
 
 
 # An Ibata et al. 2024 track has no distance in galstreams (1 kpc): NaN, extrapolated or not
