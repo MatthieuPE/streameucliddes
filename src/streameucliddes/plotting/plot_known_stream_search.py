@@ -12,6 +12,7 @@ from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.patheffects import withStroke
+from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS
 
@@ -27,6 +28,8 @@ if TYPE_CHECKING:
 
 TRACK_COLOR = CATEGORICAL_COLORS[0]  # one color for every track: the labels give their names
 FOOTPRINT_GREY = "0.88"
+FOOTPRINT_OUTSIDE_GREY = "0.85"  # single-dm maps: bins outside the footprint
+DENSITY_PERCENTILES = (1.0, 99.5)  # single-dm maps: default colour scale
 INK = "0.15"  # text
 # Positions tried for a label, as fractions along the part of the track inside the footprint
 LABEL_FRACTIONS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9)
@@ -48,10 +51,17 @@ def plot_known_stream_search_single_dm(
     left, with the track of the stream and the other galstreams tracks in the
     window. Does not save the figure: the workflows do.
 
+    The colour scale goes from the 1st percentile of the density to
+    ``vmax`` (default: its 99.5th percentile), to bring out faint streams.
+    Bins outside the footprint are light grey. The track of the stream is a
+    thin dashed line, not to hide the stream; the other tracks have one
+    colour each and a legend.
+
     Parameters
     ----------
     result : mapping
-        Output of ``known_stream_search_single_dm``.
+        Output of ``known_stream_search_single_dm``, or a result of
+        ``known_stream_search_dm_scan`` or ``known_stream_search_dm_along_track``.
     track_phi12 : tuple of array_like, optional
         (phi1, phi2) of the stream track (deg), drawn as a line.
     other_tracks : sequence of (label, phi1, phi2), optional
@@ -59,11 +69,13 @@ def plot_known_stream_search_single_dm(
     ax : matplotlib.axes.Axes, optional
         Axes to draw in. Default: a new figure.
     vmax : float, optional
-        Top of the colour scale. Default: a high percentile of the density.
+        Top of the colour scale. Default: the 99.5th percentile of the density
+        (``DENSITY_PERCENTILES``).
     cmap : str, optional
         Colour map.
     title : str, optional
-        Default: the distance modulus and the distance.
+        Default: the track, the distance modulus and distance (or the offset
+        along the track), and the isochrone.
 
     Returns
     -------
@@ -72,12 +84,57 @@ def plot_known_stream_search_single_dm(
 
     Notes
     -----
-    Code to reuse: celestial_currents
-    ``visualization.py::plot_custom_stream_at_mu``, rewritten with ``imshow``
-    on the grid and without saving; ``_find_overlapping_streams`` for the
-    other tracks.
+    Adapted from celestial_currents
+    ``visualization.py::plot_custom_stream_at_mu``, with ``imshow`` on the
+    grid instead of a HEALPix map, and without saving.
     """
-    raise NotImplementedError
+    density = np.ma.masked_invalid(np.ma.asarray(result["density"], dtype=float))
+    phi1_centres, phi2_centres = result["phi1_centres"], result["phi2_centres"]
+    half_bin = result["bin_size_deg"] / 2
+    extent = (phi1_centres[0] - half_bin, phi1_centres[-1] + half_bin,
+              phi2_centres[0] - half_bin, phi2_centres[-1] + half_bin)
+    if ax is None:
+        width = extent[1] - extent[0]
+        height = extent[3] - extent[2]
+        fig, ax = plt.subplots(figsize=(10.0, float(np.clip(10.0 * height / width, 2.0, 8.0)) + 1.0))
+    else:
+        fig = ax.figure
+
+    values = density.compressed()
+    vmin = float(np.percentile(values, DENSITY_PERCENTILES[0])) if values.size else 0.0
+    if vmax is None:
+        vmax = float(np.percentile(values, DENSITY_PERCENTILES[1])) if values.size else 1.0
+    colormap = plt.get_cmap(cmap).copy()
+    colormap.set_bad(FOOTPRINT_OUTSIDE_GREY)  # bins outside the footprint
+    image = ax.imshow(density.T, origin="lower", extent=extent, cmap=colormap, vmin=vmin, vmax=vmax,
+                      aspect="equal", interpolation="nearest")
+    colorbar_ax = make_axes_locatable(ax).append_axes("right", size="1.5%", pad=0.1)  # the height of the map
+    fig.colorbar(image, cax=colorbar_ax, label="Stars per bin (smoothed)")
+
+    if track_phi12 is not None:
+        ax.plot(*track_phi12, color=TRACK_COLOR, lw=1.0, ls="--", alpha=0.8,
+                label=result.get("track_name") or "Track")
+    for color, (label, phi1, phi2) in zip(CATEGORICAL_COLORS[1:], other_tracks):
+        ax.plot(phi1, phi2, color=color, lw=1.0, ls="--", alpha=0.8, label=label)
+    if track_phi12 is not None or len(other_tracks):
+        ax.legend(loc="upper right", fontsize="small", framealpha=0.8, labelcolor=INK)
+
+    ax.set(xlim=(extent[1], extent[0]), ylim=(extent[2], extent[3]),  # phi1 increasing to the left
+           xlabel=r"$\phi_1$ [deg]", ylabel=r"$\phi_2$ [deg]")
+    ax.set_title(_single_dm_title(result) if title is None else title, color=INK)
+    return fig, ax
+
+
+def _single_dm_title(result: Mapping[str, Any]) -> str:
+    """Track, distance modulus (or offset along the track) and isochrone of a map."""
+    parts = [result["track_name"]] if result.get("track_name") else []
+    if "distance_modulus" in result:
+        parts.append(f"dm {result['distance_modulus']:.1f} ({result['distance_kpc']:.1f} kpc)")
+    else:
+        parts.append(f"dm along the track {result['dm_offset']:+.1f}")
+    isochrone = result["isochrone"]
+    parts.append(f"{isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}")
+    return ", ".join(parts)
 
 
 def plot_galstreams_selection(

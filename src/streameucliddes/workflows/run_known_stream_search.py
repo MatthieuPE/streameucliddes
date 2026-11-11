@@ -2,14 +2,16 @@
 
 from __future__ import annotations
 
+import json
+from pathlib import Path
 from typing import TYPE_CHECKING
+
+import numpy as np
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
-    from pathlib import Path
     from typing import Any
 
-    import numpy as np
     import pandas as pd
     from numpy.typing import NDArray
 
@@ -135,31 +137,101 @@ def save_known_stream_search_maps(
 ) -> Path:
     """Save the maps of a known-stream search, one per distance modulus, in one file.
 
-    For one stream and one isochrone. Compressed numpy file (``.npz``,
-    proposal) holding ``density``, the maps stacked along the distance
-    modulus, of shape (n_dm, n_phi1, n_phi2), NaN outside the footprint;
-    ``distance_modulus``; the ``phi1`` and ``phi2`` bin centres; and the
-    metadata (track, window, isochrone, match filter) as JSON. The phi1/phi2
-    maps are small: they all fit in memory.
+    For one stream and one isochrone. Compressed numpy file (``.npz``)
+    holding ``density``, the maps stacked along the distance modulus, of
+    shape (n_dm, n_phi1, n_phi2), NaN outside the footprint;
+    ``distance_modulus``; the ``phi1`` and ``phi2`` bin centres; and
+    ``metadata``, a JSON string: track, window, bin size, smoothing,
+    isochrone, match filter, plus the ``metadata`` given. The phi1/phi2 maps
+    are small: they all fit in memory. Maps following the track
+    (``known_stream_search_dm_along_track``) are saved the same way, with
+    ``dm_offset`` and ``dm_along_phi1`` (n_offset, n_phi1) instead of
+    ``distance_modulus``.
+
+    Read it back with ``numpy.load`` and ``json.loads(file["metadata"].item())``.
 
     Parameters
     ----------
     results : iterable of (distance_modulus, result)
-        As yielded by ``analysis.known_stream_search.known_stream_search_dm_scan``.
+        As yielded by ``analysis.known_stream_search.known_stream_search_dm_scan``
+        (or ``(dm_offset, result)`` by ``known_stream_search_dm_along_track``),
+        for one isochrone, on one grid.
     output_path : str or pathlib.Path
-        File to write.
+        File to write (its folder is created).
     metadata : mapping, optional
-        Added to the file, e.g. the track name.
+        Added to the file, e.g. the name of the run. JSON-serialisable.
 
     Returns
     -------
     output_path : pathlib.Path
         The file written.
 
+    Raises
+    ------
+    ValueError
+        No result, or results of several isochrones, match filters or grids.
+
     Notes
     -----
-    Code to reuse: the output block of celestial_currents
+    Adapted from the output block of celestial_currents
     ``scripts/run_matched_filter_maps.py::main`` (all the maps of a run in
     one file, with their axes).
     """
-    raise NotImplementedError
+    densities, keys, dm_along_phi1, first = [], [], [], None
+    for key, result in results:  # one map at a time: a generator is not kept
+        if first is None:
+            first = result
+        else:
+            for name in SAME_IN_A_MAPS_FILE:
+                if not _same(result[name], first[name]):
+                    raise ValueError(
+                        f"Results with different {name}: save one file per isochrone and grid "
+                        f"({first[name]!r} and {result[name]!r})."
+                    )
+        densities.append(np.ma.filled(np.ma.asarray(result["density"], dtype=float), np.nan))
+        keys.append(float(key))
+        if "dm_along_phi1" in result:
+            dm_along_phi1.append(np.asarray(result["dm_along_phi1"], dtype=float))
+    if first is None:
+        raise ValueError("No result to save.")
+
+    along_track = "dm_along_phi1" in first
+    info = {
+        "track_name": first.get("track_name"),
+        "window": list(first["window"]),
+        "bin_size_deg": first["bin_size_deg"],
+        "smoothing_deg": first["smoothing_deg"],
+        "isochrone": dict(first["isochrone"]),
+        "match_filter": first["match_filter"],
+        **dict(metadata or {}),
+    }
+    arrays = {
+        "density": np.stack(densities),
+        "phi1": np.asarray(first["phi1_centres"], dtype=float),
+        "phi2": np.asarray(first["phi2_centres"], dtype=float),
+        "metadata": np.array(json.dumps(info, default=_json_value)),
+    }
+    if along_track:
+        arrays.update(dm_offset=np.array(keys), dm_along_phi1=np.stack(dm_along_phi1))
+    else:
+        arrays["distance_modulus"] = np.array(keys)
+
+    output_path = Path(output_path)
+    output_path.parent.mkdir(parents=True, exist_ok=True)
+    with open(output_path, "wb") as file:  # a file object: numpy does not append .npz
+        np.savez_compressed(file, **arrays)
+    return output_path
+
+
+# Parameters shared by every map of a maps file
+SAME_IN_A_MAPS_FILE = ("isochrone", "match_filter", "window", "bin_size_deg", "smoothing_deg", "track_name")
+
+
+def _json_value(value):
+    """numpy values in JSON: their Python value (arrays as lists), else their text."""
+    return value.tolist() if hasattr(value, "tolist") else str(value)
+
+
+def _same(value, other):
+    """Equal values, tuples and lists alike (e.g. a window or a match filter)."""
+    return json.dumps(value, sort_keys=True, default=_json_value) == json.dumps(other, sort_keys=True, default=_json_value)

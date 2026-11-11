@@ -11,9 +11,16 @@ import astropy.units as u
 import healpy as hp
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pytest
 
+from streameucliddes.analysis.known_stream_search import (
+    known_stream_search_dm_along_track,
+    known_stream_search_single_dm,
+    prepare_search,
+)
 from streameucliddes.catalogs.galstreams_catalog import select_galstreams_in_footprint
+from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
 from streameucliddes.plotting import plot_known_stream_search
 from streameucliddes.plotting.plot_known_stream_search import (
     plot_galstreams_selection,
@@ -49,9 +56,83 @@ def _label_texts(ax, names):
     return [text for text in ax.texts if text.get_text() in names]
 
 
-# Phase 2 stub: the module imports, with its function still to write
-def test_import():
-    assert callable(plot_known_stream_search_single_dm)
+WINDOW = (-10.0, 10.0, -3.0, 3.0)
+BIN = 0.2
+
+
+@pytest.fixture
+def search(gc_frame):
+    """Prepared search on uniform mock stars (Euclid VIS, H), the footprint at phi1 < 8."""
+    rng = np.random.default_rng(4)
+    n = 30_000
+    ra, dec = phi12_to_radec(rng.uniform(-11.0, 11.0, n), rng.uniform(-4.0, 4.0, n), gc_frame)
+    vis = rng.uniform(18.0, 26.0, n)
+    catalog = pd.DataFrame({
+        "ra": ra, "dec": dec, "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
+    })
+    phi1_centres, phi2_centres = phi12_bin_centres(WINDOW, BIN)
+    footprint = np.broadcast_to(phi1_centres[:, None] > 8.0, (phi1_centres.size, phi2_centres.size))
+    return prepare_search(catalog, gc_frame, WINDOW, bin_size_deg=BIN, footprint_mask=footprint)
+
+
+# ===================================================
+# Test plot_known_stream_search_single_dm
+# ===================================================
+
+
+# The density on the grid: phi1 increasing to the left, bins outside the footprint grey,
+# colour scale from the 1st to the 99.5th percentile, title from the result
+def test_plot_single_dm(search):
+    result = known_stream_search_single_dm(distance_modulus=17.0, search=search)
+    fig, ax = plot_known_stream_search_single_dm(result)
+    image = ax.images[0]
+    np.testing.assert_array_equal(image.get_array(), result["density"].T)
+    np.testing.assert_array_equal(image.get_array().mask, result["density"].mask.T)  # outside: masked
+    assert matplotlib.colors.same_color(image.get_cmap().get_bad(), plot_known_stream_search.FOOTPRINT_OUTSIDE_GREY)
+
+    half = BIN / 2  # the extent: the edges of the bins
+    phi1_centres, phi2_centres = result["phi1_centres"], result["phi2_centres"]
+    np.testing.assert_allclose(image.get_extent(), [phi1_centres[0] - half, phi1_centres[-1] + half,
+                                                    phi2_centres[0] - half, phi2_centres[-1] + half])
+    assert ax.get_xlim()[0] > ax.get_xlim()[1]  # phi1 increasing to the left
+    values = result["density"].compressed()
+    low, high = plot_known_stream_search.DENSITY_PERCENTILES
+    np.testing.assert_allclose(image.get_clim(), (np.percentile(values, low), np.percentile(values, high)))
+    assert ax.get_title() == "dm 17.0 (25.1 kpc), 13 Gyr, Z = 0.0002"
+    assert ax.get_legend() is None  # no track
+    plt.close(fig)
+
+
+# Tracks: the stream's dashed, the others in their colours, all in the legend; the given
+# vmax, title and axes are used
+def test_plot_single_dm_tracks(search):
+    result = known_stream_search_single_dm(distance_modulus=17.0, search=search)
+    fig, ax = plt.subplots()
+    phi1 = np.linspace(-6.0, 6.0, 50)
+    returned_fig, returned_ax = plot_known_stream_search_single_dm(
+        result, track_phi12=(phi1, np.zeros(50)), other_tracks=[("Other", phi1, np.full(50, 1.5))],
+        ax=ax, vmax=50.0, title="My map",
+    )
+    assert returned_ax is ax and returned_fig is fig
+    stream_line, other_line = ax.lines
+    assert stream_line.get_linestyle() == "--"
+    assert matplotlib.colors.same_color(stream_line.get_color(), plot_known_stream_search.TRACK_COLOR)
+    assert not matplotlib.colors.same_color(other_line.get_color(), plot_known_stream_search.TRACK_COLOR)
+    assert [text.get_text() for text in ax.get_legend().get_texts()] == ["Track", "Other"]
+    assert ax.images[0].get_clim()[1] == 50.0 and ax.get_title() == "My map"
+    plt.close(fig)
+
+
+# A map following the track: the offset in the title
+def test_plot_single_dm_along_track(search, gc_frame):
+    track = _track(gc_frame, "Mock-T00")
+    (_, result), = known_stream_search_dm_along_track(
+        stars=search.stars, track=track, window=WINDOW, bin_size_deg=BIN, dm_offsets=(0.5,),
+    )
+    fig, ax = plot_known_stream_search_single_dm(result)
+    assert ax.get_title().startswith("Mock-T00, dm along the track +0.5, ")
+    plt.close(fig)
 
 
 # ===================================================
