@@ -10,6 +10,13 @@ the metallicity given to ugali, is taken from the paper when it gives it, or
 converted from [Fe/H] with ``unit_conversions.convert_FeH_to_z``
 (``z_reference`` says which). A stream whose age or metallicity is unknown
 uses the default grid of old, metal-poor isochrones.
+
+Spectroscopic [Fe/H] (Li et al. 2022, S5) comes first, then the Pristine
+photometric [Fe/H] (Martin et al. 2022). The ages and Z of Shipp et al. 2018
+(DES) are a joint photometric fit, degenerate between age and Z, so they are
+kept together: they fill the age and ``z`` only of the streams without
+[Fe/H] (Ravi, Wambelong), and only where both were free in the fit (their
+Table A.1). For the other streams they fitted, they are in ``notes``.
 """
 
 from __future__ import annotations
@@ -100,7 +107,8 @@ def known_stream_isochrone_parameters(
     References
     ----------
     Li et al. 2022, ApJ 928, 30. Martin et al. 2022, MNRAS 516, 5331.
-    Bonaca & Price-Whelan 2024, arXiv:2405.19410.
+    Shipp et al. 2018, ApJ 862, 114. Bonaca & Price-Whelan 2024,
+    arXiv:2405.19410.
     """
     raise NotImplementedError
 
@@ -131,7 +139,8 @@ def load_stream_population_table(path: str | Path | None = None) -> pd.DataFrame
     References
     ----------
     Li et al. 2022, ApJ 928, 30 (S5). Martin et al. 2022, MNRAS 516, 5331
-    (STREAMFINDER). Bonaca & Price-Whelan 2024, arXiv:2405.19410 (review).
+    (STREAMFINDER). Shipp et al. 2018, ApJ 862, 114 (DES). Bonaca &
+    Price-Whelan 2024, arXiv:2405.19410 (review).
     """
     path = POPULATION_TABLE_PATH if path is None else Path(path)
     table = pd.read_csv(path, dtype=str, keep_default_na=False)

@@ -31,6 +31,17 @@ def test_shipped_table():
     assert list(table.columns) == COLUMNS
 
 
+# Shipped table: every stream has a Z, and every value its reference
+def test_shipped_table_references():
+    table = load_stream_population_table()
+    assert table["z"].notna().all() and (table["z_reference"] != "").all()
+    assert (table.loc[table["age_gyr"].notna(), "age_reference"] != "").all()
+    assert (table.loc[table["feh"].notna(), "feh_reference"] != "").all()
+    assert table.loc["Ravi", "age_gyr"] == pytest.approx(13.5)  # Shipp et al. 2018, no [Fe/H]
+    assert table.loc["Ravi", "z"] == pytest.approx(0.0003)
+    assert np.isnan(table.loc["AAU-ATLAS", "age_gyr"])  # spectroscopic Z, default ages
+
+
 # Values as floats, NaN when empty (never invented); references as strings, empty when missing
 def test_values_and_missing_values(tmp_path):
     path = _write(tmp_path, [
