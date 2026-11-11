@@ -37,7 +37,7 @@ class RunConfig:
         ``analysis.cmd_match_filter.select_stars_in_match_filter``.
     isochrones : dict
         Known-stream search: default grid, ``{"ages_gyr", "metallicities"}``
-        (see ``isochrone_parameters.default_isochrone_grid``). One set of maps
+        (see ``catalogs.isochrone_parameters.default_isochrone_grid``). One set of maps
         per isochrone.
     cuts : dict
         Known-stream search: see ``catalogs.catalog_cuts.get_cut_mask``.

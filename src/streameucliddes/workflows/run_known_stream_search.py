@@ -37,7 +37,7 @@ def run_known_stream_search(
     (``catalogs.galstreams_catalog.galstreams_phi12_window``), the footprint
     on the grid (``catalogs.survey_footprint.survey_footprint_phi12_mask``)
     and the isochrones of the stream
-    (``isochrone_parameters.known_stream_isochrone_parameters``).
+    (``catalogs.isochrone_parameters.known_stream_isochrone_parameters``).
 
     Then, for each isochrone: the maps over the grid of distance moduli, one
     at a time (``analysis.known_stream_search.known_stream_search_dm_scan``),
@@ -59,7 +59,7 @@ def run_known_stream_search(
     mws : galstreams.MWStreams
         From ``catalogs.galstreams_catalog.load_galstreams``.
     population_table : pandas.DataFrame
-        From ``catalogs.stream_populations.load_stream_population_table``.
+        From ``catalogs.isochrone_parameters.load_stream_population_table``.
     footprint_mask : numpy.ndarray of bool
         HEALPix mask of the footprint, True outside.
     nest : bool
@@ -113,7 +113,7 @@ def run_all_known_stream_searches(
     mws : galstreams.MWStreams, optional
         Default: ``catalogs.galstreams_catalog.load_galstreams()``.
     population_table : pandas.DataFrame, optional
-        Default: ``catalogs.stream_populations.load_stream_population_table()``.
+        Default: ``catalogs.isochrone_parameters.load_stream_population_table()``.
     footprint_mask : numpy.ndarray of bool, optional
         Default: ``catalogs.survey_footprint.survey_footprint_healpix_mask``
         of the catalog, at ``config.maps["footprint_nside"]``.

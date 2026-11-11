@@ -53,8 +53,6 @@ src/streameucliddes/
                                  convert_FeH_to_z                 (old: utils.py)
   stream_frames.py               [NEW] radec_to_phi12, phi12_to_radec (gala frames)
                                  [NEW] phi12_bin_centres
-  isochrone_parameters.py        [NEW] default_isochrone_grid
-                                 [NEW] known_stream_isochrone_parameters
 
   catalogs/
     euclid_des_catalog.py        open_eucliddes_data, add_magnitudes,
@@ -69,8 +67,10 @@ src/streameucliddes/
                                  [NEW] select_galstreams_in_footprint
                                  [NEW] galstreams_phi12_window
                                  [NEW] galstreams_dm_along_track
-    stream_populations.py        [NEW] load_stream_population_table
-    stream_populations.csv       [NEW] age, [Fe/H], references
+    isochrone_parameters.py      [NEW] default_isochrone_grid
+                                 [NEW] known_stream_isochrone_parameters
+                                 [NEW] load_stream_population_table
+    stream_populations.csv       [NEW] age, [Fe/H], Z, references
 
   analysis/
     cmd_match_filter.py          build_match_filter_polygon

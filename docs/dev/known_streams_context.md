@@ -129,7 +129,7 @@ Read its `CLAUDE.md` and `README.md` first.
 | New stub | Reuse |
 |------|-------|
 | `stream_frames.radec_to_phi12`, `phi12_to_radec` | gala frames + `SkyCoord.transform_to` (numpy arrays in degrees in and out) |
-| `isochrone_parameters.*` | [U] `unit_conversions.convert_FeH_to_z`; [C] grid in `configs/delve_dr3_mz_scan.yaml` |
+| `catalogs.isochrone_parameters.*` | [U] `unit_conversions.convert_FeH_to_z`; [C] grid in `configs/delve_dr3_mz_scan.yaml` |
 | `galstreams_catalog.load_galstreams` | [C] `galstreams.MWStreams(verbose=False)` in `notebooks/create_projections.ipynb`; [U] `unit_conversions.convert_kpc_to_DM` |
 | `galstreams_track_length_in_footprint`, `select_galstreams_in_footprint` | [C] `visualization.py::_find_overlapping_streams` |
 | `galstreams_phi12_window` | [C] `visualization.py::get_stream_phi12_bounds` |

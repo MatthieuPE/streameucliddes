@@ -63,7 +63,7 @@ def known_stream_search_single_dm(
         Distance modulus of the match filter.
     isochrone : mapping
         One isochrone, ``{"age": age (Gyr), "metallicity": Z}``: an item of
-        ``isochrone_parameters.known_stream_isochrone_parameters``.
+        ``catalogs.isochrone_parameters.known_stream_isochrone_parameters``.
     match_filter : mapping
         See ``cmd_match_filter.select_stars_in_match_filter``.
     bin_size_deg : float

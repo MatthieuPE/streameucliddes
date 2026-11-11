@@ -68,7 +68,7 @@ def select_stars_in_match_filter(
         ``injected_stream_snr.DEFAULT_MATCH_FILTERS``.
     isochrone : mapping
         One isochrone, ``{"age": age (Gyr), "metallicity": Z}`` (see
-        ``isochrone_parameters``).
+        ``catalogs.isochrone_parameters``).
     cuts : mapping, optional
         Cuts of ``catalogs.catalog_cuts.get_cut_mask``.
     flag_cuts : numpy.ndarray of bool, optional
