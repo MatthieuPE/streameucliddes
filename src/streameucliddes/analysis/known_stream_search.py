@@ -141,6 +141,7 @@ def prepare_search(
     stars: pd.DataFrame | None = None,
     mws: galstreams.MWStreams | None = None,
     population_table: pd.DataFrame | None = None,
+    default_grid: Iterable[Mapping[str, float]] | None = None,
     bin_size_deg: float = DEFAULT_BIN_SIZE_DEG,
     footprint_mask: NDArray[np.bool_] | None = None,
     nest: bool | None = None,
@@ -163,7 +164,8 @@ def prepare_search(
 
     The isochrones: ``isochrone``, else those of the stream
     (``catalogs.isochrone_parameters.known_stream_isochrone_parameters``),
-    else ``default_isochrone_grid``. Then the catalog is prepared once
+    else the default grid (``default_grid``, or
+    ``catalogs.isochrone_parameters.default_isochrone_grid``). Then the catalog is prepared once
     (``catalog_preparation.prepare_match_filter_catalog``) and the footprint
     put on the grid (``catalogs.survey_footprint.survey_footprint_phi12_mask``).
 
@@ -200,6 +202,11 @@ def prepare_search(
         for ``stream_name``.
     population_table : pandas.DataFrame, optional
         See ``known_stream_isochrone_parameters``.
+    default_grid : iterable of mapping, optional
+        Isochrones (``{"age", "metallicity"}``) for the age and Z not known:
+        those of a stream without a literature value, or all of them for a
+        search without a stream. Default:
+        ``catalogs.isochrone_parameters.default_isochrone_grid()``.
     bin_size_deg : float, optional
         Bin size of the grid (deg).
     footprint_mask : numpy.ndarray of bool, optional
@@ -248,10 +255,10 @@ def prepare_search(
         isochrones = [dict(isochrone)]
     elif track is not None or stream_name is not None:
         isochrones = known_stream_isochrone_parameters(
-            track.stream_name if track is not None else stream_name, population_table
+            track.stream_name if track is not None else stream_name, population_table, default_grid
         )
     else:
-        isochrones = default_isochrone_grid()
+        isochrones = default_isochrone_grid() if default_grid is None else [dict(item) for item in default_grid]
     match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
 
     # Stars and footprint, once

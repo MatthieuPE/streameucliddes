@@ -141,7 +141,7 @@ Read its `CLAUDE.md` and `README.md` first.
 | `known_stream_search.*` | [U] `generic_search_dm_scan` pattern (cuts computed once); [C] `ProcessPoolExecutor` sweep cells in the template notebook |
 | `plot_known_stream_search.*` | [C] `visualization.py::plot_custom_stream_at_mu`, `_find_overlapping_streams` (rewrite with imshow on the grid) |
 | `make_videos.make_gif_from_plots` | [C] `visualization.py::make_gif_from_plots` (copy as is). **User choice: all new gifs use this function**, not [U] `make_gif` |
-| `run_config.RunConfig` | [C] `config.py::RunConfig.from_yaml` |
+| `run_config.RunConfig` | [C] `config.py::RunConfig.from_yaml`. User choice: the defaults are the dict `KNOWN_STREAM_SEARCH_CONFIG` (Python), the YAML only overrides it |
 | `save_generic_search_healpix_maps`, `save_known_stream_search_maps` | [C] output block of `scripts/run_matched_filter_maps.py::main` |
 | CLI scripts | [C] `scripts/run_matched_filter_maps.py` |
 

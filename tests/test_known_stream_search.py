@@ -325,6 +325,19 @@ def test_dm_scan_stream_name_isochrones(stream_catalog, mock_mws, monkeypatch):
     assert all(result["isochrone"]["metallicity"] == 0.0001 for _, result in results)
 
 
+# default_grid replaces the default isochrone grid: for the values the stream does not
+# know (known_stream_isochrone_parameters), and as the isochrones of a search without stream
+def test_prepare_search_default_grid(stream_catalog, gc_frame, mock_mws):
+    grid = [{"age": 11.0, "metallicity": 0.0002}, {"age": 13.0, "metallicity": 0.0004}]
+    table = _population_table(age_gyr=12.0)  # Z unknown: those of the grid
+    search = prepare_search(stream_catalog, stream_name="Mock", mws=mock_mws, population_table=table,
+                            default_grid=grid, bin_size_deg=BIN)
+    assert search.isochrones == isochrone_parameters.known_stream_isochrone_parameters("Mock", table, grid)
+    assert [isochrone["age"] for isochrone in search.isochrones] == [12.0, 12.0]
+    search = prepare_search(stream_catalog, gc_frame, WINDOW, default_grid=iter(grid), bin_size_deg=BIN)
+    assert search.isochrones == grid
+
+
 # Track names work too, and stream names are exact: "Mock" is neither MockTwo nor Mock-T01
 # (single_dm: the middle of the distance moduli of the track)
 def test_stream_name_resolution(stream_catalog, mock_mws):

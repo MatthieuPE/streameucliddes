@@ -1,132 +1,313 @@
-"""Known-stream search of galstreams streams: maps per isochrone over the dm grid, figures, videos."""
+"""Known-stream search of galstreams streams: maps per isochrone over the dm grid, figures, gifs."""
 
 from __future__ import annotations
 
+import glob
 import json
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
+
+from streameucliddes.analysis.cmd_match_filter import match_filter_columns, match_filter_polygons
+from streameucliddes.analysis.known_stream_search import (
+    DEFAULT_SMOOTHING_DEG,
+    SELECTION_ARGUMENTS,
+    known_stream_search_dm_scan,
+    prepare_search,
+)
+from streameucliddes.catalogs.galstreams_catalog import load_galstreams, select_galstreams_in_footprint
+from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
+from streameucliddes.plotting.make_videos import make_gif_from_plots
+from streameucliddes.plotting.plot_cmd import MATCH_FILTER_MARGIN_MAG, plot_match_filter
+from streameucliddes.plotting.plot_known_stream_search import plot_known_stream_search_single_dm
+from streameucliddes.stream_frames import radec_to_phi12
 
 if TYPE_CHECKING:
-    from collections.abc import Iterable, Mapping
+    from collections.abc import Iterable, Mapping, Sequence
     from typing import Any
 
-    import pandas as pd
+    import astropy.coordinates as coord
+    import galstreams
     from numpy.typing import NDArray
 
-    from streameucliddes.workflows.run_config import RunConfig
+    from streameucliddes.analysis.known_stream_search import PreparedSearch
 
-if TYPE_CHECKING:  # galstreams: new dependency of phase 3, not installed yet
-    import galstreams
+DEFAULT_OUTPUT_DIR = "figures/outputs/known_stream_search"  # gitignored
+FRAME_DURATION_MS = 300  # gifs: time per distance modulus
+FIGURE_DPI = 110
+# HEALPix footprint from the star counts (catalogs.survey_footprint), about 0.1 deg pixels
+DEFAULT_FOOTPRINT_NSIDE = 512
 
 
 def run_known_stream_search(
-    catalog: pd.DataFrame,
-    track_name: str,
-    config: RunConfig,
+    catalog: pd.DataFrame | None = None,
+    stream_frame: coord.BaseCoordinateFrame | None = None,
+    window: tuple[float, float, float, float] | None = None,
     *,
-    mws: galstreams.MWStreams,
-    population_table: pd.DataFrame,
-    footprint_mask: NDArray[np.bool_],
-    nest: bool,
-    output_dir: str | Path,
+    stream_name: str | None = None,
+    search: PreparedSearch | None = None,
+    distance_moduli: Iterable[float] | None = None,
+    isochrone: Mapping[str, float] | None = None,
+    smoothing_deg: float = DEFAULT_SMOOTHING_DEG,
+    n_workers: int = 1,
+    output_dir: str | Path = DEFAULT_OUTPUT_DIR,
+    name: str | None = None,
+    frame_duration_ms: int = FRAME_DURATION_MS,
+    dpi: int = FIGURE_DPI,
+    **prepare_kwargs: Any,
 ) -> dict[str, Any]:
-    """Known-stream search of one galstreams track: one set of maps per isochrone.
+    """Known-stream search of one stream, with its figures, gifs and maps file.
 
-    Uses the track's ``stream_frame`` (a gala ``GreatCircleICRSFrame``) as
-    the stream frame, and builds the window
-    (``catalogs.galstreams_catalog.galstreams_phi12_window``), the footprint
-    on the grid (``catalogs.survey_footprint.survey_footprint_phi12_mask``)
-    and the isochrones of the stream
-    (``catalogs.isochrone_parameters.known_stream_isochrone_parameters``).
+    The search is prepared once
+    (``analysis.known_stream_search.prepare_search``: from the galstreams
+    ``stream_name`` alone, the values not given come from galstreams), or
+    given (``search``). Then, for each isochrone, in
+    ``output_dir/<name>/age<age>_z<Z>/``:
 
-    Then, for each isochrone: the maps over the grid of distance moduli, one
-    at a time (``analysis.known_stream_search.known_stream_search_dm_scan``),
-    drawn and saved
-    (``plotting.plot_known_stream_search.plot_known_stream_search_single_dm``);
-    the gif (``plotting.make_videos.make_gif_from_plots``); and the maps in
-    one file
-    (``save_known_stream_search_maps``).
+    - the maps over the distance moduli
+      (``analysis.known_stream_search.known_stream_search_dm_scan``), drawn
+      (``plotting.plot_known_stream_search.plot_known_stream_search_single_dm``)
+      in ``maps/``, and their gif ``<name>.gif``
+      (``plotting.make_videos.make_gif_from_plots``);
+    - the match filter on the CMD of the stars of the window at each distance
+      modulus (``plotting.plot_cmd.plot_match_filter``, fixed colour and
+      magnitude ranges: those of the filters of the scan) in ``cmd/``, and
+      their gif ``<name>_cmd.gif``;
+    - the maps in one file, ``<name>_maps.npz``
+      (``save_known_stream_search_maps``).
+
+    Every figure is closed once saved.
 
     Parameters
     ----------
-    catalog : pandas.DataFrame
-        Stars, e.g. ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
-    track_name : str
-        galstreams track, as the ``track_name`` column of
-        ``catalogs.galstreams_catalog.select_galstreams_in_footprint``.
-    config : RunConfig
-        Known-stream search configuration.
-    mws : galstreams.MWStreams
-        From ``catalogs.galstreams_catalog.load_galstreams``.
-    population_table : pandas.DataFrame
-        From ``catalogs.isochrone_parameters.load_stream_population_table``.
-    footprint_mask : numpy.ndarray of bool
-        HEALPix mask of the footprint, True outside.
-    nest : bool
-        HEALPix ordering of ``footprint_mask``.
-    output_dir : str or pathlib.Path
-        The outputs of each isochrone go to
-        ``output_dir/<track_name>/age<age>_z<Z>/``.
+    catalog, stream_frame, window
+        See ``prepare_search``. Not with ``search``.
+    stream_name : str, optional
+        galstreams stream or track name, or the name of another stream (see
+        ``prepare_search``). Not with ``search``.
+    search : PreparedSearch, optional
+        Prepared search, e.g. from a notebook.
+    distance_moduli : iterable of float, optional
+        Default: those of the search.
+    isochrone : mapping, optional
+        The one isochrone ``{"age", "metallicity"}``. Default: those of the
+        search.
+    smoothing_deg : float, optional
+        Gaussian smoothing of the maps (deg).
+    n_workers : int, optional
+        Processes over the distance moduli.
+    output_dir : str or pathlib.Path, optional
+        Directory of the outputs of every stream.
+    name : str, optional
+        Name of the stream folder and files. Default: the galstreams track
+        name, else ``stream_name``.
+    frame_duration_ms : int, optional
+        Time per distance modulus in the gifs (ms).
+    dpi : int, optional
+        Resolution of the frames.
+    **prepare_kwargs
+        Other arguments of ``prepare_search`` (``match_filter``, ``cuts``,
+        ``mws``, ``population_table``, ``default_grid``, ``bin_size_deg``,
+        ``footprint_mask``, ``nest``, the selection arguments). Not with
+        ``search``.
 
     Returns
     -------
     summary : dict
-        ``track_name``, ``window``, and ``isochrones``: one dict per
-        isochrone, with ``isochrone``, ``figure_paths``, ``gif_path``
-        and ``maps_path``.
+        ``name``, ``track_name``, ``window``, and ``isochrones``: one dict
+        per isochrone, with ``isochrone``, ``distance_moduli``,
+        ``figure_paths``, ``cmd_figure_paths``, ``gif_path``,
+        ``cmd_gif_path`` and ``maps_path``.
+
+    Raises
+    ------
+    ValueError
+        Preparation arguments with ``search``, or no name for the outputs.
 
     Notes
     -----
-    Code to reuse: ``workflows.run_generic_search.run_generic_search`` (loop
-    over the scan, figures); the sweep cells of celestial_currents
+    Adapted from ``workflows.run_generic_search.run_generic_search`` (loop
+    over the scan, figures, gif) and the sweep cells of celestial_currents
     ``notebooks/candidate_investigations/full_search/template.ipynb``.
     """
-    raise NotImplementedError
+    if search is None:
+        search = prepare_search(catalog, stream_frame, window, stream_name=stream_name, **prepare_kwargs)
+    else:
+        given = [label for label, value in (("catalog", catalog), ("stream_frame", stream_frame),
+                                            ("window", window), ("stream_name", stream_name)) if value is not None]
+        if given or prepare_kwargs:
+            raise ValueError(f"{given + list(prepare_kwargs)} prepare a search: not with search")
+    name = name or search.track_name or stream_name
+    if not name:
+        raise ValueError("Give a name for the outputs of this stream.")
+    distance_moduli = search.distance_moduli if distance_moduli is None else [float(dm) for dm in distance_moduli]
+    isochrones = search.isochrones if isochrone is None else [dict(isochrone)]
+    track_phi12 = None
+    if search.track is not None:
+        track_phi12 = radec_to_phi12(search.track.track.ra.deg, search.track.track.dec.deg, search.stream_frame)
+
+    summaries = []
+    for isochrone in isochrones:
+        folder = Path(output_dir) / name / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+        (folder / "maps").mkdir(parents=True, exist_ok=True)
+        (folder / "cmd").mkdir(exist_ok=True)
+        color_lim, mag_lim = _cmd_ranges(search, distance_moduli, isochrone)
+
+        results, figure_paths, cmd_figure_paths = [], [], []
+        for dm, result in known_stream_search_dm_scan(
+            distance_moduli=distance_moduli, isochrone=isochrone, search=search,
+            smoothing_deg=smoothing_deg, n_workers=n_workers,
+        ):
+            results.append((dm, result))
+            frame = f"{name}_dm{dm:05.2f}.png"  # 05.2f: the names sort as the distance moduli
+            fig, _ = plot_known_stream_search_single_dm(result, track_phi12=track_phi12)
+            figure_paths.append(_save(fig, folder / "maps" / frame, dpi))
+            fig, _ = plot_match_filter(dm, isochrone, search.match_filter, stars=search.stars,
+                                       color_lim=color_lim, mag_lim=mag_lim)
+            cmd_figure_paths.append(_save(fig, folder / "cmd" / frame, dpi))
+
+        gif_path, cmd_gif_path = folder / f"{name}.gif", folder / f"{name}_cmd.gif"
+        frames = f"{glob.escape(name)}_dm*.png"
+        make_gif_from_plots(gif_path, pattern=Path(glob.escape(str(folder / "maps"))) / frames,
+                            duration=frame_duration_ms)
+        make_gif_from_plots(cmd_gif_path, pattern=Path(glob.escape(str(folder / "cmd"))) / frames,
+                            duration=frame_duration_ms)
+        maps_path = save_known_stream_search_maps(results, folder / f"{name}_maps.npz", metadata={"name": name})
+        summaries.append({
+            "isochrone": dict(isochrone), "distance_moduli": list(distance_moduli),
+            "figure_paths": figure_paths, "cmd_figure_paths": cmd_figure_paths,
+            "gif_path": gif_path, "cmd_gif_path": cmd_gif_path, "maps_path": maps_path,
+        })
+    return {"name": name, "track_name": search.track_name, "window": search.window, "isochrones": summaries}
 
 
 def run_all_known_stream_searches(
     catalog: pd.DataFrame,
-    config: RunConfig,
     *,
-    nest: bool,
-    output_dir: str | Path,
+    track_names: Sequence[str] | None = None,
     mws: galstreams.MWStreams | None = None,
-    population_table: pd.DataFrame | None = None,
     footprint_mask: NDArray[np.bool_] | None = None,
+    nest: bool | None = None,
+    footprint_nside: int = DEFAULT_FOOTPRINT_NSIDE,
+    **run_kwargs: Any,
 ) -> pd.DataFrame:
-    """Known-stream search of every galstreams track crossing the footprint.
+    """Known-stream search of every galstreams stream crossing the footprint.
 
-    Selects the tracks (``catalogs.galstreams_catalog.select_galstreams_in_footprint``,
-    or those of ``config.streams``), then runs ``run_known_stream_search`` for
-    each.
+    Selects the tracks crossing the footprint
+    (``catalogs.galstreams_catalog.select_galstreams_in_footprint``), keeps
+    one per stream: its galstreams default track (``On``), else its longest
+    selected track; or the ``track_names`` given. Then runs
+    ``run_known_stream_search`` for each, from the full catalog: only the
+    stars of its window are kept, one stream at a time.
+
+    ``workflows.run_config.KNOWN_STREAM_SEARCH_CONFIG`` holds the arguments
+    of a run, to copy and update:
+    ``run_all_known_stream_searches(catalog, **config)``.
 
     Parameters
     ----------
     catalog : pandas.DataFrame
-        Stars, e.g. ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
-    config : RunConfig
-        Known-stream search configuration.
-    nest : bool
-        HEALPix ordering of ``footprint_mask``.
-    output_dir : str or pathlib.Path
-        One subdirectory per track.
+        Stars, with ``ra``, ``dec`` (deg), e.g.
+        ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
+    track_names : sequence of str, optional
+        Tracks to search, among the selected ones (any track of a stream).
     mws : galstreams.MWStreams, optional
         Default: ``catalogs.galstreams_catalog.load_galstreams()``.
-    population_table : pandas.DataFrame, optional
-        Default: ``catalogs.isochrone_parameters.load_stream_population_table()``.
     footprint_mask : numpy.ndarray of bool, optional
-        Default: ``catalogs.survey_footprint.survey_footprint_healpix_mask``
-        of the catalog, at ``config.maps["footprint_nside"]``.
+        HEALPix mask, True outside the footprint (needs ``nest``). Default:
+        ``catalogs.survey_footprint.survey_footprint_healpix_mask`` of the
+        catalog at ``footprint_nside``, RING.
+    nest : bool, optional
+        HEALPix ordering of ``footprint_mask``.
+    footprint_nside : int, optional
+        nside of the default footprint.
+    **run_kwargs
+        Arguments of ``run_known_stream_search`` (and of ``prepare_search``),
+        the same for every stream. The selection arguments (``dm_range``,
+        ``min_length_deg``, ``add_ibata2024``) also go to the selection.
 
     Returns
     -------
     table : pandas.DataFrame
-        The selection, with one row per track and isochrone, and the output
-        paths of ``run_known_stream_search``.
+        The selection rows of the tracks searched, one row per track and
+        isochrone, with ``age``, ``metallicity``, ``gif_path``,
+        ``cmd_gif_path`` and ``maps_path``.
+
+    Raises
+    ------
+    ValueError
+        ``footprint_mask`` without ``nest``; ``track_names`` not in the
+        selection.
     """
-    raise NotImplementedError
+    mws = load_galstreams() if mws is None else mws
+    if footprint_mask is None:
+        nest = False if nest is None else nest
+        footprint_mask = survey_footprint_healpix_mask(
+            catalog["ra"].to_numpy(), catalog["dec"].to_numpy(), footprint_nside, nest=nest
+        )
+    elif nest is None:
+        raise ValueError("A footprint_mask needs nest.")
+    selection_kwargs = {key: run_kwargs[key] for key in SELECTION_ARGUMENTS if key in run_kwargs}
+    selection = select_galstreams_in_footprint(mws, footprint_mask, nest=nest, **selection_kwargs)
+    if track_names is None:
+        tracks = _default_tracks(selection, mws)
+    else:
+        missing = sorted(set(track_names) - set(selection["track_name"]))
+        if missing:
+            raise ValueError(f"Tracks not selected by select_galstreams_in_footprint: {missing}")
+        tracks = selection[selection["track_name"].isin(track_names)]
+
+    rows = []
+    for _, track in tracks.iterrows():
+        summary = run_known_stream_search(
+            catalog, stream_name=track["track_name"], mws=mws, footprint_mask=footprint_mask, nest=nest, **run_kwargs
+        )
+        for outputs in summary["isochrones"]:
+            rows.append({
+                **track.to_dict(),
+                "age": outputs["isochrone"]["age"], "metallicity": outputs["isochrone"]["metallicity"],
+                "gif_path": outputs["gif_path"], "cmd_gif_path": outputs["cmd_gif_path"],
+                "maps_path": outputs["maps_path"],
+            })
+    return pd.DataFrame(rows, columns=[*selection.columns, "age", "metallicity", "gif_path", "cmd_gif_path", "maps_path"])
+
+
+def _default_tracks(selection: pd.DataFrame, mws: galstreams.MWStreams) -> pd.DataFrame:
+    """One selected track per stream: its default ('On') track, else its longest selected one."""
+    is_default = selection["track_name"].map(mws.summary["On"]).fillna(False).astype(bool)
+    # the selection is sorted longest first: a stable sort keeps that order among the others
+    preferred = selection.assign(is_default=is_default).sort_values("is_default", ascending=False, kind="stable")
+    return preferred.drop_duplicates("stream_name").drop(columns="is_default").sort_index()
+
+
+def _cmd_ranges(
+    search: PreparedSearch, distance_moduli: Sequence[float], isochrone: Mapping[str, float]
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Colour and magnitude ranges of the CMD frames of a scan: the same for every frame.
+
+    Those of the polygons over the scan plus ``plotting.plot_cmd.MATCH_FILTER_MARGIN_MAG``;
+    the faint end at most the faintest star of the window plus that margin.
+    """
+    vertices = np.concatenate([
+        polygon for dm in distance_moduli for polygon in match_filter_polygons(dm, isochrone, search.match_filter)
+    ])
+    margin = MATCH_FILTER_MARGIN_MAG
+    color_lim = (float(vertices[:, 0].min() - margin), float(vertices[:, 0].max() + margin))
+    faint = vertices[:, 1].max() + margin
+    reference_mag = search.stars[match_filter_columns(search.match_filter)[0]].to_numpy()
+    if np.isfinite(reference_mag).any():
+        faint = min(faint, np.nanmax(reference_mag) + margin)
+    return color_lim, (float(vertices[:, 1].min() - margin), float(faint))
+
+
+def _save(fig, path: Path, dpi: int) -> Path:
+    """Save a figure and close it."""
+    fig.savefig(path, dpi=dpi)
+    plt.close(fig)
+    return path
 
 
 def save_known_stream_search_maps(

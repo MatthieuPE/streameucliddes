@@ -120,7 +120,8 @@ src/streameucliddes/
                                        as celestial_currents)
 
   workflows/
-    run_config.py                [NEW] RunConfig (YAML)
+    run_config.py                [NEW] KNOWN_STREAM_SEARCH_CONFIG (dict of the run arguments,
+                                       to copy and update), RunConfig (YAML overrides)
     run_generic_search.py        run_generic_search
                                  (old: loop, plots and gif of scan_find_stream)
                                  [NEW] save_generic_search_healpix_maps
