@@ -270,8 +270,8 @@ def test_dm_scan(catalog):
 
 # Preparation: 5 bytes per star (cut mask and pixels) plus the temporaries of a chunk
 # (healpy.ang2pix: about 35 bytes per star of the chunk); a map: the chunks, and the maps
-# and the background fit (fit_background_model: about 200 bytes per HEALPix pixel of the
-# sky). A copy of one float column of the catalog would be 8 bytes per star
+# and their smoothing and background fit (fit_background_model: about 35 bytes per HEALPix
+# pixel of the sky). A copy of one float column of the catalog would be 8 bytes per star
 def test_memory(monkeypatch):
     chunk_size = 50_000
     monkeypatch.setattr(generic_stream_search, "CHUNK_SIZE", chunk_size)
@@ -288,4 +288,4 @@ def test_memory(monkeypatch):
     finally:
         tracemalloc.stop()
     assert prepare_peak < 5 * n + 60 * chunk_size < 8 * n
-    assert map_peak - start < 60 * chunk_size + 300 * hp.nside2npix(NSIDE) < 8 * n
+    assert map_peak - start < 60 * chunk_size + 150 * hp.nside2npix(NSIDE) < 8 * n
