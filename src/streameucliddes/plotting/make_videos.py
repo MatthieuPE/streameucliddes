@@ -127,32 +127,3 @@ def make_gif_from_plots(
     )
     print(f"GIF saved to {output_path}")
 
-
-def make_mp4(
-    output_path: str | Path, pattern: str = "./plots/*.png", duration: int = 500
-) -> None:
-    """MP4 video from the PNG images matching a glob pattern.
-
-    Same interface as ``make_gif_from_plots``: frames in the sorted order of
-    their file names, each shown ``duration`` ms.
-
-    Parameters
-    ----------
-    output_path : str or pathlib.Path
-        MP4 file to write.
-    pattern : str, optional
-        Glob pattern of the frames.
-    duration : int, optional
-        Time per frame (ms): 1000 / ``duration`` frames per second.
-
-    Raises
-    ------
-    FileNotFoundError
-        No image matches ``pattern``.
-
-    Notes
-    -----
-    Code to reuse: none. ``imageio`` with the ``imageio-ffmpeg`` plugin (new
-    dependencies of phase 3).
-    """
-    raise NotImplementedError

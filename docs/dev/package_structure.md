@@ -114,8 +114,8 @@ src/streameucliddes/
     make_videos.py               make_gif                       (old: plotting.make_gif)
                                  [NEW] make_gif_from_plots      (copy of celestial
                                        visualization.make_gif_from_plots; used for
-                                       all new gifs, user choice)
-                                 [NEW] make_mp4
+                                       all new gifs, user choice; no mp4,
+                                       as celestial_currents)
 
   workflows/
     run_config.py                [NEW] RunConfig (YAML)

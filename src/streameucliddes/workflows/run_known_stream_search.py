@@ -45,8 +45,8 @@ def run_known_stream_search(
     at a time (``analysis.known_stream_search.known_stream_search_dm_scan``),
     drawn and saved
     (``plotting.plot_known_stream_search.plot_known_stream_search_single_dm``);
-    the videos (``plotting.make_videos.make_gif_from_plots`` and
-    ``make_mp4``); and the maps in one file
+    the gif (``plotting.make_videos.make_gif_from_plots``); and the maps in
+    one file
     (``save_known_stream_search_maps``).
 
     Parameters
@@ -74,8 +74,8 @@ def run_known_stream_search(
     -------
     summary : dict
         ``track_name``, ``window``, and ``isochrones``: one dict per
-        isochrone, with ``isochrone``, ``figure_paths``, ``gif_path``,
-        ``mp4_path`` and ``maps_path``.
+        isochrone, with ``isochrone``, ``figure_paths``, ``gif_path``
+        and ``maps_path``.
 
     Notes
     -----

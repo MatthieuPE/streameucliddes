@@ -141,7 +141,6 @@ Read its `CLAUDE.md` and `README.md` first.
 | `known_stream_search.*` | [U] `generic_search_dm_scan` pattern (cuts computed once); [C] `ProcessPoolExecutor` sweep cells in the template notebook |
 | `plot_known_stream_search.*` | [C] `visualization.py::plot_custom_stream_at_mu`, `_find_overlapping_streams` (rewrite with imshow on the grid) |
 | `make_videos.make_gif_from_plots` | [C] `visualization.py::make_gif_from_plots` (copy as is). **User choice: all new gifs use this function**, not [U] `make_gif` |
-| `make_videos.make_mp4` | `imageio` + `imageio-ffmpeg`; same interface as `make_gif_from_plots` |
 | `run_config.RunConfig` | [C] `config.py::RunConfig.from_yaml` |
 | `save_generic_search_healpix_maps`, `save_known_stream_search_maps` | [C] output block of `scripts/run_matched_filter_maps.py::main` |
 | CLI scripts | [C] `scripts/run_matched_filter_maps.py` |
@@ -179,7 +178,7 @@ Read its `CLAUDE.md` and `README.md` first.
 - Numpy-style docstrings, short sentences.
 - HEALPix: always pass `nest=` explicitly. Celestial uses NESTED.
 - Angles in degrees. Distances as distance modulus unless named `_kpc`.
-- New dependencies (galstreams, gala, pyyaml, imageio): add to
+- New dependencies (galstreams, gala, pyyaml): add to
   `pyproject.toml` and tell the user.
 - Commit and push only on the phase branch. Never on `main`.
 
