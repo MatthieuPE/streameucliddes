@@ -9,20 +9,29 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import healpy as hp
+import numpy as np
+import pandas as pd
+
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, match_filter_columns
 from streameucliddes.catalogs import dust_correction
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
-from streameucliddes.stream_frames import radec_to_phi12
+from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping
     from typing import Any
 
     import astropy.coordinates as coord
-    import pandas as pd
+    from numpy.typing import NDArray
 
 # Default cut on the errors of the match-filter bands (as the SNR forecasts of injected_stream_snr)
 DEFAULT_ERR_CUT = (None, 0.2)
+# HEALPix pixels (about 0.9 deg) of the pre-selection of the stars near a phi1/phi2 window
+WINDOW_PRESELECTION_NSIDE = 64
+# Stars per chunk of the window pre-selection and of the phi1/phi2 transformation:
+# bounds their temporary arrays
+CHUNK_SIZE = 500_000
 
 
 # ===================================================
@@ -125,6 +134,16 @@ def prepare_match_filter_catalog(
     filter, the coordinates when a stream frame is given, and the cut
     columns.
 
+    The catalog may be huge: it is neither modified nor copied. The rows to
+    keep are found first, as a boolean mask (cuts, then window), and only
+    their needed columns are copied, once. With a window, the stars far
+    from it are dropped before the transformation to phi1/phi2, the slow
+    part: only those in the HEALPix pixels (nside
+    ``WINDOW_PRESELECTION_NSIDE``) of the window, or next to them, are
+    transformed. The pre-selection and the transformation go by chunks of
+    ``CHUNK_SIZE`` stars: their temporary arrays do not grow with the
+    catalog.
+
     Parameters
     ----------
     catalog : pandas.DataFrame
@@ -164,14 +183,75 @@ def prepare_match_filter_catalog(
     columns = match_filter_columns(match_filter)
     if stream_frame is not None:
         columns += [ra_col, dec_col]
-    check_columns(catalog, [*columns, *cuts])
+    columns = list(dict.fromkeys([*columns, *cuts]))
+    check_columns(catalog, columns)
 
-    stars = catalog.loc[get_cut_mask(catalog, cuts), list(dict.fromkeys([*columns, *cuts]))]
+    keep = get_cut_mask(catalog, cuts)  # rows kept, 1 byte per star
+    phi12 = {}
     if stream_frame is not None:
-        phi1, phi2 = radec_to_phi12(stars[ra_col].to_numpy(), stars[dec_col].to_numpy(), stream_frame)
-        stars = stars.assign(phi1=phi1, phi2=phi2)
-        if window is not None:
-            phi1_min, phi1_max, phi2_min, phi2_max = window
-            inside = (phi1 >= phi1_min) & (phi1 <= phi1_max) & (phi2 >= phi2_min) & (phi2 <= phi2_max)
-            stars = stars.loc[inside]
-    return stars
+        ra = catalog[ra_col].to_numpy()  # views of numpy-backed columns, not copies
+        dec = catalog[dec_col].to_numpy()
+        pixel_near = None if window is None else _window_pixels(stream_frame, window)
+        phi1_parts, phi2_parts = [], []
+        for start in range(0, len(catalog), CHUNK_SIZE):
+            chunk = slice(start, start + CHUNK_SIZE)
+            keep_chunk = keep[chunk]  # a view: setting it updates keep
+            chunk_ra, chunk_dec = ra[chunk][keep_chunk], dec[chunk][keep_chunk]
+            if pixel_near is not None:
+                near = _in_pixels(chunk_ra, chunk_dec, pixel_near)
+                keep_chunk[keep_chunk] = near
+                chunk_ra, chunk_dec = chunk_ra[near], chunk_dec[near]
+            phi1, phi2 = radec_to_phi12(chunk_ra, chunk_dec, stream_frame)
+            if window is not None:
+                phi1_min, phi1_max, phi2_min, phi2_max = window
+                inside = (phi1 >= phi1_min) & (phi1 <= phi1_max) & (phi2 >= phi2_min) & (phi2 <= phi2_max)
+                keep_chunk[keep_chunk] = inside
+                phi1, phi2 = phi1[inside], phi2[inside]
+            phi1_parts.append(phi1)
+            phi2_parts.append(phi2)
+        phi12 = {
+            "phi1": np.concatenate(phi1_parts) if phi1_parts else np.empty(0),
+            "phi2": np.concatenate(phi2_parts) if phi2_parts else np.empty(0),
+        }
+
+    return pd.DataFrame(
+        {**{column: catalog[column].to_numpy()[keep] for column in columns}, **phi12},
+        # take: indexing a RangeIndex (with a mask or positions) builds and caches all its values
+        index=catalog.index.take(np.flatnonzero(keep)),
+        copy=False,  # the selected rows are already copies: not copied again
+    )
+
+
+def _window_pixels(
+    stream_frame: coord.BaseCoordinateFrame,
+    window: tuple[float, float, float, float],
+    nside: int = WINDOW_PRESELECTION_NSIDE,
+) -> NDArray[np.bool_]:
+    """HEALPix pixels (RING) of a phi1/phi2 window and their neighbours, as a mask.
+
+    The window is sampled every half pixel and its points taken to the sky
+    (``stream_frames.phi12_to_radec``): every point of the window is in the
+    pixel of one of these points or in a neighbour of it.
+    """
+    phi1_min, phi1_max, phi2_min, phi2_max = window
+    step = np.degrees(hp.nside2resol(nside)) / 2
+    phi1_grid = np.linspace(phi1_min, phi1_max, int(np.ceil((phi1_max - phi1_min) / step)) + 1)
+    phi2_grid = np.linspace(phi2_min, phi2_max, int(np.ceil((phi2_max - phi2_min) / step)) + 1)
+    grid_ra, grid_dec = phi12_to_radec(*np.meshgrid(phi1_grid, phi2_grid), stream_frame)
+    pixels = np.unique(hp.ang2pix(nside, grid_ra, grid_dec, lonlat=True))
+    neighbours = hp.get_all_neighbours(nside, pixels).ravel()
+    pixel_near = np.zeros(hp.nside2npix(nside), dtype=bool)
+    pixel_near[pixels] = True
+    pixel_near[neighbours[neighbours >= 0]] = True  # -1: no neighbour there
+    return pixel_near
+
+
+def _in_pixels(
+    ra: NDArray[np.float64], dec: NDArray[np.float64], pixel_mask: NDArray[np.bool_]
+) -> NDArray[np.bool_]:
+    """Stars in the True pixels of a HEALPix mask (RING); NaN coordinates are not."""
+    nside = hp.npix2nside(pixel_mask.size)
+    finite = np.isfinite(ra) & np.isfinite(dec)
+    inside = np.zeros(ra.size, dtype=bool)
+    inside[finite] = pixel_mask[hp.ang2pix(nside, ra[finite], dec[finite], lonlat=True)]
+    return inside

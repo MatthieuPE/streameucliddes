@@ -1,9 +1,15 @@
 """Tests of analysis/catalog_preparation.py, with a mock catalog."""
 
+import tracemalloc
+
+import astropy.coordinates as coord
+import astropy.units as u
+import gala.coordinates as gc
 import numpy as np
 import pandas as pd
 import pytest
 
+from streameucliddes.analysis import catalog_preparation
 from streameucliddes.analysis.catalog_preparation import (
     DEFAULT_ERR_CUT,
     check_columns,
@@ -32,6 +38,31 @@ def catalog(rng):
         columns[f"des_yr6_{band}_obs"] = rng.uniform(18.0, 26.0, n)
         columns[f"des_yr6_{band}_err"] = rng.uniform(0.0, 0.4, n)
     return pd.DataFrame(columns, index=np.arange(n) + 100)
+
+
+def _full_sky_catalog(rng, n, n_extra_columns=0):
+    """Stars uniform on the whole sky, DES g and r with errors, and extra columns."""
+    columns = {"ra": rng.uniform(0.0, 360.0, n), "dec": np.degrees(np.arcsin(rng.uniform(-1.0, 1.0, n)))}
+    for band in "gr":
+        columns[f"des_yr6_{band}_obs"] = rng.uniform(18.0, 26.0, n)
+        columns[f"des_yr6_{band}_err"] = rng.uniform(0.0, 0.4, n)
+    for i in range(n_extra_columns):
+        columns[f"extra_{i}"] = rng.normal(size=n)
+    return pd.DataFrame(columns)
+
+
+def _frame(end1, end2):
+    return gc.GreatCircleICRSFrame.from_endpoints(
+        coord.SkyCoord(ra=end1[0] * u.deg, dec=end1[1] * u.deg),
+        coord.SkyCoord(ra=end2[0] * u.deg, dec=end2[1] * u.deg),
+    )
+
+
+# Streams of the window tests: one crossing ra = 0, one near the south pole
+FRAMES = {
+    "across ra = 0": _frame((350.0, -30.0), (15.0, -40.0)),
+    "near the pole": _frame((0.0, -80.0), (120.0, -85.0)),
+}
 
 
 # ===================================================
@@ -112,3 +143,87 @@ def test_prepare_errors(catalog):
         prepare_match_filter_catalog(catalog.drop(columns=["ra", "dec"]), stream_frame=object())
     with pytest.raises(ValueError, match="stream_frame"):
         prepare_match_filter_catalog(catalog, window=(-5.0, 5.0, -2.0, 2.0))
+
+
+# ===================================================
+# Test the window: same stars as a transformation of the whole catalog
+# ===================================================
+
+
+# Every star of the window is kept, and only them, wherever the window is on the sky;
+# with chunks that do not divide the catalog
+@pytest.mark.parametrize("frame_name", FRAMES)
+@pytest.mark.parametrize("window", [(-20.0, 20.0, -3.0, 3.0), (100.0, 160.0, -10.0, 5.0)])
+def test_prepare_window_brute_force(rng, monkeypatch, frame_name, window):
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", 7_777)
+    catalog = _full_sky_catalog(rng, 200_000)
+    frame = FRAMES[frame_name]
+    stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=frame, window=window)
+
+    phi1, phi2 = radec_to_phi12(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(), frame)
+    inside = (phi1 >= window[0]) & (phi1 <= window[1]) & (phi2 >= window[2]) & (phi2 <= window[3])
+    assert 0 < len(stars) == inside.sum()
+    np.testing.assert_array_equal(stars.index, catalog.index[inside])
+    np.testing.assert_allclose(stars["phi1"], phi1[inside])
+    np.testing.assert_allclose(stars["phi2"], phi2[inside])
+    np.testing.assert_array_equal(stars["des_yr6_g_obs"], catalog["des_yr6_g_obs"][inside])
+
+
+# The window pre-selection: only the stars near the window are transformed to phi1/phi2
+def test_prepare_window_transforms_few_stars(rng, monkeypatch):
+    catalog = _full_sky_catalog(rng, 200_000)
+    transformed = []
+
+    def counting_radec_to_phi12(ra, dec, stream_frame):
+        transformed.append(len(ra))
+        return radec_to_phi12(ra, dec, stream_frame)
+
+    monkeypatch.setattr(catalog_preparation, "radec_to_phi12", counting_radec_to_phi12)
+    stars = prepare_match_filter_catalog(
+        catalog, cuts={}, stream_frame=FRAMES["across ra = 0"], window=(-20.0, 20.0, -3.0, 3.0)
+    )
+    # Window of 240 deg^2 (0.6 % of the sky): a margin of about a HEALPix pixel around it
+    assert len(stars) <= sum(transformed) < 2 * len(stars)
+    assert sum(transformed) < 0.02 * len(catalog)
+
+
+# Stars with NaN coordinates are never in a window
+def test_prepare_window_nan(catalog, gc_frame):
+    catalog.loc[catalog.index[:100], "ra"] = np.nan
+    stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=gc_frame, window=(-5.0, 5.0, -2.0, 2.0))
+    assert not stars.index.isin(catalog.index[:100]).any()
+    assert np.isfinite(stars[["phi1", "phi2"]].to_numpy()).all()
+
+
+# ===================================================
+# Test memory: the catalog is neither modified nor copied
+# ===================================================
+
+
+# The catalog is unchanged, and the stars are a copy of it, not a view
+def test_prepare_does_not_modify(catalog, gc_frame):
+    before = catalog.copy()
+    stars = prepare_match_filter_catalog(catalog, stream_frame=gc_frame, window=(-5.0, 5.0, -2.0, 2.0))
+    pd.testing.assert_frame_equal(catalog, before)
+    assert not np.shares_memory(stars["des_yr6_g_obs"].to_numpy(), catalog["des_yr6_g_obs"].to_numpy())
+
+
+# Peak memory: the stars kept, plus a few bytes per star of the catalog (the masks, 3
+# bytes measured) and the temporary arrays of a chunk; below a copy of one of its columns
+@pytest.mark.parametrize("with_window", [False, True])
+def test_prepare_memory(rng, monkeypatch, with_window):
+    chunk_size = 50_000
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", chunk_size)
+    n = 1_000_000
+    catalog = _full_sky_catalog(rng, n, n_extra_columns=6)  # 12 columns of floats: 96 MB
+    kwargs = {"stream_frame": FRAMES["across ra = 0"], "window": (-20.0, 20.0, -3.0, 3.0)} if with_window else {}
+
+    tracemalloc.start()
+    try:
+        stars = prepare_match_filter_catalog(catalog, **kwargs)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    overhead = peak - stars.memory_usage(deep=True).sum()
+    allowed = 4 * n + 40 * chunk_size
+    assert overhead < allowed < 8 * n  # 8 * n: a copy of one column of floats

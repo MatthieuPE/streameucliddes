@@ -96,3 +96,33 @@ def test_select_stars_defaults(stars):
         stars, 16.8, default_isochrone_grid()[0], cmd_match_filter.DEFAULT_MATCH_FILTER
     )
     np.testing.assert_array_equal(default, explicit)
+
+
+# Another age or Z gives another selection: the one of streamobs for that isochrone
+@pytest.mark.parametrize(
+    "isochrone",
+    [
+        {"age": 8.0, "metallicity": 0.0006},  # younger
+        {"age": 13.5, "metallicity": 0.0006},  # older
+        {"age": 12.0, "metallicity": 0.0001},  # more metal-poor
+        {"age": 12.0, "metallicity": 0.002},  # more metal-rich
+    ],
+)
+def test_select_stars_isochrone_changes(stars, isochrone):
+    g, r = stars["des_yr6_g_obs"], stars["des_yr6_r_obs"]
+    reference = cmd_match_filter.select_stars_in_match_filter(stars, 16.8, ISOCHRONE)
+    selected = cmd_match_filter.select_stars_in_match_filter(stars, 16.8, isochrone)
+    np.testing.assert_array_equal(selected, is_in_match_filter(g, r, polygon_vertices=_polygon(16.8, isochrone, "r")))
+    changed = np.sum(selected != reference)
+    assert changed > 0.05 * reference.sum()  # not a few stars at the polygon edge
+    assert (selected & reference).sum() > 0  # the same old population: the filters overlap
+
+
+# A fainter distance modulus moves the filter to fainter stars: its bright end by the
+# difference of distance modulus (its width also grows with the photometric errors)
+def test_select_stars_distance_modulus(stars):
+    g = stars["des_yr6_g_obs"].to_numpy()
+    near = cmd_match_filter.select_stars_in_match_filter(stars, 16.0, ISOCHRONE)
+    far = cmd_match_filter.select_stars_in_match_filter(stars, 18.0, ISOCHRONE)
+    assert g[far].min() - g[near].min() == pytest.approx(2.0, abs=0.1)
+    assert (near != far).sum() > 0.5 * near.sum()
