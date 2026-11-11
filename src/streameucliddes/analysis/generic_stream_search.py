@@ -5,8 +5,8 @@ from streamobs import match_filter
 
 from streameucliddes.analysis import background_polynomial_fit
 from streameucliddes.analysis.background_polynomial_fit import SimpleLonLatProj
+from streameucliddes.analysis.catalog_preparation import ensure_dust_corrected, resolve_mag_columns
 from streameucliddes.analysis.star_density_maps import star_density_healpix
-from streameucliddes.catalogs import dust_correction
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
 from streameucliddes.unit_conversions import convert_DM_to_kpc
 
@@ -14,40 +14,6 @@ DEFAULT_MODEL_TYPE_FIT = {"polynomial": {"degree": 5}}
 
 # Stateless -> shared across calls instead of re-instantiating on every generic_search_single_dm() call.
 _PROJ = SimpleLonLatProj()
-
-
-def _resolve_mag_columns(data, mag_cols, use_dust_corrected):
-    """Swap in '<col>_corrected' columns when available and requested."""
-    resolved = []
-    for col in mag_cols:
-        corrected = f"{col}_corrected"
-        if use_dust_corrected and corrected in data.columns:
-            resolved.append(corrected)
-        else:
-            if use_dust_corrected:
-                print(
-                    f"Warning: requested dust-corrected column '{corrected}' not found in data; using '{col}' instead."
-                )
-            resolved.append(col)
-    return resolved
-
-
-def _ensure_dust_corrected(
-    data, mag_cols, ra_col, dec_col, dust_correction_kwargs=None, verbose=False
-):
-    """Compute missing '<col>_corrected' columns in place via dust_correction.correct_dust_map."""
-    missing = [col for col in mag_cols if f"{col}_corrected" not in data.columns]
-    if not missing:
-        return
-
-    if verbose:
-        print(f"Applying dust correction for: {missing}")
-    dust_correction.correct_dust_map(
-        data,
-        mag_cols=list(mag_cols),
-        pos_columns=[ra_col, dec_col],
-        **dict(dust_correction_kwargs or {}),
-    )
 
 
 def generic_search_single_dm(
@@ -129,11 +95,11 @@ def generic_search_single_dm(
     fit_kwargs = dict(fit_kwargs or {})
 
     if use_dust_corrected and ensure_dust_correction:
-        _ensure_dust_corrected(
+        ensure_dust_corrected(
             data, mag_cols, ra_col, dec_col, dust_correction_kwargs, verbose=verbose
         )
 
-    mag_to_use = _resolve_mag_columns(data, mag_cols, use_dust_corrected)
+    mag_to_use = resolve_mag_columns(data, mag_cols, use_dust_corrected)
     if verbose:
         print(f"Magnitudes used for cut and match filter: {mag_to_use}")
 
@@ -272,7 +238,7 @@ def generic_search_dm_scan(
     cuts = find_stream_kwargs.get("cuts")
 
     if use_dust_corrected:
-        _ensure_dust_corrected(
+        ensure_dust_corrected(
             data,
             mag_cols,
             ra_col,

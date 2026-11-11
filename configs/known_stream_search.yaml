@@ -1,0 +1,27 @@
+# Known-stream search of the galstreams streams, read by
+# workflows.run_config.RunConfig.from_yaml and scripts/run_known_stream_search.py.
+#
+# Only the values that change: the others are those of
+# workflows.run_config.KNOWN_STREAM_SEARCH_CONFIG (the defaults, in Python).
+# Uncomment and edit what you need. Keys: those of KNOWN_STREAM_SEARCH_CONFIG,
+# track_names, and the track selection (dm_range, min_length_deg, add_ibata2024).
+#
+# No dust correction: the Euclid x DES magnitudes are already dereddened.
+
+search: known_stream
+
+# distance_moduli: {start: 15.0, stop: 22.0, step: 0.1}   # default: the track's range +- 1 mag
+#
+# match_filter:                # default: Euclid VIS vs VIS - H
+#   name: euclid_vis_h
+#   reference_band: [euclid_q1, VIS]
+#   color_bands: [[euclid_q1, H]]
+#
+# default_grid:                # isochrones for the age and Z not known
+#   - {age: 13.0, metallicity: 0.0002}
+#
+# track_names: [AAU-ATLAS-L21] # default: one track per stream crossing the footprint
+# add_ibata2024: true          # also the Ibata et al. 2024 tracks (no distances)
+#
+# output_dir: figures/outputs/known_stream_search   # gitignored
+# n_workers: 8

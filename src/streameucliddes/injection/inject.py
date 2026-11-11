@@ -65,7 +65,7 @@ def inject_stream_catalog(
     survey=[{"survey": "euclid", "release": "q1"},
         {"survey": "des", "release": "yr6"},
     ],
-    bands={"des_yr6": ["g", "r", "i"], "euclid_q1": ["VIS", "Y", "J"]},
+    bands={"des_yr6": ["g", "r", "i"], "euclid_q1": ["VIS", "Y", "J", "H"]},
     **kwargs,
 ):
 

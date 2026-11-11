@@ -51,11 +51,8 @@ src/streameucliddes/
                                  flux_to_mag                      (old: utils.fluxToMag)
                                  convert_DM_to_kpc, convert_kpc_to_DM,
                                  convert_FeH_to_z                 (old: utils.py)
-  stream_frames.py               [NEW] rotation_matrix_from_astropy_frame
-                                 [NEW] rotation_matrix_from_endpoints
-                                 [NEW] radec_to_phi12, phi12_to_radec
-  isochrone_parameters.py        [NEW] default_isochrone_grid
-                                 [NEW] known_stream_isochrone_parameters
+  stream_frames.py               [NEW] radec_to_phi12, phi12_to_radec (gala frames)
+                                 [NEW] phi12_bin_centres
 
   catalogs/
     euclid_des_catalog.py        open_eucliddes_data, add_magnitudes,
@@ -68,25 +65,30 @@ src/streameucliddes/
     galstreams_catalog.py        [NEW] load_galstreams
                                  [NEW] galstreams_track_length_in_footprint
                                  [NEW] select_galstreams_in_footprint
+                                 [NEW] galstreams_default_tracks (one track per stream)
                                  [NEW] galstreams_phi12_window
                                  [NEW] galstreams_dm_along_track
-    stream_populations.py        [NEW] load_stream_population_table
-    stream_populations.csv       [NEW] age, [Fe/H], references
+    isochrone_parameters.py      [NEW] default_isochrone_grid
+                                 [NEW] known_stream_isochrone_parameters
+                                 [NEW] load_stream_population_table
+    stream_populations.csv       [NEW] age, [Fe/H], Z, references
 
   analysis/
     cmd_match_filter.py          build_match_filter_polygon
                                  (old: data_manipulation._match_filter_polygon)
-                                 [NEW] select_stars_in_match_filter
+                                 [NEW] select_stars_in_match_filter, match_filter_polygons
+                                 (selection only; preparation in catalog_preparation)
+    catalog_preparation.py       [NEW] prepare_match_filter_catalog, check_columns,
+                                 default_error_cuts; resolve_mag_columns and
+                                 ensure_dust_corrected (moved from generic_stream_search)
     star_density_maps.py         star_density_healpix
                                  (old: get_healpy_data_from_table, one copy,
                                   + compute part of plotting.get_hp_map)
                                  [NEW] star_density_phi12
-                                 [NEW] mask_disks_in_phi12_density
     background_polynomial_fit.py fit_background_model, polyfit2d,
                                  fit_background_model_polyfit2d, process_data,
                                  process_data_polyfit2d, polynomial_formula
                                  (old: analysis/fit.py)
-                                 [NEW] select_background_polynomial_degree
     generic_stream_search.py     generic_search_single_dm  (old: pipeline.find_stream)
                                  generic_search_dm_scan    (old: compute part of
                                                             pipeline.scan_find_stream)
@@ -101,6 +103,8 @@ src/streameucliddes/
   plotting/
     plot_style.py                unchanged
     plot_cmd.py                  plot_CMD                       (old: plotting.py)
+                                 [NEW] plot_match_filter        (polygons on the CMD; gif:
+                                       frames + make_gif_from_plots)
     plot_sky_density.py          plot_2D_density, plot_2D_density_from_hp,
                                  plot_overlapped_objects, plot_single_stream_track
                                  (old: plotting.py; last two missing, locate them)
@@ -113,17 +117,18 @@ src/streameucliddes/
     make_videos.py               make_gif                       (old: plotting.make_gif)
                                  [NEW] make_gif_from_plots      (copy of celestial
                                        visualization.make_gif_from_plots; used for
-                                       all new gifs, user choice)
-                                 [NEW] make_mp4
+                                       all new gifs, user choice; no mp4,
+                                       as celestial_currents)
 
   workflows/
-    run_config.py                [NEW] RunConfig (YAML)
+    run_config.py                [NEW] KNOWN_STREAM_SEARCH_CONFIG (dict of the run arguments,
+                                       to copy and update), RunConfig (YAML overrides)
     run_generic_search.py        run_generic_search
                                  (old: loop, plots and gif of scan_find_stream)
-                                 [NEW] save_generic_search_healpix_cube
+                                 [NEW] save_generic_search_healpix_maps
     run_known_stream_search.py   [NEW] run_known_stream_search
                                  [NEW] run_all_known_stream_searches
-                                 [NEW] save_known_stream_search_cube
+                                 [NEW] save_known_stream_search_maps
 
 scripts/                         [NEW] run_generic_search.py, run_known_stream_search.py
 configs/                         [NEW] generic_search.yaml, known_stream_search.yaml
@@ -131,7 +136,7 @@ notebooks/                       [NEW] known_stream_search_example.ipynb (usage 
 ```
 
 Naming rules used:
-- `generic_search_*` and `known_stream_search_*` mirror each other: `_single_dm` gives one map; `_dm_scan` goes over a dm grid one dm at a time (it yields `(dm, result)`), so that the caller can drop each map before the next one is computed. The workflows build the stacks (`save_*_cube`).
+- `generic_search_*` and `known_stream_search_*` mirror each other: `_single_dm` gives one map; `_dm_scan` goes over a dm grid one dm at a time (it yields `(dm, result)`), so that the caller can drop each map before the next one is computed. The workflows save all the maps of a run in one file (`save_*_maps`). Known-stream maps: one set per isochrone.
 - `star_density_*` = smoothed star counts, `*_healpix` or `*_phi12` says the grid.
 - `galstreams_*` = reads galstreams. `survey_footprint_*` = footprint.
 - `plot_<thing>` in `plot_<module>.py`; `run_<thing>` in `run_<thing>.py`.

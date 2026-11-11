@@ -1,7 +1,25 @@
-"""Star density maps: star counts on a grid, smoothed and masked."""
+"""Star density maps: star counts on a grid, smoothed and masked.
+
+On the sky (HEALPix) or in a stream frame (phi1/phi2). A phi1/phi2 grid is
+given by a window ``(phi1_min, phi1_max, phi2_min, phi2_max)`` and a bin size
+(deg); its bins are those of ``stream_frames.phi12_bin_centres``. Its maps
+have shape (n_phi1, n_phi2), row = phi1 bin (as ``numpy.histogram2d``):
+transpose them for ``imshow``.
+"""
+
+from __future__ import annotations
+
+from typing import TYPE_CHECKING
 
 import healpy as hp
 import numpy as np
+from scipy.ndimage import gaussian_filter
+
+from streameucliddes.stream_frames import phi12_bin_centres
+
+if TYPE_CHECKING:
+    from numpy.typing import ArrayLike, NDArray
+
 
 def star_density_healpix(
     data,
@@ -94,3 +112,82 @@ def star_density_healpix(
         hp_map = np.ma.array(hp_map, mask=footprint_mask)
 
     return hp_map, lon, lat, npix
+
+
+def star_density_phi12(
+    phi1: ArrayLike,
+    phi2: ArrayLike,
+    window: tuple[float, float, float, float],
+    bin_size_deg: float,
+    *,
+    smoothing_deg: float = 0.0,
+    footprint_mask: NDArray[np.bool_] | None = None,
+) -> np.ma.MaskedArray:
+    """Smoothed star counts on a phi1/phi2 grid.
+
+    Counts the stars in each bin, then smooths the counts with a Gaussian of
+    standard deviation ``smoothing_deg``. The smoothed counts are divided by
+    the smoothed footprint (the fraction of each bin's neighbourhood inside
+    the footprint and the window), so that the density does not drop at the
+    footprint edges, nor at the window edges. Bins outside the footprint are
+    masked, and their stars are not counted.
+
+    Parameters
+    ----------
+    phi1, phi2 : array_like
+        Stars in the stream frame (deg).
+    window : tuple of float
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` of the grid (deg).
+    bin_size_deg : float
+        Bin size of the grid (deg), the same in phi1 and phi2.
+    smoothing_deg : float, optional
+        Standard deviation of the Gaussian (deg). 0: no smoothing.
+    footprint_mask : numpy.ndarray of bool, optional
+        From ``catalogs.survey_footprint.survey_footprint_phi12_mask``, True
+        outside the footprint.
+
+    Returns
+    -------
+    density : numpy.ma.MaskedArray, shape (n_phi1, n_phi2)
+        Smoothed counts per bin, masked (NaN) outside the footprint. The
+        bins are those of ``stream_frames.phi12_bin_centres``.
+
+    Raises
+    ------
+    ValueError
+        ``footprint_mask`` does not have the shape of the grid.
+
+    Notes
+    -----
+    Code to reuse: ``_compute_spline_phi12`` in celestial_currents
+    ``notebooks/candidate_investigations/full_search/template.ipynb``
+    (``numpy.histogram2d``, then ``scipy.ndimage.gaussian_filter`` with a
+    sigma of ``smoothing_deg / bin_size_deg`` bins). The edge correction is
+    a normalized convolution (Knutsson & Westin 1993).
+    """
+    phi1_centres, phi2_centres = phi12_bin_centres(window, bin_size_deg)
+    half_bin = bin_size_deg / 2
+    edges = [np.append(centres - half_bin, centres[-1] + half_bin) for centres in (phi1_centres, phi2_centres)]
+    phi1 = np.asarray(phi1, dtype=float)
+    phi2 = np.asarray(phi2, dtype=float)
+    finite = np.isfinite(phi1) & np.isfinite(phi2)
+    counts, _, _ = np.histogram2d(phi1[finite], phi2[finite], bins=edges)
+
+    shape = (phi1_centres.size, phi2_centres.size)
+    if footprint_mask is None:
+        outside = np.zeros(shape, dtype=bool)
+    else:
+        outside = np.asarray(footprint_mask, dtype=bool)
+        if outside.shape != shape:
+            raise ValueError(f"footprint_mask has shape {outside.shape}, the grid {shape}.")
+    inside = (~outside).astype(float)
+    counts *= inside
+
+    if smoothing_deg > 0:
+        sigma = smoothing_deg / bin_size_deg  # in bins
+        smoothed_counts = gaussian_filter(counts, sigma, mode="constant", cval=0.0)
+        smoothed_inside = gaussian_filter(inside, sigma, mode="constant", cval=0.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            counts = smoothed_counts / smoothed_inside
+    counts[outside] = np.nan
+    return np.ma.masked_array(counts, mask=outside, fill_value=np.nan)

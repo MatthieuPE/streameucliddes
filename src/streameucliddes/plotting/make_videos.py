@@ -1,10 +1,18 @@
 """Videos made from saved figures."""
 
+from __future__ import annotations
+
 import glob
 import os
 import re
+from typing import TYPE_CHECKING
 
 from PIL import Image
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from pathlib import Path
+
 
 def make_gif(
     figures_folder="../../figures",
@@ -75,3 +83,55 @@ def make_gif(
     )
     print(f"{gif_name} created ({len(files)} frames) at {gif_path}")
     return gif_path
+
+
+def make_gif_from_plots(
+    output_path: str | Path,
+    pattern: str | Path | Sequence[str | Path] = "./plots/*.png",
+    duration: int = 500,
+) -> None:
+    """Animated GIF from PNG images: those matching a glob pattern, or a list of them.
+
+    With a pattern, every matching image, in the sorted order of their file
+    names; with a list, those images, in that order. Each frame is shown
+    ``duration`` ms; the GIF loops. All new gifs use this function (user
+    choice), not ``make_gif``.
+
+    Parameters
+    ----------
+    output_path : str or pathlib.Path
+        GIF file to write.
+    pattern : str, pathlib.Path or sequence of them, optional
+        Glob pattern of the frames, or the frames themselves (e.g. those just
+        written, so that older files of the folder are left out).
+    duration : int, optional
+        Time per frame (ms).
+
+    Raises
+    ------
+    FileNotFoundError
+        No image matches ``pattern``, or an empty list.
+
+    Notes
+    -----
+    Copied from celestial_currents ``visualization.py::make_gif_from_plots``;
+    the list of frames as in its ``investigate/visualization.py`` copy; the
+    paths may also be ``pathlib.Path``.
+    """
+    if isinstance(pattern, (str, os.PathLike)):
+        image_files = sorted(glob.glob(str(pattern)))
+    else:
+        image_files = [str(path) for path in pattern]
+    if not image_files:
+        raise FileNotFoundError(
+            f"No images found with pattern: {pattern}"
+        )
+    images = [Image.open(f).convert("RGB") for f in image_files]
+    images[0].save(
+        str(output_path),
+        save_all=True,
+        append_images=images[1:],
+        duration=duration,
+        loop=0,
+    )
+    print(f"GIF saved to {output_path}")

@@ -11,17 +11,22 @@ Euclid DR1 × DES Y6 footprint. Also make generic MF maps over the full
 footprint.
 
 1. **Selection.** galstreams streams (Mateu 2023, MNRAS 520, 5225) with
-   **15 < dm < 22** along the track, crossing the footprint.
+   **dm > 14** along the track, no upper bound (user choice: wider than
+   the dm 15–22 of the maps, so as not to miss a stream), crossing the
+   footprint. The Ibata et al. 2024 tracks have no distance in galstreams:
+   only selected with `add_ibata2024` (default False).
 2. **Frame.** phi1/phi2 from the galstreams frame (`strm.stream_frame`),
-   turned into a 3×3 rotation matrix.
+   used as it is: a gala `GreatCircleICRSFrame`. Transformations with
+   gala and astropy (user choice), not with our own rotation matrices.
 3. **Known-stream MF.** Isochrone from the stream's age and [Fe/H] when
-   known, else a default old, metal-poor grid. Maps in phi1/phi2.
-   **No polynomial background subtraction.**
+   known, else a default old, metal-poor grid. Maps in phi1/phi2, **one
+   set of maps per isochrone**. **No polynomial background subtraction.**
 4. **Generic MF.** Full footprint, generic isochrones, dm 15–22.
-   **2D polynomial background, degree 3–5**, chosen from the map
-   fluctuations.
-5. **Products.** One map per dm, one video per stream, one data cube
-   per stream.
+   **2D polynomial background of fixed degree** (5, the current default)
+   for now. Choosing the degree from the map fluctuations comes later
+   (Section 8).
+5. **Products.** One map per (isochrone, dm); one video and one file of
+   maps per (stream, isochrone).
 
 Method: Rockosi et al. 2002 (AJ 124, 349); Grillmair 2009 (ApJ 693,
 1118); Shipp et al. 2018 (ApJ 862, 114).
@@ -77,7 +82,7 @@ Method: Rockosi et al. 2002 (AJ 124, 349); Grillmair 2009 (ApJ 693,
 - Add `notebooks/known_stream_search_example.ipynb`: an example of how
   to use the known-stream search, written against the stubs. Markdown
   explains each step (galstreams streams in the footprint, stream frame,
-  isochrone, map per dm, video, data cube); code cells call the public
+  isochrone, map per dm, video, file of maps); code cells call the public
   functions in the order a user would. Only the import cell runs at this
   stage: the other cells call stubs. Stored without outputs (git filter).
 - No implementation. The user reviews and may reorganise the stubs.
@@ -123,36 +128,34 @@ Read its `CLAUDE.md` and `README.md` first.
 
 | New stub | Reuse |
 |------|-------|
-| `stream_frames.rotation_matrix_from_astropy_frame` | none; transform the frame unit vectors to ICRS; test vs `SkyCoord.transform_to(strm.stream_frame)` |
-| `stream_frames.rotation_matrix_from_endpoints` | [C] `frame_utils.py::rotation_matrix_from_endpoints` |
-| `stream_frames.radec_to_phi12` | [C] `frame_utils.py::apply_rotation` (take ra/dec arrays, not SkyCoord) |
-| `stream_frames.phi12_to_radec` | [C] `frame_utils.py::phi12_to_radec` |
-| `isochrone_parameters.*` | [U] `unit_conversions.convert_FeH_to_z`; [C] grid in `configs/delve_dr3_mz_scan.yaml` |
+| `stream_frames.radec_to_phi12`, `phi12_to_radec` | gala frames + `SkyCoord.transform_to` (numpy arrays in degrees in and out) |
+| `catalogs.isochrone_parameters.*` | [U] `unit_conversions.convert_FeH_to_z`; default isochrone of Shipp et al. 2018 (13 Gyr, Z = 0.0002); Marigo et al. 2017 isochrones |
 | `galstreams_catalog.load_galstreams` | [C] `galstreams.MWStreams(verbose=False)` in `notebooks/create_projections.ipynb`; [U] `unit_conversions.convert_kpc_to_DM` |
 | `galstreams_track_length_in_footprint`, `select_galstreams_in_footprint` | [C] `visualization.py::_find_overlapping_streams` |
 | `galstreams_phi12_window` | [C] `visualization.py::get_stream_phi12_bounds` |
 | `galstreams_dm_along_track` | none; interpolate galstreams track distances in phi1 |
 | `survey_footprint.*` | [U] footprint mask in `star_density_healpix` and `background_polynomial_fit.process_data`; [C] `visualization.py::transform_healpix_to_custom_frame` |
 | `cmd_match_filter.select_stars_in_match_filter` | [U] `build_match_filter_polygon` + `streamobs.match_filter.is_in_match_filter` (see `_count_selected` in `injected_stream_snr`); [C] DES g−r alternative `search/matched_filter.py::get_filter_splines_from_color_mag`, `filter_data` |
+| `catalog_preparation.prepare_match_filter_catalog` | Preparation only, before any match filter: columns checked, cuts (default errors <= 0.2 on the filter bands), phi1/phi2 and window; also `resolve_mag_columns`, `ensure_dust_corrected` of the generic search. Used by `injected_stream_snr` and the known-stream search |
 | `star_density_maps.star_density_phi12` | [C] `_compute_spline_phi12` in `notebooks/candidate_investigations/full_search/template.ipynb` (histogram2d + Gaussian smoothing) |
-| `star_density_maps.mask_disks_in_phi12_density` | [C] `visualization.py::mask_phi12_disks`; [C] `investigate/postprocess.py::build_lvdb_mask` (LVDB path as an argument) |
-| `background_polynomial_fit.select_background_polynomial_degree` | [U] `fit_background_model`; [C] `visualization.py::fit_bkg_poly` |
 | `known_stream_search.*` | [U] `generic_search_dm_scan` pattern (cuts computed once); [C] `ProcessPoolExecutor` sweep cells in the template notebook |
 | `plot_known_stream_search.*` | [C] `visualization.py::plot_custom_stream_at_mu`, `_find_overlapping_streams` (rewrite with imshow on the grid) |
 | `make_videos.make_gif_from_plots` | [C] `visualization.py::make_gif_from_plots` (copy as is). **User choice: all new gifs use this function**, not [U] `make_gif` |
-| `make_videos.make_mp4` | `imageio` + `imageio-ffmpeg`; same interface as `make_gif_from_plots` |
-| `run_config.RunConfig` | [C] `config.py::RunConfig.from_yaml` |
-| `save_generic_search_healpix_cube`, `save_known_stream_search_cube` | [C] output block of `scripts/run_matched_filter_maps.py::main` |
+| `run_config.RunConfig` | [C] `config.py::RunConfig.from_yaml`. User choice: the defaults are the dict `KNOWN_STREAM_SEARCH_CONFIG` (Python), the YAML only overrides it |
+| `save_generic_search_healpix_maps`, `save_known_stream_search_maps` | [C] output block of `scripts/run_matched_filter_maps.py::main` |
 | CLI scripts | [C] `scripts/run_matched_filter_maps.py` |
 
 ## 5. Known gaps
 
 - **galstreams has no age or [Fe/H].** Curated CSV. Sources: Li et al.
-  2022 (ApJ 928, 30); Martin et al. 2022 (MNRAS 516, 5331); Bonaca &
-  Price-Whelan 2024 (arXiv:2405.19410). Never invent values: NaN →
-  default grid.
-- **Polynomial degree rule.** No standard rule found. Proposal: lowest
-  BIC on a Poisson deviance; tie → lower degree. Confirm with the user.
+  2022 (ApJ 928, 30); Martin et al. 2022 (MNRAS 516, 5331); Shipp et al.
+  2018 (ApJ 862, 114); Bonaca & Price-Whelan 2024 (arXiv:2405.19410).
+  Never invent values: NaN → default grid (the DES search isochrone,
+  13 Gyr and Z = 0.0002).
+- **Isochrones: Marigo et al. 2017 (ugali).** Every Z is on their scale;
+  Dotter et al. 2008 Z (Shipp et al. 2018) are converted through [Fe/H].
+  The local grid stops at Z = 0.0001: below it, ugali uses the Z = 0.0001
+  isochrone (e.g. C-19, [Fe/H] = -3.58).
 - **Footprint.** Start from star counts; use DES Y6 and Euclid DR1
   coverage maps when available.
 - **Edges.** Normalise smoothed counts by the smoothed footprint mask.
@@ -167,12 +170,15 @@ Read its `CLAUDE.md` and `README.md` first.
 ## 6. Repo conventions
 
 - Env: `conda activate streameuclid` (celestial uses `search26`).
+- Stream frames: gala `GreatCircleICRSFrame` (galstreams `stream_frame`,
+  or `GreatCircleICRSFrame.from_endpoints` for another stream). Use gala
+  for the transformations as much as possible.
 - Tests: `pytest`, one marker per module in `pyproject.toml`.
 - Docs: Sphinx autosummary (recursive), `docs/source/api.rst`.
 - Numpy-style docstrings, short sentences.
 - HEALPix: always pass `nest=` explicitly. Celestial uses NESTED.
 - Angles in degrees. Distances as distance modulus unless named `_kpc`.
-- New dependencies (galstreams, gala, pyyaml, imageio): add to
+- New dependencies (galstreams, gala, pyyaml): add to
   `pyproject.toml` and tell the user.
 - Commit and push only on the phase branch. Never on `main`.
 
@@ -182,3 +188,20 @@ Read its `CLAUDE.md` and `README.md` first.
   footprint (e.g. ATLAS, Phoenix, Turranburra; Shipp et al. 2018).
 - Inject a stream with `injection.inject_stream_catalog` on a known
   track; check it appears at phi2 ≈ 0.
+
+## 8. Later: left out of the first version
+
+Start simple (user choice, phase 2 review). Add these once the simple
+version works, and only on request:
+
+- **Polynomial degree from the map fluctuations** (generic search):
+  choose among degrees 3–5, e.g. by the lowest BIC (Bayesian Information
+  Criterion) on a Poisson deviance, ties going to the lower degree. Reuse:
+  [U] `fit_background_model`; [C] `visualization.py::fit_bkg_poly`.
+- **Masking known objects in the maps**: disks around the dwarf galaxies
+  and globular clusters of the LVDB (Local Volume Database; Pace 2024,
+  arXiv:2411.07424). Reuse: [C] `visualization.py::mask_phi12_disks`;
+  [C] `investigate/postprocess.py::build_lvdb_mask` (LVDB path as an
+  argument).
+- **Several isochrones in one map** (e.g. the union of their filters),
+  instead of one set of maps per isochrone.
