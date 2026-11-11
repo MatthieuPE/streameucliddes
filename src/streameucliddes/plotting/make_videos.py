@@ -109,10 +109,23 @@ def make_gif_from_plots(
 
     Notes
     -----
-    Code to reuse: copy as is of celestial_currents
-    ``visualization.py::make_gif_from_plots``.
+    Copied from celestial_currents ``visualization.py::make_gif_from_plots``;
+    the paths may also be ``pathlib.Path``.
     """
-    raise NotImplementedError
+    image_files = sorted(glob.glob(str(pattern)))
+    if not image_files:
+        raise FileNotFoundError(
+            f"No images found with pattern: {pattern}"
+        )
+    images = [Image.open(f).convert("RGB") for f in image_files]
+    images[0].save(
+        str(output_path),
+        save_all=True,
+        append_images=images[1:],
+        duration=duration,
+        loop=0,
+    )
+    print(f"GIF saved to {output_path}")
 
 
 def make_mp4(

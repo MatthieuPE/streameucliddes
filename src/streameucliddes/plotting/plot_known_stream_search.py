@@ -12,7 +12,6 @@ from matplotlib.colors import ListedColormap
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.patheffects import withStroke
-from mpl_toolkits.axes_grid1 import make_axes_locatable
 
 from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS
 
@@ -30,6 +29,7 @@ TRACK_COLOR = CATEGORICAL_COLORS[0]  # one color for every track: the labels giv
 FOOTPRINT_GREY = "0.88"
 FOOTPRINT_OUTSIDE_GREY = "0.85"  # single-dm maps: bins outside the footprint
 DENSITY_PERCENTILES = (1.0, 99.5)  # single-dm maps: default colour scale
+COLORBAR_BOUNDS = (1.01, 0.0, 0.015, 1.0)  # single-dm maps: colour bar, in map axes fractions
 INK = "0.15"  # text
 # Positions tried for a label, as fractions along the part of the track inside the footprint
 LABEL_FRACTIONS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9)
@@ -108,7 +108,8 @@ def plot_known_stream_search_single_dm(
     colormap.set_bad(FOOTPRINT_OUTSIDE_GREY)  # bins outside the footprint
     image = ax.imshow(density.T, origin="lower", extent=extent, cmap=colormap, vmin=vmin, vmax=vmax,
                       aspect="equal", interpolation="nearest")
-    colorbar_ax = make_axes_locatable(ax).append_axes("right", size="1.5%", pad=0.1)  # the height of the map
+    # inset of the map: the height of the map, and seen by constrained layout (no crop when saved)
+    colorbar_ax = ax.inset_axes(COLORBAR_BOUNDS)
     fig.colorbar(image, cax=colorbar_ax, label="Stars per bin (smoothed)")
 
     if track_phi12 is not None:

@@ -54,6 +54,7 @@ markers = [
     "galstreams_catalog: catalogs/galstreams_catalog.py (known streams from galstreams)",
     "known_stream_search: analysis/known_stream_search.py (known-stream search)",
     "plot_known_stream_search: plotting/plot_known_stream_search.py (known-stream search figures)",
+    "make_videos: plotting/make_videos.py (gifs and videos from saved figures)",
     "run_config: workflows/run_config.py (YAML run configurations)",
     "run_known_stream_search: workflows/run_known_stream_search.py (known-stream search runs)",
 ]

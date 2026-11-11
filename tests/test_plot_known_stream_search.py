@@ -104,6 +104,25 @@ def test_plot_single_dm(search):
     plt.close(fig)
 
 
+# The colour bar, with its ticks and label, inside the saved figure (constrained layout, as
+# in plot_style), and the height of the map
+def test_plot_single_dm_colorbar_inside_figure(search):
+    result = known_stream_search_single_dm(distance_modulus=17.0, search=search)
+    with plt.rc_context({"figure.constrained_layout.use": True}):
+        fig, ax = plot_known_stream_search_single_dm(result)
+        fig.canvas.draw()
+    colorbar_ax, = ax.child_axes
+    assert colorbar_ax.get_ylabel() == "Stars per bin (smoothed)"
+    renderer = fig.canvas.get_renderer()
+    box, figure_box = colorbar_ax.get_tightbbox(renderer), fig.bbox
+    assert figure_box.x0 <= box.x0 and box.x1 <= figure_box.x1
+    assert figure_box.y0 <= box.y0 and box.y1 <= figure_box.y1
+    map_position, colorbar_position = ax.get_position(), colorbar_ax.get_position()
+    np.testing.assert_allclose([colorbar_position.y0, colorbar_position.y1],
+                               [map_position.y0, map_position.y1])
+    plt.close(fig)
+
+
 # Tracks: the stream's dashed, the others in their colours, all in the legend; the given
 # vmax, title and axes are used
 def test_plot_single_dm_tracks(search):
