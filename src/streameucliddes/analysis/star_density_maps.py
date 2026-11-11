@@ -13,6 +13,9 @@ from typing import TYPE_CHECKING
 
 import healpy as hp
 import numpy as np
+from scipy.ndimage import gaussian_filter
+
+from streameucliddes.stream_frames import phi12_bin_centres
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike, NDArray
@@ -123,10 +126,11 @@ def star_density_phi12(
     """Smoothed star counts on a phi1/phi2 grid.
 
     Counts the stars in each bin, then smooths the counts with a Gaussian of
-    standard deviation ``smoothing_deg``. With a footprint, the smoothed
-    counts are divided by the smoothed footprint (the fraction of each bin's
-    neighbourhood inside the footprint), so that the density does not drop
-    at the footprint edges. Bins outside the footprint are masked.
+    standard deviation ``smoothing_deg``. The smoothed counts are divided by
+    the smoothed footprint (the fraction of each bin's neighbourhood inside
+    the footprint and the window), so that the density does not drop at the
+    footprint edges, nor at the window edges. Bins outside the footprint are
+    masked, and their stars are not counted.
 
     Parameters
     ----------
@@ -145,13 +149,45 @@ def star_density_phi12(
     Returns
     -------
     density : numpy.ma.MaskedArray, shape (n_phi1, n_phi2)
-        Smoothed counts per bin, masked outside the footprint.
+        Smoothed counts per bin, masked (NaN) outside the footprint. The
+        bins are those of ``stream_frames.phi12_bin_centres``.
+
+    Raises
+    ------
+    ValueError
+        ``footprint_mask`` does not have the shape of the grid.
 
     Notes
     -----
     Code to reuse: ``_compute_spline_phi12`` in celestial_currents
     ``notebooks/candidate_investigations/full_search/template.ipynb``
     (``numpy.histogram2d``, then ``scipy.ndimage.gaussian_filter`` with a
-    sigma of ``smoothing_deg / bin_size_deg`` bins).
+    sigma of ``smoothing_deg / bin_size_deg`` bins). The edge correction is
+    a normalized convolution (Knutsson & Westin 1993).
     """
-    raise NotImplementedError
+    phi1_centres, phi2_centres = phi12_bin_centres(window, bin_size_deg)
+    half_bin = bin_size_deg / 2
+    edges = [np.append(centres - half_bin, centres[-1] + half_bin) for centres in (phi1_centres, phi2_centres)]
+    phi1 = np.asarray(phi1, dtype=float)
+    phi2 = np.asarray(phi2, dtype=float)
+    finite = np.isfinite(phi1) & np.isfinite(phi2)
+    counts, _, _ = np.histogram2d(phi1[finite], phi2[finite], bins=edges)
+
+    shape = (phi1_centres.size, phi2_centres.size)
+    if footprint_mask is None:
+        outside = np.zeros(shape, dtype=bool)
+    else:
+        outside = np.asarray(footprint_mask, dtype=bool)
+        if outside.shape != shape:
+            raise ValueError(f"footprint_mask has shape {outside.shape}, the grid {shape}.")
+    inside = (~outside).astype(float)
+    counts *= inside
+
+    if smoothing_deg > 0:
+        sigma = smoothing_deg / bin_size_deg  # in bins
+        smoothed_counts = gaussian_filter(counts, sigma, mode="constant", cval=0.0)
+        smoothed_inside = gaussian_filter(inside, sigma, mode="constant", cval=0.0)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            counts = smoothed_counts / smoothed_inside
+    counts[outside] = np.nan
+    return np.ma.masked_array(counts, mask=outside, fill_value=np.nan)
