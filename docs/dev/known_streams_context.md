@@ -129,7 +129,7 @@ Read its `CLAUDE.md` and `README.md` first.
 | New stub | Reuse |
 |------|-------|
 | `stream_frames.radec_to_phi12`, `phi12_to_radec` | gala frames + `SkyCoord.transform_to` (numpy arrays in degrees in and out) |
-| `catalogs.isochrone_parameters.*` | [U] `unit_conversions.convert_FeH_to_z`; [C] grid in `configs/delve_dr3_mz_scan.yaml` |
+| `catalogs.isochrone_parameters.*` | [U] `unit_conversions.convert_FeH_to_z`; default isochrone of Shipp et al. 2018 (13 Gyr, Z = 0.0002); Marigo et al. 2017 isochrones |
 | `galstreams_catalog.load_galstreams` | [C] `galstreams.MWStreams(verbose=False)` in `notebooks/create_projections.ipynb`; [U] `unit_conversions.convert_kpc_to_DM` |
 | `galstreams_track_length_in_footprint`, `select_galstreams_in_footprint` | [C] `visualization.py::_find_overlapping_streams` |
 | `galstreams_phi12_window` | [C] `visualization.py::get_stream_phi12_bounds` |
@@ -148,9 +148,14 @@ Read its `CLAUDE.md` and `README.md` first.
 ## 5. Known gaps
 
 - **galstreams has no age or [Fe/H].** Curated CSV. Sources: Li et al.
-  2022 (ApJ 928, 30); Martin et al. 2022 (MNRAS 516, 5331); Bonaca &
-  Price-Whelan 2024 (arXiv:2405.19410). Never invent values: NaN →
-  default grid.
+  2022 (ApJ 928, 30); Martin et al. 2022 (MNRAS 516, 5331); Shipp et al.
+  2018 (ApJ 862, 114); Bonaca & Price-Whelan 2024 (arXiv:2405.19410).
+  Never invent values: NaN → default grid (the DES search isochrone,
+  13 Gyr and Z = 0.0002).
+- **Isochrones: Marigo et al. 2017 (ugali).** Every Z is on their scale;
+  Dotter et al. 2008 Z (Shipp et al. 2018) are converted through [Fe/H].
+  The local grid stops at Z = 0.0001: below it, ugali uses the Z = 0.0001
+  isochrone (e.g. C-19, [Fe/H] = -3.58).
 - **Footprint.** Start from star counts; use DES Y6 and Euclid DR1
   coverage maps when available.
 - **Edges.** Normalise smoothed counts by the smoothed footprint mask.

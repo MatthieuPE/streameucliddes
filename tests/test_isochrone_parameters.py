@@ -38,7 +38,7 @@ def test_shipped_table_references():
     assert (table.loc[table["age_gyr"].notna(), "age_reference"] != "").all()
     assert (table.loc[table["feh"].notna(), "feh_reference"] != "").all()
     assert table.loc["Ravi", "age_gyr"] == pytest.approx(13.5)  # Shipp et al. 2018, no [Fe/H]
-    assert table.loc["Ravi", "z"] == pytest.approx(0.0003)
+    assert table.loc["Ravi", "z"] == pytest.approx(0.0002699)  # Shipp Z = 0.0003 (Dotter), on the Marigo scale
     assert np.isnan(table.loc["AAU-ATLAS", "age_gyr"])  # spectroscopic Z, default ages
 
 
@@ -74,10 +74,67 @@ def test_invalid_tables(tmp_path, header, rows, message):
         load_stream_population_table(_write(tmp_path, rows, header))
 
 
-# Phase 2 stubs: the functions still to write
-def test_import():
-    stubs = (
-        default_isochrone_grid,
-        known_stream_isochrone_parameters,
-    )
-    assert all(callable(stub) for stub in stubs)
+# ===================================================
+# Test default_isochrone_grid
+# ===================================================
+
+
+# Default: the DES search isochrone of Shipp et al. 2018, 13 Gyr and Z = 0.0002
+def test_default_isochrone_grid():
+    assert default_isochrone_grid() == [{"age": 13.0, "metallicity": 0.0002}]
+
+
+# One isochrone per (age, Z) pair, every Z for the first age, then for the next one
+def test_default_isochrone_grid_pairs():
+    grid = default_isochrone_grid(ages_gyr=[11.0, 12], metallicities=np.array([0.0001, 0.0004]))
+    assert grid == [
+        {"age": 11.0, "metallicity": 0.0001}, {"age": 11.0, "metallicity": 0.0004},
+        {"age": 12.0, "metallicity": 0.0001}, {"age": 12.0, "metallicity": 0.0004},
+    ]
+    assert all(type(value) is float for isochrone in grid for value in isochrone.values())
+    assert default_isochrone_grid(ages_gyr=[12.0]) == [{"age": 12.0, "metallicity": 0.0002}]
+
+
+# ===================================================
+# Test known_stream_isochrone_parameters
+# ===================================================
+
+
+@pytest.fixture
+def population_table(tmp_path):
+    return load_stream_population_table(_write(tmp_path, [
+        "Both,12.5,,,-2.2,0.1,0.1,0.0001,somebody,somebody,converted,",
+        "NoAge,,,,-2.2,0.1,0.1,0.0001,,somebody,converted,",
+        "NoZ,12.5,,,,,,,somebody,,,",
+    ]))
+
+
+GRID = [
+    {"age": 11.0, "metallicity": 0.0001}, {"age": 11.0, "metallicity": 0.0004},
+    {"age": 12.0, "metallicity": 0.0001}, {"age": 12.0, "metallicity": 0.0004},
+]
+
+
+# Age and Z known: one isochrone. Age unknown: each age of the grid, with the known Z.
+# Z unknown: each Z of the grid, with the known age. Stream not in the table: the grid
+@pytest.mark.parametrize(
+    "stream_name, expected",
+    [
+        ("Both", [{"age": 12.5, "metallicity": 0.0001}]),
+        ("NoAge", [{"age": 11.0, "metallicity": 0.0001}, {"age": 12.0, "metallicity": 0.0001}]),
+        ("NoZ", [{"age": 12.5, "metallicity": 0.0001}, {"age": 12.5, "metallicity": 0.0004}]),
+        ("Unknown", GRID),
+    ],
+)
+def test_known_stream_isochrone_parameters(population_table, stream_name, expected):
+    assert known_stream_isochrone_parameters(stream_name, population_table, GRID) == expected
+
+
+# Defaults: the shipped table and the default grid
+def test_known_stream_isochrone_parameters_defaults():
+    table = load_stream_population_table()
+    ravi = known_stream_isochrone_parameters("Ravi")  # Shipp et al. 2018 age and Z
+    assert ravi == [{"age": 13.5, "metallicity": table.loc["Ravi", "z"]}]
+    atlas = known_stream_isochrone_parameters("AAU-ATLAS")  # spectroscopic Z, default age
+    assert atlas == [{"age": 13.0, "metallicity": table.loc["AAU-ATLAS", "z"]}]
+    assert known_stream_isochrone_parameters("Unknown") == default_isochrone_grid()

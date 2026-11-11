@@ -15,10 +15,11 @@
 #   color_bands: [[des_yr6, r]]
 #
 # # Default grid, for the streams without a known age or [Fe/H]. One set of
-# # maps (and one video, one maps file) per isochrone.
+# # maps (and one video, one maps file) per isochrone. Default: the DES search
+# # isochrone of Shipp et al. 2018; Z on the Marigo et al. 2017 scale.
 # isochrones:
-#   ages_gyr: [11.0, 12.0]
-#   metallicities: [0.0001, 0.0004]
+#   ages_gyr: [13.0]
+#   metallicities: [0.0002]
 #
 # cuts: {}                     # see catalogs.catalog_cuts.get_cut_mask
 #
