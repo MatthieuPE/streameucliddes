@@ -136,6 +136,7 @@ Read its `CLAUDE.md` and `README.md` first.
 | `galstreams_dm_along_track` | none; interpolate galstreams track distances in phi1 |
 | `survey_footprint.*` | [U] footprint mask in `star_density_healpix` and `background_polynomial_fit.process_data`; [C] `visualization.py::transform_healpix_to_custom_frame` |
 | `cmd_match_filter.select_stars_in_match_filter` | [U] `build_match_filter_polygon` + `streamobs.match_filter.is_in_match_filter` (see `_count_selected` in `injected_stream_snr`); [C] DES g−r alternative `search/matched_filter.py::get_filter_splines_from_color_mag`, `filter_data` |
+| `catalog_preparation.prepare_match_filter_catalog` | Preparation only, before any match filter: columns checked, cuts (default errors <= 0.2 on the filter bands), phi1/phi2 and window; also `resolve_mag_columns`, `ensure_dust_corrected` of the generic search. Used by `injected_stream_snr` and the known-stream search |
 | `star_density_maps.star_density_phi12` | [C] `_compute_spline_phi12` in `notebooks/candidate_investigations/full_search/template.ipynb` (histogram2d + Gaussian smoothing) |
 | `known_stream_search.*` | [U] `generic_search_dm_scan` pattern (cuts computed once); [C] `ProcessPoolExecutor` sweep cells in the template notebook |
 | `plot_known_stream_search.*` | [C] `visualization.py::plot_custom_stream_at_mu`, `_find_overlapping_streams` (rewrite with imshow on the grid) |

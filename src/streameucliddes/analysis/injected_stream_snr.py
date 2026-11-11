@@ -7,11 +7,9 @@ import astropy.units as u
 import gala.coordinates as gc
 import logging
 
-from streamobs.match_filter import is_in_match_filter
-
-
-from streameucliddes.analysis.cmd_match_filter import build_match_filter_polygon
-from streameucliddes.catalogs.catalog_cuts import cut_flow, get_cut_mask
+from streameucliddes.analysis.catalog_preparation import default_error_cuts, prepare_match_filter_catalog
+from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, select_stars_in_match_filter
+from streameucliddes.catalogs.catalog_cuts import cut_flow
 from streameucliddes.catalogs.euclid_des_catalog import get_eucliddes_stars
 from streameucliddes.injection import inject
 
@@ -43,14 +41,7 @@ STREAM_CONFIG = {
     }
 }
 
-DEFAULT_MATCH_FILTERS = [
-    {
-        "name": "default_des_gr",
-        "reference_band": ("des_yr6", "g"),
-        "color_bands": [("des_yr6", "r")],
-    },
-]
-DEFAULT_ERR_CUT = (None, 0.2)  # Default cut on the errors of the match-filter bands
+DEFAULT_MATCH_FILTERS = [DEFAULT_MATCH_FILTER]
 # Default phi2 window: +- 1.4 stream_width, maximizes the SNR of a gaussian signal on
 # a uniform background
 PHI2_WIDTH_FACTOR = 1.4
@@ -83,7 +74,7 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
           dictionaries key by key;
         - ``gc_frame``: frame of the stream (default: GC_FRAME_DEFAULT);
         - ``cuts``: cuts of get_cut_mask, replacing the default ones on the same
-          columns (errors of the match-filter bands <= 0.2, |phi2| <= 1.4
+          columns (errors of the match-filter bands <= 0.2, ``|phi2|`` <= 1.4
           stream_width);
         - anything else is passed to inject.inject_stream (e.g. ``survey``,
           ``bands``).
@@ -132,47 +123,19 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
     stars_background = _get_background(gc_frame, reload_data=reload_data)
 
     distance_modulus = stream_config["distance_modulus"]["center"]["value"]
-    age = stream_config["isochrone"]["age"]
-    metallicity = stream_config["isochrone"]["z"]
+    isochrone = {"age": stream_config["isochrone"]["age"], "metallicity": stream_config["isochrone"]["z"]}
     phi2_max = PHI2_WIDTH_FACTOR * stream_config["stream_width"]
 
     snr_results = {}
     for match_filter in match_filter_list:
         logging.info(f"Applying match filter: {match_filter}")
-        namespace_1, band_1 = match_filter["reference_band"]
+        # Default cuts (errors of the match-filter bands), replaced by the given ones on the same columns
+        mf_cuts = {**default_error_cuts(match_filter), "phi2": (-phi2_max, phi2_max), **cuts}
 
-        # (band_1 column, band_2 column, polygon) for each colour of the match filter
-        polygons = []
-        for namespace_2, band_2 in match_filter["color_bands"]:
-
-            color_cut = match_filter.get("color_cut", True)
-            red_cap_value = match_filter.get("red_cap_value", None)
-
-            mf_polygon = build_match_filter_polygon(
-                distance_modulus,
-                age,
-                metallicity,
-                band_1,
-                band_2,
-                namespace_1.split("_")[0],  # isochrone survey: "des_yr6" -> "des"
-                namespace_2.split("_")[0],
-                color_cut=color_cut,
-                red_cap_value=red_cap_value,
-            )
-            polygons.append(
-                (f"{namespace_1}_{band_1}_obs", f"{namespace_2}_{band_2}_obs", mf_polygon)
-            )
-
-        # Default cuts, replaced by the given ones on the same columns
-        mf_cuts = {
-            f"{namespace}_{band}_err": DEFAULT_ERR_CUT
-            for namespace, band in [match_filter["reference_band"], *match_filter["color_bands"]]
-        }
-        mf_cuts["phi2"] = (-phi2_max, phi2_max)
-        mf_cuts.update(cuts)
-
-        n_stream = _count_selected(injected_catalog, mf_cuts, polygons, mask=flag_observed)
-        n_background = _count_selected(stars_background, mf_cuts, polygons)
+        n_stream = _count_selected(
+            injected_catalog.loc[flag_observed], mf_cuts, distance_modulus, isochrone, match_filter
+        )
+        n_background = _count_selected(stars_background, mf_cuts, distance_modulus, isochrone, match_filter)
         logging.info(
             f"{match_filter['name']}: {n_stream} stream stars, {n_background} background stars"
         )
@@ -209,25 +172,13 @@ def _get_background(gc_frame, reload_data=False):
     return STARS_BACKGROUND
 
 
-def _count_selected(catalog, cuts, polygons, mask=None):
+def _count_selected(catalog, cuts, distance_modulus, isochrone, match_filter):
     """
-    Number of stars of ``catalog`` passing ``cuts`` (and ``mask``) and inside every
-    match-filter polygon of ``polygons`` (``(band_1 column, band_2 column, vertices)``).
-
-    The cuts are applied first: the polygon test, the slow part, only runs on the
-    stars left.
+    Number of stars of ``catalog`` passing ``cuts`` and inside the match filter, with
+    the preparation and selection of the searches.
     """
-    selected = get_cut_mask(catalog, cuts)
-    if mask is not None:
-        selected &= mask
-    for band_1_col, band_2_col, mf_polygon in polygons:
-        idx = np.flatnonzero(selected)
-        selected[idx] = is_in_match_filter(
-            catalog[band_1_col].to_numpy()[idx],
-            catalog[band_2_col].to_numpy()[idx],
-            polygon_vertices=mf_polygon,
-        )
-    return int(selected.sum())
+    stars = prepare_match_filter_catalog(catalog, match_filter, cuts=cuts)
+    return int(select_stars_in_match_filter(stars, distance_modulus, isochrone, match_filter).sum())
 
 def _compute_SNR(n_stream, n_background):
     """SNR of ``n_stream`` stream stars over ``n_background`` background stars."""

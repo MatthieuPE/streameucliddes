@@ -76,6 +76,10 @@ src/streameucliddes/
     cmd_match_filter.py          build_match_filter_polygon
                                  (old: data_manipulation._match_filter_polygon)
                                  [NEW] select_stars_in_match_filter
+                                 (selection only; preparation in catalog_preparation)
+    catalog_preparation.py       [NEW] prepare_match_filter_catalog, check_columns,
+                                 default_error_cuts; resolve_mag_columns and
+                                 ensure_dust_corrected (moved from generic_stream_search)
     star_density_maps.py         star_density_healpix
                                  (old: get_healpy_data_from_table, one copy,
                                   + compute part of plotting.get_hp_map)
