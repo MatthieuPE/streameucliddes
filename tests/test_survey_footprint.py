@@ -5,6 +5,8 @@ are ICRS itself (phi1 = ra, phi2 = dec) and the gala great-circle frame of
 conftest.py.
 """
 
+import tracemalloc
+
 import astropy.coordinates as coord
 import healpy as hp
 import numpy as np
@@ -54,6 +56,31 @@ def test_mask_from_star_counts(nest):
 
     mask = survey_footprint_healpix_mask(ra, dec, NSIDE, nest=nest, min_count=2)
     np.testing.assert_array_equal(np.flatnonzero(~mask), [3])
+
+
+# Min_count across chunks: the stars of a pixel counted in several chunks add up
+def test_mask_from_star_counts_by_chunks(monkeypatch):
+    ra, dec = hp.pix2ang(NSIDE, [3, 10, 3, 500, 10, 3], lonlat=True, nest=False)
+    expected = survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False, min_count=2)
+    monkeypatch.setattr(survey_footprint, "CHUNK_SIZE", 2)
+    np.testing.assert_array_equal(survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False, min_count=2), expected)
+    np.testing.assert_array_equal(np.flatnonzero(~expected), [3, 10])
+
+
+# Peak memory: the counts per pixel and the temporaries of a chunk, not of the catalog (no
+# copy of ra, dec)
+def test_mask_from_star_counts_memory(rng, monkeypatch):
+    chunk_size = 50_000
+    monkeypatch.setattr(survey_footprint, "CHUNK_SIZE", chunk_size)
+    n = 1_000_000
+    ra, dec = rng.uniform(0.0, 360.0, n), rng.uniform(-90.0, 90.0, n)
+    tracemalloc.start()
+    try:
+        survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 60 * chunk_size + 20 * hp.nside2npix(NSIDE) < 8 * n
 
 
 # Stars with a non-finite position are left out

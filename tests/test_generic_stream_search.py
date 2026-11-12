@@ -13,6 +13,7 @@ import pytest
 from streamobs.match_filter import is_in_match_filter
 
 from streameucliddes.analysis import catalog_preparation, generic_stream_search
+from streameucliddes.catalogs import survey_footprint
 from streameucliddes.analysis.catalog_preparation import default_error_cuts
 from streameucliddes.analysis.cmd_match_filter import build_match_filter_polygon, select_stars_in_match_filter
 from streameucliddes.analysis.generic_stream_search import (
@@ -133,6 +134,27 @@ def test_prepare_given_values(catalog):
         prepare_generic_search(catalog, footprint_mask=np.ones_like(ring), nest=False)
     with pytest.raises(KeyError, match=H):
         prepare_generic_search(catalog.drop(columns=H))
+
+
+# Two magnitude cuts: the brighter limit keeps fewer stars, all among those of the fainter
+# one, in the cut mask and in the map (the same match filter at the same distance modulus)
+def test_prepare_magnitude_cuts(catalog):
+    searches = {
+        limit: prepare_generic_search(catalog, nside=NSIDE, cuts={VIS: (None, limit)}) for limit in (24.0, 22.0)
+    }
+    finite = (np.isfinite(catalog["ra"]) & np.isfinite(catalog["dec"])).to_numpy()
+    for limit, search in searches.items():
+        np.testing.assert_array_equal(search.keep, finite & (catalog[VIS] <= limit).to_numpy())
+    faint, bright = searches[24.0], searches[22.0]
+    assert 0 < bright.keep.sum() < faint.keep.sum()
+    assert not (bright.keep & ~faint.keep).any()  # a subset
+    np.testing.assert_array_equal(bright.footprint_mask, faint.footprint_mask)  # every star, cut or not
+
+    selected = {
+        limit: generic_search_single_dm(distance_modulus=17.0, search=search, smoothing_deg=0.0)["n_selected"]
+        for limit, search in searches.items()
+    }
+    assert 0 < selected[22.0] < selected[24.0]
 
 
 # ===================================================
@@ -277,6 +299,7 @@ def test_memory(monkeypatch):
     chunk_size = 50_000
     monkeypatch.setattr(generic_stream_search, "CHUNK_SIZE", chunk_size)
     monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", chunk_size)  # cuts and pixels
+    monkeypatch.setattr(survey_footprint, "CHUNK_SIZE", chunk_size)  # default footprint
     n = 3_000_000
     catalog = _catalog(np.random.default_rng(6), n)
     tracemalloc.start()

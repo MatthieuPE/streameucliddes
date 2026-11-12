@@ -47,6 +47,7 @@ from streameucliddes.analysis.cmd_match_filter import (
 )
 from streameucliddes.analysis.known_stream_search import DEFAULT_DISTANCE_MODULI
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 from streameucliddes.unit_conversions import convert_DM_to_kpc
 
 if TYPE_CHECKING:
@@ -153,9 +154,8 @@ def prepare_generic_search(
     footprint_mask : numpy.ndarray of bool, optional
         HEALPix mask, True outside the footprint (needs ``nest``), e.g.
         ``catalogs.survey_footprint.survey_footprint_healpix_mask``. Default:
-        the pixels with at least one star of the catalog (as
-        ``survey_footprint_healpix_mask`` with ``min_count=1``), counted by
-        chunks.
+        the pixels with at least one star of the catalog, cut or not
+        (``survey_footprint_healpix_mask``, by chunks).
     nest : bool, optional
         HEALPix ordering of ``footprint_mask``.
     ra_col, dec_col : str, optional
@@ -179,7 +179,9 @@ def prepare_generic_search(
         keep[start:start + CHUNK_SIZE] &= pixels[start:start + CHUNK_SIZE] >= 0
 
     if footprint_mask is None:
-        footprint_mask = _star_counts(pixels, nside) < 1  # every star with coordinates, cut or not
+        footprint_mask = survey_footprint_healpix_mask(
+            catalog[ra_col].to_numpy(), catalog[dec_col].to_numpy(), nside, nest=False
+        )
     else:
         footprint_mask = _ring_mask(footprint_mask, nside, nest)
     if footprint_mask.all():
@@ -197,15 +199,6 @@ def prepare_generic_search(
         footprint_centre_lon=float(centre_lon % 360.0), match_filter=match_filter, isochrones=list(isochrones),
         distance_moduli=[float(dm) for dm in distance_moduli],
     )
-
-
-def _star_counts(pixels, nside):
-    """Stars per HEALPix pixel, counted by chunks; pixel -1 (no coordinates) not counted."""
-    counts = np.zeros(hp.nside2npix(nside), dtype=np.int64)
-    for start in range(0, pixels.size, CHUNK_SIZE):
-        chunk = pixels[start:start + CHUNK_SIZE]
-        counts += np.bincount(chunk[chunk >= 0], minlength=counts.size)
-    return counts
 
 
 def _ring_mask(footprint_mask, nside, nest):
@@ -387,6 +380,12 @@ def generic_search_cmd_stars(
     search: PreparedGenericSearch, max_stars: int = CMD_SAMPLE_SIZE
 ) -> pd.DataFrame:
     """Stars kept by a search, at most ``max_stars``: for a CMD of the search.
+
+    For figures only: the CMD panel of
+    ``plotting.plot_generic_search.plot_generic_search_result``, which shows
+    where the match filter falls on the colour-magnitude distribution of the
+    stars. The maps do not use it: they count every star passing the cuts
+    (``generic_search_single_dm``), whatever ``max_stars``.
 
     Each star that passes the cuts is drawn with the same probability (about
     ``max_stars`` drawn; a fixed seed, ``CMD_SAMPLE_SEED``: the same stars at

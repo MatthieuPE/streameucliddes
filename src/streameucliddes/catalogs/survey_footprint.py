@@ -29,6 +29,8 @@ LOGGER = logging.getLogger(__name__)
 # Footprint maps of the surveys, next to the catalogs (see
 # euclid_des_catalog.DEFAULT_DATA_PATH): the data/ folder of the repository.
 FOOTPRINT_DIR = Path(__file__).resolve().parents[3] / "data" / "footprints"
+# Stars per chunk of the star counts: bounds their temporary arrays, whatever the catalog size
+CHUNK_SIZE = 500_000
 
 
 def survey_footprint_healpix_mask(
@@ -44,7 +46,10 @@ def survey_footprint_healpix_mask(
 
     Read from the footprint map of ``survey_name`` when there is one, brought to
     ``nside``. Otherwise computed from the star counts: a pixel is in the
-    footprint when it holds at least ``min_count`` stars.
+    footprint when it holds at least ``min_count`` stars. The stars are
+    counted by chunks of ``CHUNK_SIZE``: the temporary arrays do not grow
+    with the catalog, and ``ra``, ``dec`` (e.g. ``catalog["ra"].to_numpy()``,
+    views) are not copied.
 
     A footprint map is a HEALPix FITS file ``FOOTPRINT_DIR/<survey_name>.fits``, of
     any nside and ordering. A pixel is in the footprint when its value is
@@ -80,11 +85,14 @@ def survey_footprint_healpix_mask(
             return _footprint_mask_from_map(path, nside, nest=nest)
         LOGGER.info("No footprint map %s: footprint from the star counts.", path)
 
-    ra = np.asarray(ra, dtype=float)
+    ra = np.asarray(ra, dtype=float)  # no copy of float arrays
     dec = np.asarray(dec, dtype=float)
-    valid = np.isfinite(ra) & np.isfinite(dec)
-    pixels = hp.ang2pix(nside, ra[valid], dec[valid], lonlat=True, nest=nest)
-    counts = np.bincount(pixels, minlength=hp.nside2npix(nside))
+    counts = np.zeros(hp.nside2npix(nside), dtype=np.int64)
+    for start in range(0, ra.size, CHUNK_SIZE):
+        chunk_ra, chunk_dec = ra[start:start + CHUNK_SIZE], dec[start:start + CHUNK_SIZE]
+        valid = np.isfinite(chunk_ra) & np.isfinite(chunk_dec)
+        pixels = hp.ang2pix(nside, chunk_ra[valid], chunk_dec[valid], lonlat=True, nest=nest)
+        counts += np.bincount(pixels, minlength=counts.size)
     return counts < min_count
 
 
