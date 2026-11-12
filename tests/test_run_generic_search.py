@@ -10,6 +10,12 @@ import pytest
 from streameucliddes.analysis.generic_stream_search import generic_search_dm_scan, prepare_generic_search
 from PIL import Image
 
+from streameucliddes.catalogs.galstreams_catalog import (
+    galstreams_default_tracks,
+    load_galstreams,
+    select_galstreams_in_footprint,
+)
+from streameucliddes.workflows import run_generic_search as run_generic_search_module
 from streameucliddes.workflows.run_generic_search import run_generic_search, save_generic_search_healpix_maps
 
 pytestmark = pytest.mark.run_generic_search
@@ -103,8 +109,8 @@ def _gif_frames(path):
 
 
 # For each isochrone, in output_dir/<name>/age<age>_z<Z>/: one four-panel frame per distance
-# modulus, in their order, the gif of these frames only (not those of an earlier run), and
-# the maps file, equal to the scan
+# modulus, in their order, the gif of these frames only (not those of an earlier run); the
+# same for the corrected maps with the known tracks; and the maps file, equal to the scan
 def test_run_outputs(search, tmp_path):
     isochrone = search.isochrones[0]
     folder = tmp_path / "test_run" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
@@ -120,6 +126,12 @@ def test_run_outputs(search, tmp_path):
     ]
     assert all(path.exists() for path in outputs["figure_paths"])
     assert outputs["gif_path"] == folder / "test_run.gif" and _gif_frames(outputs["gif_path"]) == 3
+    assert [path.name for path in outputs["residual_figure_paths"]] == [
+        "test_run_residual_dm16.00.png", "test_run_residual_dm16.50.png", "test_run_residual_dm17.00.png"
+    ]
+    assert all(path.parent == folder / "frames_residual" for path in outputs["residual_figure_paths"])
+    assert outputs["residual_gif_path"] == folder / "test_run_residual.gif"
+    assert _gif_frames(outputs["residual_gif_path"]) == 3
 
     assert outputs["maps_path"] == folder / "test_run_residual.parquet"
     table, metadata = _read(outputs["maps_path"])
@@ -134,13 +146,27 @@ def test_run_from_catalog(catalog, tmp_path):
     grid = [{"age": 12.0, "metallicity": 0.0002}, {"age": 13.0, "metallicity": 0.0003}]
     summary = run_generic_search(
         catalog, nside=NSIDE, default_grid=grid, distance_moduli=[17.0], smoothing_deg=2.0,
-        map_key="density", output_dir=tmp_path,
+        map_key="density", known_tracks=False, output_dir=tmp_path,
     )
     assert [outputs["isochrone"] for outputs in summary["isochrones"]] == grid
     for outputs, isochrone in zip(summary["isochrones"], grid):
         folder = tmp_path / "generic" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
         assert outputs["maps_path"] == folder / "generic_density.parquet" and outputs["maps_path"].exists()
         assert _gif_frames(outputs["gif_path"]) == 1
+
+
+# The known tracks: the galstreams tracks crossing the footprint, one per stream, with their
+# stream names and whole tracks
+def test_known_tracks(search):
+    mws = load_galstreams()
+    tracks = run_generic_search_module._known_tracks(search.footprint_mask, mws)
+    selection = select_galstreams_in_footprint(mws, search.footprint_mask, nest=False)
+    expected = galstreams_default_tracks(selection, mws)
+    assert len(tracks) > 0  # e.g. SGP-S, Molonglo in ra -15 to 15, dec -30 to -10
+    assert [name for name, _, _ in tracks] == list(expected["stream_name"])
+    for (_, ra, dec), track_name in zip(tracks, expected["track_name"]):
+        np.testing.assert_array_equal(ra, mws[track_name].track.ra.deg)
+        np.testing.assert_array_equal(dec, mws[track_name].track.dec.deg)
 
 
 def test_run_errors(catalog, search, tmp_path):

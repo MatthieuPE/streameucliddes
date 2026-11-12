@@ -115,6 +115,8 @@ src/streameucliddes/
     plot_generic_search.py       plot_generic_search_result
                                  (old: plotting.plot_results_find_stream; generic-search
                                   branch: CMD selection, map, background, corrected map)
+                                 [NEW] plot_generic_search_residual_map (corrected map
+                                       alone, known stream tracks faint and dashed)
     plot_known_stream_search.py  [NEW] plot_known_stream_search_single_dm
                                  [NEW] plot_galstreams_selection
     plot_injected_stream_snr.py  plot_snr_contours, plot_snr_maps + helpers
@@ -130,7 +132,8 @@ src/streameucliddes/
                                        of the run arguments, to copy and update),
                                        RunConfig (YAML overrides)
     run_generic_search.py        run_generic_search
-                                 (old: loop, plots and gif of scan_find_stream)
+                                 (old: loop, plots and gif of scan_find_stream; gifs of the
+                                  four panels and of the corrected map with known tracks)
                                  [NEW] save_generic_search_healpix_maps
     run_known_stream_search.py   [NEW] run_known_stream_search
                                  [NEW] run_all_known_stream_searches

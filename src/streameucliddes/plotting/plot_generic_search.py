@@ -9,17 +9,22 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from streameucliddes.plotting.plot_cmd import plot_match_filter
-from streameucliddes.plotting.plot_known_stream_search import DENSITY_PERCENTILES
+from streameucliddes.plotting.plot_known_stream_search import (
+    DENSITY_PERCENTILES,
+    TRACK_COLOR,
+    _label_tracks,
+    _split_at_map_edge,
+)
 from streameucliddes.plotting.plot_sky_density import plot_2D_density_from_hp
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from typing import Any
 
     import pandas as pd
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
-    from numpy.typing import NDArray
+    from numpy.typing import ArrayLike, NDArray
 
 # The three maps of a result, with their titles
 MAP_PANELS = (
@@ -27,6 +32,9 @@ MAP_PANELS = (
     ("background", "Fitted background"),
     ("residual", "Corrected map (map - background)"),
 )
+# Known stream tracks on the corrected map: faint and dashed, to see the map through them
+KNOWN_TRACK_STYLE = {"color": TRACK_COLOR, "lw": 1.0, "ls": "--", "alpha": 0.5}
+KNOWN_TRACK_LABEL_ALPHA = 0.7
 
 
 def plot_generic_search_result(
@@ -111,12 +119,77 @@ def plot_generic_search_result(
             cmap=cmap, vmin=vmin, vmax=vmax, label_fontsize=9, title_fontsize=11, tick_labelsize=7,
         )
 
-    if title is None:
-        isochrone = result["isochrone"]
-        title = (f"dm {result['distance_modulus']:.1f} ({result['distance_kpc']:.1f} kpc), "
-                 f"{isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}")
-    fig.suptitle(title)
+    fig.suptitle(_title(result) if title is None else title)
     return fig, axes
+
+
+def plot_generic_search_residual_map(
+    result: Mapping[str, Any],
+    *,
+    tracks: Sequence[tuple[str, ArrayLike, ArrayLike]] = (),
+    lon_range: tuple[float, float] | None = None,
+    lat_range: tuple[float, float] | None = None,
+    cmap: str = "gray_r",
+    title: str | None = None,
+) -> tuple[Figure, Axes]:
+    """Corrected map of a generic search, with the known stream tracks over it.
+
+    The corrected map (``residual``) alone, as in the fourth panel of
+    ``plot_generic_search_result`` (same colour scale), larger. The tracks
+    are faint dashed lines, not to hide the map, each labelled on its part
+    inside the footprint.
+
+    The figure is not saved.
+
+    Parameters
+    ----------
+    result : mapping
+        Output of ``analysis.generic_stream_search.generic_search_single_dm``.
+    tracks : sequence of (label, ra, dec), optional
+        Tracks to draw (deg), e.g. the galstreams tracks crossing the
+        footprint.
+    lon_range, lat_range : tuple of float, optional
+        Ranges of the map (deg). Default: those of the footprint.
+    cmap : str, optional
+        Colour map.
+    title : str, optional
+        Default: the distance modulus and distance, and the isochrone.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax : skyproj.SkyAxes
+        Its ``plot`` and ``text`` take (ra, dec) in degrees.
+    """
+    footprint_mask = np.asarray(result["footprint_mask"], dtype=bool)
+    if lon_range is None or lat_range is None:
+        default_lon, default_lat = _footprint_lonlat_ranges(footprint_mask, nest=result["nest"])
+        lon_range = default_lon if lon_range is None else lon_range
+        lat_range = default_lat if lat_range is None else lat_range
+
+    fig, ax = plt.subplots(figsize=(10.0, 7.0))
+    values = np.ma.compressed(result["residual"])
+    vmin, vmax = tuple(np.percentile(values, DENSITY_PERCENTILES)) if values.size else (None, None)
+    fig, ax = plot_2D_density_from_hp(
+        np.ma.filled(np.ma.asarray(result["residual"], dtype=float), hp.UNSEEN), nest=result["nest"],
+        fig=fig, ax=ax, lon_range=lon_range, lat_range=lat_range, title=MAP_PANELS[2][1],
+        cmap=cmap, vmin=vmin, vmax=vmax, label_fontsize=11, title_fontsize=12, tick_labelsize=9,
+    )
+    lon_0 = ax.projection.proj4_params["lon_0"]  # the map edge is at lon_0 + 180
+    for _, ra, dec in tracks:
+        for ra_part, dec_part in _split_at_map_edge(np.asarray(ra, dtype=float), np.asarray(dec, dtype=float), lon_0):
+            ax.plot(ra_part, dec_part, **KNOWN_TRACK_STYLE)
+    _label_tracks(ax, tracks, footprint_mask, nest=result["nest"], alpha=KNOWN_TRACK_LABEL_ALPHA)
+
+    fig.suptitle(_title(result) if title is None else title)
+    return fig, ax
+
+
+def _title(result: Mapping[str, Any]) -> str:
+    """Distance modulus and distance, and isochrone of a map."""
+    isochrone = result["isochrone"]
+    return (f"dm {result['distance_modulus']:.1f} ({result['distance_kpc']:.1f} kpc), "
+            f"{isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}")
 
 
 def _footprint_lonlat_ranges(

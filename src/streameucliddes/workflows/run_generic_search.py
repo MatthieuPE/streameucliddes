@@ -21,8 +21,16 @@ from streameucliddes.analysis.generic_stream_search import (
     generic_search_dm_scan,
     prepare_generic_search,
 )
+from streameucliddes.catalogs.galstreams_catalog import (
+    galstreams_default_tracks,
+    load_galstreams,
+    select_galstreams_in_footprint,
+)
 from streameucliddes.plotting.make_videos import make_gif_from_plots
-from streameucliddes.plotting.plot_generic_search import plot_generic_search_result
+from streameucliddes.plotting.plot_generic_search import (
+    plot_generic_search_residual_map,
+    plot_generic_search_result,
+)
 from streameucliddes.workflows.run_known_stream_search import (
     FIGURE_DPI,
     FRAME_DURATION_MS,
@@ -34,6 +42,8 @@ from streameucliddes.workflows.run_known_stream_search import (
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Iterator
+
+    import galstreams
 
     from streameucliddes.analysis.generic_stream_search import PreparedGenericSearch
     from typing import Any
@@ -52,6 +62,8 @@ def run_generic_search(
     polynomial_degree: int = DEFAULT_POLYNOMIAL_DEGREE,
     n_workers: int = 1,
     map_key: str = "residual",
+    known_tracks: bool = True,
+    mws: galstreams.MWStreams | None = None,
     cmd_sample_size: int = CMD_SAMPLE_SIZE,
     output_dir: str | Path = DEFAULT_OUTPUT_DIR,
     name: str = DEFAULT_NAME,
@@ -72,8 +84,17 @@ def run_generic_search(
       ``frames/``, and their gif ``<name>.gif``
       (``plotting.make_videos.make_gif_from_plots``, from the frames of this
       run only);
+    - one figure per distance modulus of the corrected map alone, with the
+      known stream tracks
+      (``plotting.plot_generic_search.plot_generic_search_residual_map``) in
+      ``frames_residual/``, and their gif ``<name>_residual.gif``;
     - the map ``map_key`` of every distance modulus in one file,
       ``<name>_<map_key>.parquet`` (``save_generic_search_healpix_maps``).
+
+    The known stream tracks are the galstreams tracks crossing the footprint
+    (``catalogs.galstreams_catalog.select_galstreams_in_footprint``, with its
+    defaults), one per stream
+    (``catalogs.galstreams_catalog.galstreams_default_tracks``).
 
     The maps are computed one at a time
     (``analysis.generic_stream_search.generic_search_dm_scan``): each is
@@ -99,6 +120,11 @@ def run_generic_search(
     map_key : str, optional
         Map saved in the Parquet file: ``"residual"``, ``"density"`` or
         ``"background"``.
+    known_tracks : bool, optional
+        Draw the known stream tracks on the corrected maps.
+    mws : galstreams.MWStreams, optional
+        Default: ``catalogs.galstreams_catalog.load_galstreams()``, when
+        ``known_tracks``.
     cmd_sample_size : int, optional
         Maximum number of stars of the CMD panel.
     output_dir : str or pathlib.Path, optional
@@ -118,8 +144,8 @@ def run_generic_search(
     -------
     summary : dict
         ``name``, and ``isochrones``: one dict per isochrone, with
-        ``isochrone``, ``distance_moduli``, ``figure_paths``, ``gif_path`` and
-        ``maps_path``.
+        ``isochrone``, ``distance_moduli``, ``figure_paths``, ``gif_path``,
+        ``residual_figure_paths``, ``residual_gif_path`` and ``maps_path``.
 
     Raises
     ------
@@ -141,13 +167,15 @@ def run_generic_search(
     distance_moduli = search.distance_moduli if distance_moduli is None else [float(dm) for dm in distance_moduli]
     isochrones = search.isochrones if isochrone is None else [dict(isochrone)]
     cmd_stars = generic_search_cmd_stars(search, cmd_sample_size)
+    tracks = _known_tracks(search.footprint_mask, mws) if known_tracks else []
 
     summaries = []
     for isochrone in isochrones:
         folder = Path(output_dir) / name / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
         (folder / "frames").mkdir(parents=True, exist_ok=True)
+        (folder / "frames_residual").mkdir(exist_ok=True)
         color_lim, mag_lim = _cmd_ranges(cmd_stars, search.match_filter, distance_moduli, isochrone)
-        figure_paths = []
+        figure_paths, residual_figure_paths = [], []
 
         def drawn(scan: Iterator[tuple[float, dict]]) -> Iterator[tuple[float, dict]]:
             """The scan, each map drawn and saved before it goes on to the maps file."""
@@ -155,6 +183,10 @@ def run_generic_search(
                 fig, _ = plot_generic_search_result(result, cmd_stars=cmd_stars, color_lim=color_lim, mag_lim=mag_lim)
                 # 05.2f: the names sort as the distance moduli
                 figure_paths.append(_save(fig, folder / "frames" / f"{name}_dm{dm:05.2f}.png", dpi))
+                fig, _ = plot_generic_search_residual_map(result, tracks=tracks)
+                residual_figure_paths.append(
+                    _save(fig, folder / "frames_residual" / f"{name}_residual_dm{dm:05.2f}.png", dpi)
+                )
                 yield dm, result
                 gc.collect()  # the maps of this distance modulus, before the next one
 
@@ -167,11 +199,27 @@ def run_generic_search(
         )
         gif_path = folder / f"{name}.gif"
         make_gif_from_plots(gif_path, pattern=figure_paths, duration=frame_duration_ms)
+        residual_gif_path = folder / f"{name}_residual.gif"
+        make_gif_from_plots(residual_gif_path, pattern=residual_figure_paths, duration=frame_duration_ms)
         summaries.append({
             "isochrone": dict(isochrone), "distance_moduli": list(distance_moduli),
-            "figure_paths": figure_paths, "gif_path": gif_path, "maps_path": maps_path,
+            "figure_paths": figure_paths, "gif_path": gif_path,
+            "residual_figure_paths": residual_figure_paths, "residual_gif_path": residual_gif_path,
+            "maps_path": maps_path,
         })
     return {"name": name, "isochrones": summaries}
+
+
+def _known_tracks(
+    footprint_mask: np.ndarray, mws: galstreams.MWStreams | None
+) -> list[tuple[str, np.ndarray, np.ndarray]]:
+    """(stream name, ra, dec) of the galstreams tracks crossing a RING footprint, one per stream."""
+    mws = load_galstreams() if mws is None else mws
+    selection = select_galstreams_in_footprint(mws, footprint_mask, nest=False)
+    return [
+        (row.stream_name, mws[row.track_name].track.ra.deg, mws[row.track_name].track.dec.deg)
+        for row in galstreams_default_tracks(selection, mws).itertuples()
+    ]
 
 
 def save_generic_search_healpix_maps(

@@ -177,7 +177,6 @@ def plot_galstreams_selection(
         Its ``plot`` and ``text`` take (ra, dec) in degrees.
     """
     footprint_mask = np.asarray(footprint_mask, dtype=bool)
-    nside = hp.npix2nside(footprint_mask.size)
     if ax is None:
         fig, ax = plt.subplots(figsize=(8, 5))
     else:
@@ -187,30 +186,14 @@ def plot_galstreams_selection(
     footprint_map = np.where(footprint_mask, hp.UNSEEN, 1.0)  # UNSEEN: not drawn
     sky.draw_hpxmap(footprint_map, nest=nest, cmap=ListedColormap([FOOTPRINT_GREY]), vmin=0.0, vmax=2.0)
 
-    for track_name in selection["track_name"]:
-        points = mws[track_name].track
-        for ra_part, dec_part in _split_at_map_edge(points.ra.deg, points.dec.deg, lon_0):
-            sky.ax.plot(ra_part, dec_part, color=TRACK_COLOR, lw=1.5)
-
-    renderer = fig.canvas.get_renderer()
-    placed = []  # display boxes of the labels already placed
+    tracks = []
     for track_name, stream_name in zip(selection["track_name"], selection["stream_name"]):
         points = mws[track_name].track
-        ra, dec = points.ra.deg, points.dec.deg
-        inside = np.flatnonzero(~footprint_mask[hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)])
-        if inside.size == 0:
-            continue
-        label = sky.ax.text(
-            0.0, 0.0, stream_name, fontsize=7, color=INK, ha="center", va="bottom",
-            path_effects=[withStroke(linewidth=2.5, foreground="white")],
-        )
-        for fraction in (*LABEL_FRACTIONS, LABEL_FRACTIONS[0]):  # all overlap: the middle
-            point = inside[round(fraction * (inside.size - 1))]
-            label.set_position((ra[point], dec[point]))
-            box = label.get_window_extent(renderer)
-            if not any(box.overlaps(other) for other in placed):
-                break
-        placed.append(label.get_window_extent(renderer))
+        tracks.append((stream_name, points.ra.deg, points.dec.deg))
+    for _, ra, dec in tracks:
+        for ra_part, dec_part in _split_at_map_edge(ra, dec, lon_0):
+            sky.ax.plot(ra_part, dec_part, color=TRACK_COLOR, lw=1.5)
+    _label_tracks(sky.ax, tracks, footprint_mask, nest=nest)
 
     handles = [
         Patch(facecolor=FOOTPRINT_GREY, label="Footprint"),
@@ -220,6 +203,55 @@ def plot_galstreams_selection(
     sky.ax.legend(handles=handles, loc="upper right", fontsize=8)
     sky.ax.set_title(f"galstreams tracks selected: {len(selection)}", pad=20)
     return fig, sky.ax
+
+
+def _label_tracks(
+    ax: Axes,
+    tracks: Sequence[tuple[str, ArrayLike, ArrayLike]],
+    footprint_mask: NDArray[np.bool_],
+    *,
+    nest: bool,
+    alpha: float = 1.0,
+) -> None:
+    """Label each track on its part inside the footprint, without overlaps if possible.
+
+    The label goes in the middle of that part, or, if it would overlap a
+    label already placed (in the order of ``tracks``), at the first free
+    position along it (``LABEL_FRACTIONS``). A track with no point inside the
+    footprint is not labelled.
+
+    Parameters
+    ----------
+    ax : skyproj.SkyAxes
+        Sky axes: ``text`` takes (ra, dec) in degrees.
+    tracks : sequence of (label, ra, dec)
+        Track points (deg).
+    footprint_mask : numpy.ndarray of bool
+        HEALPix mask, True outside the footprint.
+    nest : bool
+        HEALPix ordering of ``footprint_mask``.
+    alpha : float, optional
+        Opacity of the labels.
+    """
+    nside = hp.npix2nside(np.size(footprint_mask))
+    renderer = ax.figure.canvas.get_renderer()
+    placed = []  # display boxes of the labels already placed
+    for name, ra, dec in tracks:
+        ra, dec = np.asarray(ra, dtype=float), np.asarray(dec, dtype=float)
+        inside = np.flatnonzero(~footprint_mask[hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)])
+        if inside.size == 0:
+            continue
+        label = ax.text(
+            0.0, 0.0, name, fontsize=7, color=INK, ha="center", va="bottom", alpha=alpha,
+            path_effects=[withStroke(linewidth=2.5, foreground="white", alpha=alpha)],
+        )
+        for fraction in (*LABEL_FRACTIONS, LABEL_FRACTIONS[0]):  # all overlap: the middle
+            point = inside[round(fraction * (inside.size - 1))]
+            label.set_position((ra[point], dec[point]))
+            box = label.get_window_extent(renderer)
+            if not any(box.overlaps(other) for other in placed):
+                break
+        placed.append(label.get_window_extent(renderer))
 
 
 def _central_ra(footprint_mask: NDArray[np.bool_], *, nest: bool) -> float:

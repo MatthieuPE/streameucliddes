@@ -24,6 +24,7 @@ search: generic
 # smoothing_deg: 0.3
 # polynomial_degree: 5         # fixed for now
 # map_key: residual            # map of the Parquet file: residual, density or background
+# known_tracks: true           # galstreams tracks on the residual gif
 #
 # output_dir: figures/outputs/generic_search   # gitignored
 # n_workers: 8

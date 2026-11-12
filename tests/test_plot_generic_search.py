@@ -17,7 +17,10 @@ from streameucliddes.analysis.generic_stream_search import (
     prepare_generic_search,
 )
 from streameucliddes.plotting import plot_generic_search
-from streameucliddes.plotting.plot_generic_search import plot_generic_search_result
+from streameucliddes.plotting.plot_generic_search import (
+    plot_generic_search_residual_map,
+    plot_generic_search_result,
+)
 
 pytestmark = pytest.mark.plot_generic_search
 
@@ -95,5 +98,57 @@ def test_plot_result_layout(search):
         fig, axes = plot_generic_search_result(result, color_lim=(-1.0, 1.5), mag_lim=(15.0, 27.0))
         fig.canvas.draw()
         positions.append([ax.get_position().bounds for ax in axes])
+        plt.close(fig)
+    np.testing.assert_allclose(positions[0], positions[1])
+
+
+# ===================================================
+# Test plot_generic_search_residual_map
+# ===================================================
+
+
+def _track_lines(ax):
+    return [line for line in ax.lines if line.get_linestyle() == "--"]
+
+
+# The corrected map, with the colour scale of the fourth panel; each track a faint dashed line
+# (one line per side of the map edge at ra = 180), labelled only if it crosses the footprint
+def test_plot_residual_map(result):
+    dec = np.linspace(-35.0, -5.0, 50)
+    tracks = [
+        ("Inside", np.full(50, 5.0), dec),  # across the footprint
+        ("Outside", np.full(50, 100.0), dec),  # outside
+        ("Edge", np.linspace(170.0, 190.0, 50), np.full(50, -20.0)),  # across the map edge
+    ]
+    fig, ax = plot_generic_search_residual_map(result, tracks=tracks)
+    low, high = plot_generic_search.DENSITY_PERCENTILES
+    np.testing.assert_allclose(_clim(ax), np.percentile(result["residual"].compressed(), [low, high]))
+    lines = _track_lines(ax)
+    assert len(lines) == 4  # Edge: two parts
+    style = plot_generic_search.KNOWN_TRACK_STYLE
+    assert all(line.get_alpha() == style["alpha"] < 1 and line.get_linewidth() == style["lw"] for line in lines)
+    names = {text.get_text() for text in ax.texts}
+    assert "Inside" in names and not names & {"Outside", "Edge"}
+    assert ax.get_title() == plot_generic_search.MAP_PANELS[2][1]
+    assert fig.get_suptitle().startswith("dm 17.0 (25.1 kpc), ")
+    plt.close(fig)
+
+
+# Without tracks: the map alone; the given title
+def test_plot_residual_map_no_tracks(result):
+    fig, ax = plot_generic_search_residual_map(result, title="My map")
+    assert not _track_lines(ax) and not ax.texts and fig.get_suptitle() == "My map"
+    plt.close(fig)
+
+
+# Frames of a gif: the map stays in place from one distance modulus to the next
+def test_plot_residual_map_layout(search):
+    tracks = [("Inside", np.full(50, 5.0), np.linspace(-35.0, -5.0, 50))]
+    positions = []
+    for dm in (15.0, 21.0):
+        result = generic_search_single_dm(distance_modulus=dm, search=search, smoothing_deg=2.0)
+        fig, ax = plot_generic_search_residual_map(result, tracks=tracks)
+        fig.canvas.draw()
+        positions.append(ax.get_position().bounds)
         plt.close(fig)
     np.testing.assert_allclose(positions[0], positions[1])

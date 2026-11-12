@@ -80,6 +80,8 @@ GENERIC_SEARCH_CONFIG = {
     "polynomial_degree": generic_stream_search.DEFAULT_POLYNOMIAL_DEGREE,
     # Map of the Parquet file: "residual", "density" or "background"
     "map_key": "residual",
+    # Known stream tracks (galstreams) on the corrected maps of the residual gif
+    "known_tracks": True,
     "cmd_sample_size": generic_stream_search.CMD_SAMPLE_SIZE,
     "output_dir": run_generic_search.DEFAULT_OUTPUT_DIR,
     "name": run_generic_search.DEFAULT_NAME,
