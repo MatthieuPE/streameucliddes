@@ -154,8 +154,10 @@ def prepare_match_filter_catalog(
     match_filter : mapping, optional
         See ``cmd_match_filter``. Default: ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
     cuts : mapping, optional
-        Format of ``catalogs.catalog_cuts.get_cut_mask``. Default:
-        ``default_error_cuts(match_filter)``; ``{}`` for no cut.
+        Format of ``catalogs.catalog_cuts.get_cut_mask``. They update the
+        default error cuts ``default_error_cuts(match_filter)``, which are
+        always applied: a cut on an error column replaces its default one,
+        ``(None, None)`` removes it.
     stream_frame : astropy.coordinates.BaseCoordinateFrame, optional
         Adds the ``phi1`` and ``phi2`` columns (deg) in this frame
         (``stream_frames.radec_to_phi12``).
@@ -186,7 +188,7 @@ def prepare_match_filter_catalog(
     if window is not None and stream_frame is None:
         raise ValueError("a window needs a stream_frame")
     match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
-    cuts = default_error_cuts(match_filter) if cuts is None else cuts
+    cuts = {**default_error_cuts(match_filter), **(cuts or {})}  # given cuts replace the defaults
 
     columns = match_filter_columns(match_filter)
     if stream_frame is not None:
