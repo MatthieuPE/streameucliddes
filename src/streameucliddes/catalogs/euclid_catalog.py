@@ -389,6 +389,28 @@ def open_euclid_catalog(
 # ===================================================
 
 
+def magnitude_columns(catalog):
+    """
+    Columns added by :func:`add_magnitudes` with its default bands.
+
+    Parameters
+    ----------
+    catalog : str
+        Key of :data:`CATALOGS`.
+
+    Returns
+    -------
+    list of str
+        ``ra``, ``dec`` and the ``<namespace>_<band>_obs`` / ``_err`` columns.
+    """
+    namespace = euclid_survey(catalog).namespace
+    columns = ["ra", "dec"]
+    for prefix, bands in [(DES_NAMESPACE, catalog_columns(catalog)["des_magnitudes"]),
+                          (namespace, EUCLID_FLUX_COLUMNS)]:
+        columns += [f"{prefix}_{band}_{kind}" for band in bands for kind in ("obs", "err")]
+    return columns
+
+
 def add_magnitudes(data, catalog, euclid_bands=tuple(EUCLID_FLUX_COLUMNS), des_bands=None):
     """
     Add harmonised, dereddened magnitudes and ``ra``/``dec`` columns, in place.
@@ -498,12 +520,13 @@ def get_euclid_stars(
 
     if data is None:
         names = set(available_columns(catalog, data_path))
-        read_cuts = {c: s for c, s in cuts.items() if c in names}
-        if len(read_cuts) < len(cuts):
-            missing = set(cuts) - set(read_cuts)
-            warnings.warn(
-                f"Some cut columns are not in the catalog and will be applied after reading: {missing}"
+        unknown = [c for c in cuts if c not in names and c not in magnitude_columns(catalog)]
+        if unknown:
+            raise KeyError(
+                f"Cut column(s) neither in the catalog nor added by add_magnitudes: {unknown}"
             )
+        # Cuts on catalog columns while reading, the others (magnitudes) after.
+        read_cuts = {c: s for c, s in cuts.items() if c in names}
         cuts = {c: s for c, s in cuts.items() if c not in names}
         data = open_euclid_catalog(
             catalog, columns=columns, cuts=read_cuts, ra_range=ra_range,

@@ -2,6 +2,7 @@
 
 import functools
 import importlib.util
+import warnings
 from pathlib import Path
 
 import numpy as np
@@ -154,6 +155,25 @@ def test_stars(catalog_dir):
     all_rows = euclid_catalog.add_magnitudes(data.copy(), catalog)
     assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
     assert get_cut_mask(stars, cuts).all()
+
+
+def test_magnitude_columns(catalog_dir):
+    catalog, _, data = catalog_dir
+    added = set(euclid_catalog.add_magnitudes(data.copy(), catalog).columns) - set(data.columns)
+    assert added == set(euclid_catalog.magnitude_columns(catalog))
+
+
+def test_stars_default_cuts_no_warning(catalog_dir):
+    catalog, path, _ = catalog_dir
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        euclid_catalog.get_euclid_stars(catalog, data_path=path, verbose=False)
+
+
+def test_stars_unknown_cut_column(catalog_dir):
+    catalog, path, _ = catalog_dir
+    with pytest.raises(KeyError, match="NOT_A_COLUMN"):
+        euclid_catalog.get_euclid_stars(catalog, cuts={"NOT_A_COLUMN": 0}, data_path=path)
 
 
 def test_match_columns(download):
