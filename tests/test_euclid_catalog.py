@@ -215,14 +215,40 @@ def test_column_dtypes(download):
         download.column_dtypes({"gaia_id": "char"}, {"gaia_id": "GAIA_ID"})
 
 
-def test_tile_query(download):
-    mapping = {"object_id": "OBJECT_ID", "right_ascension": "RIGHT_ASCENSION"}
-    assert download._tile_query("dr1.t", mapping, 12, None) == (
-        "SELECT object_id, right_ascension FROM dr1.t WHERE tile_index = 12"
-    )
-    assert download._tile_query("dr1.t", mapping, 12, "point_like_prob > 0.5").endswith(
+def test_tile_queries(download):
+    mapping = {"object_id": "OBJECT_ID", "declination": "DECLINATION"}
+    assert download._tile_queries("dr1.t", mapping, 12, None) == [
+        "SELECT object_id, declination FROM dr1.t WHERE tile_index = 12"
+    ]
+    assert download._tile_queries("dr1.t", mapping, 12, "point_like_prob > 0.5")[0].endswith(
         "WHERE tile_index = 12 AND (point_like_prob > 0.5)"
     )
+
+
+# Declination strips: every declination in exactly one strip, the extra cut in each
+def test_tile_queries_strips(download):
+    mapping = {"object_id": "OBJECT_ID", "declination": "DECLINATION"}
+    queries = download._tile_queries("dr1.t", mapping, 12, "spurious_flag = 0", dec_edges=[-50.5, -50.0])
+    assert len(queries) == 3
+    assert all(q.startswith("SELECT object_id, declination FROM dr1.t WHERE tile_index = 12") for q in queries)
+    assert all(q.endswith("AND (spurious_flag = 0)") for q in queries)
+
+    def strip_of(dec):  # evaluate the declination conditions of each query
+        hits = []
+        for i, query in enumerate(queries):
+            ok = True
+            for condition in query.split(" AND "):
+                if condition.startswith("declination >= "):
+                    ok &= dec >= float(condition.split(">= ")[1])
+                elif condition.startswith("declination < "):
+                    ok &= dec < float(condition.split("< ")[1])
+            if ok:
+                hits.append(i)
+        return hits
+
+    for dec in [-89.0, -50.5000000001, -50.5, -50.2, -50.0, 10.0]:
+        assert len(strip_of(dec)) == 1, dec
+    assert strip_of(-50.5) == [1] and strip_of(-50.0) == [2]
 
 
 @pytest.fixture
@@ -268,6 +294,30 @@ def test_download_tile_wrong_row_count(download, tap_csv, tmp_path, monkeypatch)
         download.download_tile("https://tap", "query", dtypes, mapping, path, expected=3, retries=3)
     assert waits == [30, 60]  # retried twice before giving up
     assert not path.exists()
+
+
+# A tile in several queries: the parts are put together, and their total checked
+def test_download_tile_in_parts(download, tap_csv, tmp_path, monkeypatch):
+    mapping, dtypes, big_id = tap_csv
+    header = "gaia_id,right_ascension,declination,flux_vis_psf\n"
+    answers = {"south": f"{header}{big_id},10.5,-30.5,1.5\n", "north": f"{header},11.5,-29.5,\n"}
+
+    class Response:
+        def __init__(self, query):
+            self.content = answers[query].encode()
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr("requests.get", lambda url, params, timeout: Response(params["QUERY"]))
+    monkeypatch.setattr(download.time, "sleep", lambda seconds: None)
+    path = tmp_path / "tile_1.parquet"
+    assert download.download_tile("https://tap", ["south", "north"], dtypes, mapping, path, expected=2) == 2
+    frame = pd.read_parquet(path)
+    assert list(frame["DECLINATION"]) == [-30.5, -29.5]
+    assert frame["GAIA_ID"].iloc[0] == big_id
+    with pytest.raises(RuntimeError, match="1 rows instead of 2"):
+        download.download_tile("https://tap", ["south"], dtypes, mapping, tmp_path / "t.parquet", expected=2)
 
 
 # A transfer cut short (fewer rows, or a last line cut in the middle) is retried

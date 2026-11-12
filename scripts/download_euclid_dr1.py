@@ -250,25 +250,68 @@ def column_dtypes(datatypes, mapping):
     return dtypes
 
 
-def _tile_query(table, mapping, tile, where):
-    """ADQL query of one tile."""
-    conditions = [f"{TILE_COLUMN} = {tile}"] + ([f"({where})"] if where else [])
-    return f"SELECT {', '.join(mapping)} FROM {table} WHERE {' AND '.join(conditions)}"
+def _tile_queries(table, mapping, tile, where, dec_edges=()):
+    """ADQL queries of one tile: one, or one per declination strip.
+
+    Parameters
+    ----------
+    table : str
+        TAP table.
+    mapping : dict
+        ``{source_name: wanted_name}``, from :func:`match_columns`.
+    tile : int
+        Value of :data:`TILE_COLUMN`.
+    where : str or None
+        Extra ADQL condition.
+    dec_edges : sequence of float
+        Inner edges of the declination strips (deg), increasing. The first strip
+        has no lower bound and the last no upper bound: every source of the tile is
+        in exactly one strip. Empty: one query for the whole tile.
+
+    Returns
+    -------
+    list of str
+    """
+    dec = next(k for k, v in mapping.items() if v == DEC_COLUMN)
+    bounds = [None, *dec_edges, None]
+    queries = []
+    for low, high in zip(bounds[:-1], bounds[1:]):
+        conditions = [f"{TILE_COLUMN} = {tile}"]
+        if low is not None:
+            conditions.append(f"{dec} >= {float(low):.10f}")
+        if high is not None:
+            conditions.append(f"{dec} < {float(high):.10f}")
+        if where:
+            conditions.append(f"({where})")
+        queries.append(f"SELECT {', '.join(mapping)} FROM {table} WHERE {' AND '.join(conditions)}")
+    return queries
 
 
-def download_tile(url, query, dtypes, mapping, path, expected=None, retries=3):
-    """Run one sync TAP query (CSV) and write the result, with EBV_SFD98, to ``path``.
+def dec_strip_edges(service, table, mapping, tile, n_strips):
+    """Inner edges of ``n_strips`` declination strips of equal width over a tile."""
+    dec = next(k for k, v in mapping.items() if v == DEC_COLUMN)
+    limits = service.search(
+        f"SELECT MIN({dec}) AS dec_min, MAX({dec}) AS dec_max FROM {table} "
+        f"WHERE {TILE_COLUMN} = {tile}"
+    ).to_table()
+    edges = np.linspace(float(limits["dec_min"][0]), float(limits["dec_max"][0]), n_strips + 1)
+    return list(edges[1:-1])
+
+
+def download_tile(url, queries, dtypes, mapping, path, expected=None, retries=3):
+    """Run sync TAP queries (CSV) of one tile and write the result, with EBV_SFD98, to ``path``.
 
     The file is written under a temporary name, then renamed: an existing ``path``
     is always complete. A failed attempt (request error, error answer, unreadable
-    CSV, or not ``expected`` rows) is retried after 30 s, 60 s...
+    CSV, or not ``expected`` rows in total) is retried after 30 s, 60 s...
 
     Parameters
     ----------
     url : str
         TAP service URL (``/sync`` is appended).
-    query : str
-        ADQL query.
+    queries : str or list of str
+        ADQL query, or queries of parts of the tile (:func:`_tile_queries`), whose
+        results are put together.
     dtypes, mapping : dict
         From :func:`column_dtypes` and :func:`match_columns`.
     path : Path
@@ -287,14 +330,20 @@ def download_tile(url, query, dtypes, mapping, path, expected=None, retries=3):
 
     import requests
 
-    params = {"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv", "QUERY": query}
+    def fetch(query):
+        params = {"REQUEST": "doQuery", "LANG": "ADQL", "FORMAT": "csv", "QUERY": query}
+        response = requests.get(f"{url}/sync", params=params, timeout=1800)
+        response.raise_for_status()
+        if response.content.startswith(b"<"):  # VOTable error instead of CSV
+            raise RuntimeError(response.text[:1000])
+        return pd.read_csv(io.BytesIO(response.content), dtype=dtypes)
+
+    queries = [queries] if isinstance(queries, str) else list(queries)
     for attempt in range(1, retries + 1):
         try:
-            response = requests.get(f"{url}/sync", params=params, timeout=1800)
-            response.raise_for_status()
-            if response.content.startswith(b"<"):  # VOTable error instead of CSV
-                raise RuntimeError(response.text[:1000])
-            frame = pd.read_csv(io.BytesIO(response.content), dtype=dtypes).rename(columns=mapping)
+            parts = [fetch(query) for query in queries]
+            frame = pd.concat(parts, ignore_index=True) if len(parts) > 1 else parts[0]
+            frame = frame.rename(columns=mapping)
             # A transfer cut short can still be a valid CSV: check the number of rows
             if expected is not None and len(frame) != expected:
                 raise RuntimeError(f"{len(frame):,} rows instead of {expected:,}")
@@ -370,14 +419,24 @@ def query_tap(args, output):
     print(f"{len(tiles):,} tiles ({tiles['n'].sum():,} sources), "
           f"{len(tiles) - len(todo):,} already done, {args.parallel_tiles} at once")
 
+    # Large tiles in declination strips: ESA cut the answer of the largest DR1 tile
+    # (787,520 rows) short three times in a row, while tiles of 330 k rows came whole.
+    queries = {}
+    for tile, n in zip(todo[TILE_COLUMN], todo["n"]):
+        n_strips = int(np.ceil(n / args.max_rows_per_query))
+        edges = dec_strip_edges(service, args.table, mapping, tile, n_strips) if n_strips > 1 else ()
+        queries[tile] = _tile_queries(args.table, mapping, tile, args.where, edges)
+        if n_strips > 1:
+            print(f"tile {tile} ({n:,} sources): {n_strips} declination strips")
+
     url = TAP_URLS.get(args.tap, args.tap)
     t0 = time.time()
     n_todo, n_done, failed = todo["n"].sum(), 0, []
     with ProcessPoolExecutor(args.parallel_tiles) as pool:
         futures = {
             pool.submit(
-                download_tile, url, _tile_query(args.table, mapping, tile, args.where),
-                dtypes, mapping, files[tile], None if args.where else n,
+                download_tile, url, queries[tile], dtypes, mapping, files[tile],
+                None if args.where else n,
             ): (tile, n)
             for tile, n in zip(todo[TILE_COLUMN], todo["n"])
         }
@@ -466,6 +525,8 @@ def parse_args(argv=None):
                     help="tiles downloaded at once (tap; 8 is near ESA's maximum speed)")
     ap.add_argument("--max-tiles", type=int, default=None,
                     help="only the first N tiles (tap), for a trial run")
+    ap.add_argument("--max-rows-per-query", type=int, default=300_000,
+                    help="larger tiles are queried in declination strips (tap)")
     ap.add_argument("--pixel-threshold", type=int, default=1_000_000,
                     help="max rows per HATS partition")
     ap.add_argument("--workers", type=int, default=4, help="dask workers of the HATS step")
