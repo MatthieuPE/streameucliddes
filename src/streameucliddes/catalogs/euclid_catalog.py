@@ -236,7 +236,7 @@ def default_star_cuts(catalog):
 
     # Euclid column names without suffix: "_euclid" added for crossmatched catalogs
     cuts.update({euclid_column(catalog, c): spec for c, spec in EUCLID_QUALITY_CUTS.items()})
-    cuts[euclid_column(catalog, "POINT_LIKE_PROB")] = (0.7, None)  # point-like
+    cuts[euclid_column(catalog, "POINT_LIKE_PROB")] = (0.5, None)  # point-like
     cuts[f"{survey.namespace}_VIS_obs"] = (survey.saturation["VIS"], None)  # not saturated
     cuts[euclid_column(catalog, "ELLIPTICITY")] = (None, 0.2)  # not elongated
     cuts[euclid_column(catalog, "MUMAX_MINUS_MAG")] = (-3.25, -2.7)  # within the expected range
@@ -497,7 +497,7 @@ def add_magnitudes(data, catalog, euclid_bands=tuple(EUCLID_FLUX_COLUMNS), des_b
 
 def get_euclid_stars(
     catalog, data=None, cuts=None, columns=None, ra_range=None, dec_range=None,
-    data_path=None, verbose=True,
+    data_path=None, verbose=True, subset=None,
 ):
     """
     Get the stars of a Euclid catalog, with harmonised magnitudes.
@@ -531,6 +531,31 @@ def get_euclid_stars(
     """
     cuts = default_star_cuts(catalog) if cuts is None else cuts
 
+    if subset is not None:
+        if ra_range is not None or dec_range is not None:
+            raise ValueError("subset cannot be used with ra_range or dec_range")
+        if subset == "north":
+            ra_range = (0, 360)
+            dec_range = (0, 90)
+        elif subset == "south":
+            ra_range = (0, 360)
+            dec_range = (-90, 0)
+        elif subset == "northwest":
+            ra_range = (180, 360)
+            dec_range = (0, 90)
+        elif subset == "northeast":
+            ra_range = (0, 180)
+            dec_range = (0, 90)
+        elif subset == "southwest":
+            ra_range = (180, 360)
+            dec_range = (-90, 0)
+        elif subset == "southeast":
+            ra_range = (0, 180)
+            dec_range = (-90, 0)
+        else:
+            raise ValueError(f"Unknown subset {subset!r}: choose one of "
+                             "'north', 'south', 'northwest', 'northeast', "
+                             "'southwest', 'southeast'")
     if data is None:
         names = set(available_columns(catalog, data_path))
         unknown = [c for c in cuts if c not in names and c not in magnitude_columns(catalog)]
