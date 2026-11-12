@@ -259,9 +259,35 @@ def test_download_tile(download, tap_csv, tmp_path):
     assert frame["RIGHT_ASCENSION"].dtype == np.float64
 
 
-def test_download_tile_wrong_row_count(download, tap_csv, tmp_path):
+def test_download_tile_wrong_row_count(download, tap_csv, tmp_path, monkeypatch):
     mapping, dtypes, _ = tap_csv
+    waits = []
+    monkeypatch.setattr(download.time, "sleep", waits.append)
     path = tmp_path / "tile_1.parquet"
-    with pytest.raises(RuntimeError):
-        download.download_tile("https://tap", "query", dtypes, mapping, path, expected=3)
+    with pytest.raises(RuntimeError, match="2 rows instead of 3"):
+        download.download_tile("https://tap", "query", dtypes, mapping, path, expected=3, retries=3)
+    assert waits == [30, 60]  # retried twice before giving up
     assert not path.exists()
+
+
+# A transfer cut short (fewer rows, or a last line cut in the middle) is retried
+@pytest.mark.parametrize("cut", ["fewer rows", "line cut"])
+def test_download_tile_retries_short_answer(download, tap_csv, tmp_path, monkeypatch, cut):
+    mapping, dtypes, big_id = tap_csv
+    header = "gaia_id,right_ascension,declination,flux_vis_psf\n"
+    full = f"{header}{big_id},10.5,-30.5,1.5\n,11.5,-31.5,\n"
+    short = f"{header}{big_id},10.5,-30.5,1.5\n" if cut == "fewer rows" else f"{header}{big_id},10.5,-30.5,1.5\n,11.5,\"-3"
+    answers = iter([short, full])
+
+    class Response:
+        def __init__(self):
+            self.content = next(answers).encode()
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr("requests.get", lambda *args, **kwargs: Response())
+    monkeypatch.setattr(download.time, "sleep", lambda seconds: None)
+    path = tmp_path / "tile_1.parquet"
+    assert download.download_tile("https://tap", "query", dtypes, mapping, path, expected=2) == 2
+    assert len(pd.read_parquet(path)) == 2

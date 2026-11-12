@@ -260,7 +260,8 @@ def download_tile(url, query, dtypes, mapping, path, expected=None, retries=3):
     """Run one sync TAP query (CSV) and write the result, with EBV_SFD98, to ``path``.
 
     The file is written under a temporary name, then renamed: an existing ``path``
-    is always complete. Failed requests are retried after 30 s, 60 s...
+    is always complete. A failed attempt (request error, error answer, unreadable
+    CSV, or not ``expected`` rows) is retried after 30 s, 60 s...
 
     Parameters
     ----------
@@ -293,15 +294,16 @@ def download_tile(url, query, dtypes, mapping, path, expected=None, retries=3):
             response.raise_for_status()
             if response.content.startswith(b"<"):  # VOTable error instead of CSV
                 raise RuntimeError(response.text[:1000])
+            frame = pd.read_csv(io.BytesIO(response.content), dtype=dtypes).rename(columns=mapping)
+            # A transfer cut short can still be a valid CSV: check the number of rows
+            if expected is not None and len(frame) != expected:
+                raise RuntimeError(f"{len(frame):,} rows instead of {expected:,}")
             break
-        except (requests.RequestException, RuntimeError):
+        except (requests.RequestException, RuntimeError, ValueError):  # ValueError: truncated CSV
             if attempt == retries:
                 raise
             time.sleep(30 * attempt)
 
-    frame = pd.read_csv(io.BytesIO(response.content), dtype=dtypes).rename(columns=mapping)
-    if expected is not None and len(frame) != expected:
-        raise RuntimeError(f"{len(frame):,} rows instead of {expected:,}")
     add_sfd_ebv(frame)
     tmp = path.with_suffix(".tmp")
     frame.to_parquet(tmp, index=False)
