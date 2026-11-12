@@ -96,6 +96,48 @@ def survey_footprint_healpix_mask(
     return counts < min_count
 
 
+def convert_footprint_healpix_mask(
+    footprint_mask: ArrayLike,
+    nside: int,
+    *,
+    nest: bool,
+    nest_out: bool,
+) -> NDArray[np.bool_]:
+    """A HEALPix footprint mask at another nside and ordering.
+
+    At a coarser nside, a pixel is outside the footprint when any of its
+    sub-pixels is: the pixels left inside are fully covered (no partial
+    pixels at the edges, e.g. for star counts per pixel). At a finer nside,
+    the sub-pixels take the value of their pixel. (A footprint map read by
+    ``survey_footprint_healpix_mask`` keeps instead the pixels at least half
+    covered.)
+
+    Parameters
+    ----------
+    footprint_mask : array_like of bool
+        HEALPix mask, True outside the footprint.
+    nside : int
+        HEALPix resolution of the output.
+    nest : bool
+        HEALPix ordering of ``footprint_mask``.
+    nest_out : bool
+        HEALPix ordering of the output.
+
+    Returns
+    -------
+    mask : numpy.ndarray of bool, shape (12 * nside**2,)
+        True outside the footprint.
+    """
+    footprint_mask = np.asarray(footprint_mask, dtype=bool)
+    order_in, order_out = ("NESTED" if nest else "RING"), ("NESTED" if nest_out else "RING")
+    if hp.npix2nside(footprint_mask.size) == nside:
+        if nest == nest_out:
+            return footprint_mask.copy()
+        return hp.reorder(footprint_mask, inp=order_in, out=order_out).astype(bool)
+    outside_fraction = hp.ud_grade(footprint_mask.astype(float), nside, order_in=order_in, order_out=order_out)
+    return outside_fraction > 0
+
+
 def _footprint_mask_from_map(path: Path, nside: int, *, nest: bool) -> NDArray[np.bool_]:
     """Mask (True outside) of the footprint map in ``path``, brought to ``nside``."""
     values = hp.read_map(path, nest=nest)  # converted to the requested ordering

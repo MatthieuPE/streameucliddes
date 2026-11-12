@@ -47,7 +47,10 @@ from streameucliddes.analysis.cmd_match_filter import (
 )
 from streameucliddes.analysis.known_stream_search import DEFAULT_DISTANCE_MODULI
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
-from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
+from streameucliddes.catalogs.survey_footprint import (
+    convert_footprint_healpix_mask,
+    survey_footprint_healpix_mask,
+)
 from streameucliddes.unit_conversions import convert_DM_to_kpc
 
 if TYPE_CHECKING:
@@ -153,7 +156,10 @@ def prepare_generic_search(
         HEALPix resolution of the maps.
     footprint_mask : numpy.ndarray of bool, optional
         HEALPix mask, True outside the footprint (needs ``nest``), e.g.
-        ``catalogs.survey_footprint.survey_footprint_healpix_mask``. Default:
+        ``catalogs.survey_footprint.survey_footprint_healpix_mask``; of any
+        nside and ordering, put in RING at ``nside``
+        (``catalogs.survey_footprint.convert_footprint_healpix_mask``: a
+        pixel is outside if any part of it is). Default:
         the pixels with at least one star of the catalog, cut or not
         (``survey_footprint_healpix_mask``, by chunks).
     nest : bool, optional
@@ -183,7 +189,10 @@ def prepare_generic_search(
             catalog[ra_col].to_numpy(), catalog[dec_col].to_numpy(), nside, nest=False
         )
     else:
-        footprint_mask = _ring_mask(footprint_mask, nside, nest)
+        if nest is None:
+            raise ValueError("A footprint_mask needs nest.")
+        # in RING at nside; a pixel is outside if any part of it is
+        footprint_mask = convert_footprint_healpix_mask(footprint_mask, nside, nest=nest, nest_out=False)
     if footprint_mask.all():
         raise ValueError("Empty footprint: no pixel inside.")
     inside_lon, _ = hp.pix2ang(nside, np.flatnonzero(~footprint_mask), lonlat=True)
@@ -199,18 +208,6 @@ def prepare_generic_search(
         footprint_centre_lon=float(centre_lon % 360.0), match_filter=match_filter, isochrones=list(isochrones),
         distance_moduli=[float(dm) for dm in distance_moduli],
     )
-
-
-def _ring_mask(footprint_mask, nside, nest):
-    """A HEALPix mask (True outside) in RING at nside; a pixel is outside if any part of it is."""
-    if nest is None:
-        raise ValueError("A footprint_mask needs nest.")
-    footprint_mask = np.asarray(footprint_mask, dtype=bool)
-    if nest:
-        footprint_mask = hp.reorder(footprint_mask, n2r=True)
-    if hp.npix2nside(footprint_mask.size) != nside:
-        footprint_mask = hp.ud_grade(footprint_mask.astype(float), nside, order_in="RING", order_out="RING") > 0
-    return footprint_mask
 
 
 # ===================================================

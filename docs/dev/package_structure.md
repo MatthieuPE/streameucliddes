@@ -62,6 +62,8 @@ src/streameucliddes/
     dust_correction.py           correct_dust_map          (old: missing, locate it)
     survey_footprint.py          [NEW] survey_footprint_healpix_mask
                                  [NEW] survey_footprint_phi12_mask
+                                 [NEW] convert_footprint_healpix_mask (nside, ordering;
+                                       generic search)
     galstreams_catalog.py        [NEW] load_galstreams
                                  [NEW] galstreams_track_length_in_footprint
                                  [NEW] select_galstreams_in_footprint
