@@ -116,7 +116,8 @@ def test_prepare(catalog, monkeypatch):
 # Given values: kept; a NESTED footprint, or at another nside, is put in RING at nside
 def test_prepare_given_values(catalog):
     grid = [{"age": 11.0, "metallicity": 0.0002}, {"age": 13.0, "metallicity": 0.0004}]
-    search = prepare_generic_search(catalog, nside=NSIDE, default_grid=grid, distance_moduli=[16.0, 17.0], cuts={})
+    search = prepare_generic_search(catalog, nside=NSIDE, default_grid=grid, distance_moduli=[16.0, 17.0],
+                                    cuts={c: (None, None) for c in default_error_cuts()})
     assert search.isochrones == grid and search.distance_moduli == [16.0, 17.0]
     assert search.keep.sum() == len(catalog) - 2  # no cut: all but the two without coordinates
     assert prepare_generic_search(catalog, nside=NSIDE, isochrone=grid[1], default_grid=grid).isochrones == [grid[1]]
@@ -143,8 +144,9 @@ def test_prepare_magnitude_cuts(catalog):
         limit: prepare_generic_search(catalog, nside=NSIDE, cuts={VIS: (None, limit)}) for limit in (24.0, 22.0)
     }
     finite = (np.isfinite(catalog["ra"]) & np.isfinite(catalog["dec"])).to_numpy()
+    errors = get_cut_mask(catalog, default_error_cuts())  # the default error cuts stay
     for limit, search in searches.items():
-        np.testing.assert_array_equal(search.keep, finite & (catalog[VIS] <= limit).to_numpy())
+        np.testing.assert_array_equal(search.keep, finite & errors & (catalog[VIS] <= limit).to_numpy())
     faint, bright = searches[24.0], searches[22.0]
     assert 0 < bright.keep.sum() < faint.keep.sum()
     assert not (bright.keep & ~faint.keep).any()  # a subset

@@ -29,6 +29,8 @@ MATCH_FILTER_GRI = {
     "reference_band": ("des_yr6", "g"),
     "color_bands": [("des_yr6", "r"), ("des_yr6", "i")],
 }
+# No cut at all: the default error cuts of the default match filter removed
+NO_ERROR_CUTS = {column: (None, None) for column in default_error_cuts()}
 
 
 @pytest.fixture
@@ -112,21 +114,33 @@ def test_prepare_default_cuts(catalog):
     assert list(stars.columns) == ["euclid_q1_VIS_obs", "euclid_q1_H_obs", "euclid_q1_VIS_err", "euclid_q1_H_err"]
     des = prepare_match_filter_catalog(catalog, DES_GR_MATCH_FILTER)
     assert list(des.columns) == ["des_yr6_g_obs", "des_yr6_r_obs", "des_yr6_g_err", "des_yr6_r_err"]
-    assert len(prepare_match_filter_catalog(catalog, cuts={})) == len(catalog)  # no cut
+    assert prepare_match_filter_catalog(catalog, cuts={}).index.equals(stars.index)  # {}: the defaults
+    assert len(prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS)) == len(catalog)  # no cut
 
 
-# The given cuts replace the default ones
+# The given cuts are added to the default error cuts; on an error column, they replace its default
 def test_prepare_given_cuts(catalog):
+    error_cuts = default_error_cuts(MATCH_FILTER_GRI)
     stars = prepare_match_filter_catalog(catalog, MATCH_FILTER_GRI, cuts={"des_yr6_i_obs": (None, 22.0)})
-    assert stars.index.equals(catalog.index[catalog["des_yr6_i_obs"] <= 22.0])
-    assert catalog.loc[stars.index, "des_yr6_g_err"].max() > 0.2  # no error cut
-    assert "des_yr6_g_err" not in stars.columns  # not a cut column any more
+    passing = catalog["des_yr6_i_obs"] <= 22.0
+    for column, (_, err_max) in error_cuts.items():
+        passing &= catalog[column] <= err_max
+    assert 0 < len(stars) and stars.index.equals(catalog.index[passing])
+
+    replaced = prepare_match_filter_catalog(catalog, MATCH_FILTER_GRI, cuts={"des_yr6_g_err": (None, 0.05)})
+    passing = catalog["des_yr6_g_err"] <= 0.05
+    for column in ("des_yr6_r_err", "des_yr6_i_err"):  # still the default
+        passing &= catalog[column] <= error_cuts[column][1]
+    assert 0 < len(replaced) and replaced.index.equals(catalog.index[passing])
+
+    removed = prepare_match_filter_catalog(catalog, MATCH_FILTER_GRI, cuts={"des_yr6_g_err": (None, None)})
+    assert catalog.loc[removed.index, "des_yr6_g_err"].max() > error_cuts["des_yr6_g_err"][1]
 
 
 # With a frame: phi1/phi2 of radec_to_phi12, and only the stars inside the window
 def test_prepare_stream_frame_window(catalog, gc_frame):
     window = (-5.0, 5.0, -2.0, 2.0)
-    stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=gc_frame, window=window)
+    stars = prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS, stream_frame=gc_frame, window=window)
     phi1, phi2 = radec_to_phi12(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(), gc_frame)
     inside = (phi1 >= -5) & (phi1 <= 5) & (phi2 >= -2) & (phi2 <= 2)
     assert 0 < len(stars) == inside.sum()
@@ -134,7 +148,7 @@ def test_prepare_stream_frame_window(catalog, gc_frame):
     np.testing.assert_allclose(stars["phi2"], phi2[inside])
     assert {"ra", "dec"} <= set(stars.columns) and "other" not in stars.columns
 
-    all_stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=gc_frame)  # no window
+    all_stars = prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS, stream_frame=gc_frame)  # no window
     assert len(all_stars) == len(catalog) and "phi1" in all_stars.columns
 
 
@@ -171,7 +185,7 @@ def test_prepare_window_brute_force(rng, monkeypatch, frame_name, window):
     monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", 7_777)
     catalog = _full_sky_catalog(rng, 200_000)
     frame = FRAMES[frame_name]
-    stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=frame, window=window)
+    stars = prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS, stream_frame=frame, window=window)
 
     phi1, phi2 = radec_to_phi12(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(), frame)
     inside = (phi1 >= window[0]) & (phi1 <= window[1]) & (phi2 >= window[2]) & (phi2 <= window[3])
@@ -193,7 +207,7 @@ def test_prepare_window_transforms_few_stars(rng, monkeypatch):
 
     monkeypatch.setattr(catalog_preparation, "radec_to_phi12", counting_radec_to_phi12)
     stars = prepare_match_filter_catalog(
-        catalog, cuts={}, stream_frame=FRAMES["across ra = 0"], window=(-20.0, 20.0, -3.0, 3.0)
+        catalog, cuts=NO_ERROR_CUTS, stream_frame=FRAMES["across ra = 0"], window=(-20.0, 20.0, -3.0, 3.0)
     )
     # Window of 240 deg^2 (0.6 % of the sky): a margin of about a HEALPix pixel around it
     assert len(stars) <= sum(transformed) < 2 * len(stars)
@@ -203,7 +217,7 @@ def test_prepare_window_transforms_few_stars(rng, monkeypatch):
 # Stars with NaN coordinates are never in a window
 def test_prepare_window_nan(catalog, gc_frame):
     catalog.loc[catalog.index[:100], "ra"] = np.nan
-    stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=gc_frame, window=(-5.0, 5.0, -2.0, 2.0))
+    stars = prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS, stream_frame=gc_frame, window=(-5.0, 5.0, -2.0, 2.0))
     assert not stars.index.isin(catalog.index[:100]).any()
     assert np.isfinite(stars[["phi1", "phi2"]].to_numpy()).all()
 

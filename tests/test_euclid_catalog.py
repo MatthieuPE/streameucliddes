@@ -38,6 +38,13 @@ def _mock_catalog(catalog, path, rng, n=2000):
     columns = euclid_catalog.catalog_columns(catalog)
     column = functools.partial(euclid_catalog.euclid_column, catalog)
     data = {c: rng.uniform(0.0, 1.0, n) for c in euclid_catalog.default_columns(catalog)}
+    # Columns of the default range cuts: values around the bounds, some passing, whatever the bounds
+    for cut_column, spec in euclid_catalog.default_star_cuts(catalog).items():
+        if cut_column in data and isinstance(spec, tuple):
+            low, high = spec
+            low = high - 1.0 if low is None else low
+            high = low + 1.0 if high is None else high
+            data[cut_column] = rng.uniform(low - (high - low), high + (high - low), n)
     data[column("OBJECT_ID")] = np.arange(n)
     data[columns["ra"]] = rng.uniform(0.0, 360.0, n)
     data[columns["dec"]] = rng.uniform(-60.0, -30.0, n)

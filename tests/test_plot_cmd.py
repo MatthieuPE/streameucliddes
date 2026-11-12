@@ -9,7 +9,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from streameucliddes.analysis.catalog_preparation import prepare_match_filter_catalog
+from streameucliddes.analysis.catalog_preparation import default_error_cuts, prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_MATCH_FILTER,
     match_filter_polygons,
@@ -92,9 +92,10 @@ def test_plot_match_filter_catalog(catalog):
 # Prepared stars are used as they are (no cut), and give the same figure as the catalog
 # prepared without cut
 def test_plot_match_filter_stars(catalog):
-    stars = prepare_match_filter_catalog(catalog, cuts={})
+    no_cut = {column: (None, None) for column in default_error_cuts()}  # default error cuts removed
+    stars = prepare_match_filter_catalog(catalog, cuts=no_cut)
     fig, (ax,) = plot_match_filter(DM, ISOCHRONE, stars=stars, color_lim=COLOR_LIM, mag_lim=MAG_LIM)
-    fig_catalog, (ax_catalog,) = plot_match_filter(DM, ISOCHRONE, catalog=catalog, cuts={},
+    fig_catalog, (ax_catalog,) = plot_match_filter(DM, ISOCHRONE, catalog=catalog, cuts=no_cut,
                                                    color_lim=COLOR_LIM, mag_lim=MAG_LIM)
     assert len(stars) == len(catalog)
     np.testing.assert_array_equal(ax.images[0].get_array(), ax_catalog.images[0].get_array())
