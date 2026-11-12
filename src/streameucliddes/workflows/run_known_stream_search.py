@@ -214,7 +214,7 @@ def run_all_known_stream_searches(
     ----------
     catalog : pandas.DataFrame
         Stars, with ``ra``, ``dec`` (deg), e.g.
-        ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
+        ``catalogs.euclid_catalog.get_euclid_stars()``.
     track_names : sequence of str, optional
         Tracks to search, among the selected ones (any track of a stream).
     mws : galstreams.MWStreams, optional

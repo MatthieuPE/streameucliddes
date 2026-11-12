@@ -150,7 +150,7 @@ def prepare_match_filter_catalog(
     Parameters
     ----------
     catalog : pandas.DataFrame
-        Stars, e.g. ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
+        Stars, e.g. ``catalogs.euclid_catalog.get_euclid_stars()``.
     match_filter : mapping, optional
         See ``cmd_match_filter``. Default: ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
     cuts : mapping, optional

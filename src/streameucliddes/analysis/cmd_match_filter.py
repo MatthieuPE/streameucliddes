@@ -9,8 +9,8 @@ A match filter is ``{"name", "reference_band": (namespace, band),
 A star is selected when it is inside the polygon of every colour
 ``reference_band - color_band``, the magnitude axis being ``reference_band``.
 Magnitudes are the ``<namespace>_<band>_obs`` columns of
-``catalogs.euclid_des_catalog`` (the streamobs convention), used as they are:
-the Euclid x DES magnitudes are already dereddened.
+``catalogs.euclid_catalog`` (the streamobs convention), used as they are:
+the catalog magnitudes are already dereddened.
 """
 
 from __future__ import annotations
