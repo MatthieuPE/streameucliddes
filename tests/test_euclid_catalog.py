@@ -31,6 +31,7 @@ def download():
 
 
 CATALOG_NAMES = ["euclid_dr1", "euclid_q1_des"]  # Euclid only, crossmatched with DES
+PASS_FRACTION = 0.8  # of the mock sources, for each default cut
 
 
 def _mock_catalog(catalog, path, rng, n=2000):
@@ -38,17 +39,24 @@ def _mock_catalog(catalog, path, rng, n=2000):
     columns = euclid_catalog.catalog_columns(catalog)
     column = functools.partial(euclid_catalog.euclid_column, catalog)
     data = {c: rng.uniform(0.0, 1.0, n) for c in euclid_catalog.default_columns(catalog)}
-    # Columns of the default range cuts: values around the bounds, some passing, whatever the bounds
+    # Columns of the default cuts: about PASS_FRACTION of the values pass each cut, whatever
+    # the cut values (with many cuts, enough stars pass them all)
     for cut_column, spec in euclid_catalog.default_star_cuts(catalog).items():
-        if cut_column in data and isinstance(spec, tuple):
+        if cut_column not in data:
+            continue
+        if isinstance(spec, tuple):  # range: values in it, and a margin around it that fails
             low, high = spec
             low = high - 1.0 if low is None else low
             high = low + 1.0 if high is None else high
-            data[cut_column] = rng.uniform(low - (high - low), high + (high - low), n)
+            margin = (high - low) * (1.0 / PASS_FRACTION - 1.0) / 2.0
+            data[cut_column] = rng.uniform(low - margin, high + margin, n)
+        else:  # accepted value(s), or one more value that fails
+            accepted = sorted(spec) if isinstance(spec, (list, set)) else [spec]
+            passing = rng.random(n) < PASS_FRACTION
+            data[cut_column] = np.where(passing, rng.choice(accepted, n), max(accepted) + 1)
     data[column("OBJECT_ID")] = np.arange(n)
     data[columns["ra"]] = rng.uniform(0.0, 360.0, n)
     data[columns["dec"]] = rng.uniform(-60.0, -30.0, n)
-    data[column("SPURIOUS_FLAG")] = rng.integers(0, 2, n)
     data[column("POINT_LIKE_PROB")][::7] = np.nan  # NIR-only sources
     for flux_col, err_col in columns["euclid_fluxes"].values():
         data[flux_col] = rng.uniform(-1.0, 100.0, n)  # micro-Jy, some non-positive
@@ -57,10 +65,6 @@ def _mock_catalog(catalog, path, rng, n=2000):
     for mag_col, err_col in columns["des_magnitudes"].values():
         data[mag_col] = rng.uniform(15.0, 40.0, n)  # some above the valid range
         data[mag_col][::11] = -99.0  # sentinel
-    if columns["des_magnitudes"]:
-        for flag in euclid_catalog.DES_QUALITY_CUTS:
-            data[flag] = rng.integers(0, 2, n)
-        data["EXT_XGB_des"] = rng.integers(-1, 5, n)
     # 64-bit ids with nulls; 2**62 + i is not exactly representable as float64
     data[column("GAIA_ID")] = pd.array([2**62 + i if i % 3 else None for i in range(n)], dtype="Int64")
     table = pa.Table.from_pandas(pd.DataFrame(data), preserve_index=False)
