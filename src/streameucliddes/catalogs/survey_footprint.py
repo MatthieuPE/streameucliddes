@@ -27,7 +27,7 @@ if TYPE_CHECKING:
 LOGGER = logging.getLogger(__name__)
 
 # Footprint maps of the surveys, next to the catalogs (see
-# euclid_des_catalog.DEFAULT_DATA_PATH): the data/ folder of the repository.
+# euclid_catalog.DATA_DIR): the data/ folder of the repository.
 FOOTPRINT_DIR = Path(__file__).resolve().parents[3] / "data" / "footprints"
 # Stars per chunk of the star counts: bounds their temporary arrays, whatever the catalog size
 CHUNK_SIZE = 500_000

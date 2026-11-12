@@ -174,7 +174,7 @@ def prepare_search(
     ----------
     catalog : pandas.DataFrame, optional
         Stars, with ``ra``, ``dec`` (deg) and the magnitude columns of the
-        match filter, e.g. ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
+        match filter, e.g. ``catalogs.euclid_catalog.get_euclid_stars()``.
         Not needed when ``stars`` is given.
     stream_frame : astropy.coordinates.BaseCoordinateFrame, optional
         Stream frame, e.g. a gala ``GreatCircleICRSFrame``.

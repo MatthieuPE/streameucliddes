@@ -136,7 +136,7 @@ def prepare_generic_search(
     ----------
     catalog : pandas.DataFrame
         Stars, with ``ra_col``, ``dec_col`` (deg) and the magnitude columns of
-        the match filter, e.g. ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
+        the match filter, e.g. ``catalogs.euclid_catalog.get_euclid_stars()``.
     match_filter : mapping, optional
         See ``analysis.cmd_match_filter``. Default:
         ``cmd_match_filter.DEFAULT_MATCH_FILTER``.

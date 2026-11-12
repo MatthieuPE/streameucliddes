@@ -1,5 +1,6 @@
-"""Tests of catalogs/euclid_catalog.py and scripts/download_euclid_dr1.py, with a mock catalog."""
+"""Tests of catalogs/euclid_catalog.py and scripts/download_euclid_dr1.py, with mock catalogs."""
 
+import functools
 import importlib.util
 from pathlib import Path
 
@@ -12,6 +13,7 @@ import pytest
 pytest.importorskip("streamobs")
 
 from streameucliddes.catalogs import euclid_catalog  # noqa: E402
+from streameucliddes.catalogs.catalog_cuts import get_cut_mask  # noqa: E402
 
 pytestmark = pytest.mark.euclid_catalog
 
@@ -27,66 +29,131 @@ def download():
     return module
 
 
-@pytest.fixture
-def catalog_dir(tmp_path, rng):
-    """A one-partition HATS-like catalog with the default columns."""
-    n = 1000
-    data = {c: rng.uniform(0.0, 1.0, n) for c in euclid_catalog.DEFAULT_COLUMNS}
-    data["OBJECT_ID"] = np.arange(n)
-    data["SPURIOUS_FLAG"] = rng.integers(0, 2, n)
-    for flux_col, err_col in euclid_catalog.EUCLID_FLUX_COLUMNS.values():
+CATALOG_NAMES = ["euclid_dr1", "euclid_q1_des"]  # Euclid only, crossmatched with DES
+
+
+def _mock_catalog(catalog, path, rng, n=2000):
+    """Write a one-partition HATS-like catalog with the default columns of ``catalog``."""
+    columns = euclid_catalog.catalog_columns(catalog)
+    column = functools.partial(euclid_catalog.euclid_column, catalog)
+    data = {c: rng.uniform(0.0, 1.0, n) for c in euclid_catalog.default_columns(catalog)}
+    data[column("OBJECT_ID")] = np.arange(n)
+    data[columns["ra"]] = rng.uniform(0.0, 360.0, n)
+    data[columns["dec"]] = rng.uniform(-60.0, -30.0, n)
+    data[column("SPURIOUS_FLAG")] = rng.integers(0, 2, n)
+    data[column("POINT_LIKE_PROB")][::7] = np.nan  # NIR-only sources
+    for flux_col, err_col in columns["euclid_fluxes"].values():
         data[flux_col] = rng.uniform(-1.0, 100.0, n)  # micro-Jy, some non-positive
         data[err_col] = rng.uniform(0.01, 1.0, n)
-    data["EBV_SFD98"] = np.full(n, 0.1)
+    data[columns["ebv"]] = np.full(n, 0.1)
+    for mag_col, err_col in columns["des_magnitudes"].values():
+        data[mag_col] = rng.uniform(15.0, 40.0, n)  # some above the valid range
+        data[mag_col][::11] = -99.0  # sentinel
+    if columns["des_magnitudes"]:
+        for flag in euclid_catalog.DES_QUALITY_CUTS:
+            data[flag] = rng.integers(0, 2, n)
+        data["EXT_XGB_des"] = rng.integers(-1, 5, n)
     # 64-bit ids with nulls; 2**62 + i is not exactly representable as float64
-    data["GAIA_ID"] = pd.array([2**62 + i if i % 3 else None for i in range(n)], dtype="Int64")
+    data[column("GAIA_ID")] = pd.array([2**62 + i if i % 3 else None for i in range(n)], dtype="Int64")
     table = pa.Table.from_pandas(pd.DataFrame(data), preserve_index=False)
-    dataset = tmp_path / "euclid_dr1_mer" / "dataset"
+    dataset = path / catalog / "dataset"
     (dataset / "Norder=0" / "Dir=0").mkdir(parents=True)
     pq.write_table(table, dataset / "Norder=0" / "Dir=0" / "Npix=0.parquet")
     pq.write_metadata(table.schema, dataset / "_common_metadata")
-    (tmp_path / "euclid_dr1_mer" / "hats.properties").write_text("obs_collection=euclid_dr1_mer\n")
-    return tmp_path, pd.DataFrame(data)
+    (path / catalog / "hats.properties").write_text(f"obs_collection={catalog}\n")
+    return pd.DataFrame(data)
+
+
+@pytest.fixture(params=CATALOG_NAMES)
+def catalog_dir(request, tmp_path, rng):
+    """(catalog name, folder, mock data) for each kind of catalog."""
+    return request.param, tmp_path, _mock_catalog(request.param, tmp_path, rng)
+
+
+def test_unknown_catalog():
+    with pytest.raises(ValueError, match="euclid_dr1"):
+        euclid_catalog.default_columns("euclid_dr2")
+
+
+def test_column_names():
+    dr1 = euclid_catalog.default_columns("euclid_dr1")
+    crossmatch = euclid_catalog.default_columns("euclid_q1_des")
+    assert not any(c.endswith(("_euclid", "_des")) for c in dr1)
+    assert all(c.endswith(("_euclid", "_des")) or c.startswith("_") for c in crossmatch)
+    assert euclid_catalog.catalog_columns("euclid_dr1")["des_magnitudes"] == {}
 
 
 def test_open_with_cuts(catalog_dir):
-    path, data = catalog_dir
-    read = euclid_catalog.open_euclid_data(data_path=path, cuts={"SPURIOUS_FLAG": 0}, verbose=False)
-    assert list(read.columns) == euclid_catalog.DEFAULT_COLUMNS
-    assert len(read) == (data["SPURIOUS_FLAG"] == 0).sum()
+    catalog, path, data = catalog_dir
+    spurious = euclid_catalog.euclid_column(catalog, "SPURIOUS_FLAG")
+    read = euclid_catalog.open_euclid_catalog(catalog, data_path=path, cuts={spurious: 0}, verbose=False)
+    assert list(read.columns) == euclid_catalog.default_columns(catalog)
+    assert len(read) == (data[spurious] == 0).sum()
+
+
+@pytest.mark.parametrize("ra_range", [(10.0, 50.0), (350.0, 10.0)])
+def test_open_sky_box(catalog_dir, ra_range):
+    catalog, path, data = catalog_dir
+    columns = euclid_catalog.catalog_columns(catalog)
+    dec_range = (-50.0, -40.0)
+    read = euclid_catalog.open_euclid_catalog(
+        catalog, data_path=path, ra_range=ra_range, dec_range=dec_range, verbose=False
+    )
+    ra, dec = data[columns["ra"]], data[columns["dec"]]
+    in_ra = (ra >= ra_range[0]) & (ra <= ra_range[1]) if ra_range[0] <= ra_range[1] else (
+        (ra >= ra_range[0]) | (ra <= ra_range[1]))
+    expected = in_ra & dec.between(*dec_range)
+    assert expected.sum() > 0
+    assert sorted(read[euclid_catalog.euclid_column(catalog, "OBJECT_ID")]) == sorted(
+        data.loc[expected, euclid_catalog.euclid_column(catalog, "OBJECT_ID")])
 
 
 def test_open_keeps_64bit_ids_with_nulls(catalog_dir):
-    path, data = catalog_dir
-    read = euclid_catalog.open_euclid_data(
-        columns=["OBJECT_ID", "GAIA_ID"], data_path=path, verbose=False
+    catalog, path, data = catalog_dir
+    object_id, gaia_id = (euclid_catalog.euclid_column(catalog, c) for c in ("OBJECT_ID", "GAIA_ID"))
+    read = euclid_catalog.open_euclid_catalog(
+        catalog, columns=[object_id, gaia_id], data_path=path, verbose=False
     )
-    assert read["OBJECT_ID"].dtype == np.int64  # no null: plain int64
-    pd.testing.assert_series_equal(read["GAIA_ID"], data["GAIA_ID"].rename("GAIA_ID"),
-                                   check_index=False)
+    assert read[object_id].dtype == np.int64  # no null: plain int64
+    pd.testing.assert_series_equal(read[gaia_id], data[gaia_id], check_index=False)
 
 
 def test_open_unknown_column(catalog_dir):
+    catalog, path, _ = catalog_dir
     with pytest.raises(KeyError):
-        euclid_catalog.open_euclid_data(columns=["NOT_A_COLUMN"], data_path=catalog_dir[0])
+        euclid_catalog.open_euclid_catalog(catalog, columns=["NOT_A_COLUMN"], data_path=path)
 
 
 def test_magnitudes(catalog_dir):
-    path, data = catalog_dir
-    read = euclid_catalog.add_magnitudes(euclid_catalog.open_euclid_data(data_path=path, verbose=False))
-    ns = euclid_catalog.EUCLID_NAMESPACE
-    flux = data["FLUX_VIS_PSF"].to_numpy()
-    expected = -2.5 * np.log10(flux * 1e-6 / 3631.0) - euclid_catalog.EUCLID_SURVEY.coeff_extinc["VIS"] * 0.1
-    np.testing.assert_allclose(read[f"{ns}_VIS_obs"][flux > 0], expected[flux > 0])
-    assert read[f"{ns}_VIS_obs"][flux <= 0].isna().all()
-    np.testing.assert_array_equal(read["ra"], data["RIGHT_ASCENSION"])
+    catalog, path, data = catalog_dir
+    columns = euclid_catalog.catalog_columns(catalog)
+    survey = euclid_catalog.euclid_survey(catalog)
+    read = euclid_catalog.add_magnitudes(
+        euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False), catalog
+    )
+    flux = data[columns["euclid_fluxes"]["VIS"][0]].to_numpy()
+    expected = -2.5 * np.log10(flux * 1e-6 / 3631.0) - survey.coeff_extinc["VIS"] * 0.1
+    vis = read[f"{survey.namespace}_VIS_obs"]
+    np.testing.assert_allclose(vis[flux > 0], expected[flux > 0], rtol=1e-6)
+    assert vis[flux <= 0].isna().all()
+    np.testing.assert_array_equal(read["ra"], data[columns["ra"]])
+    for band, (mag_col, _) in columns["des_magnitudes"].items():
+        mag = data[mag_col].to_numpy()
+        valid = (mag > euclid_catalog.DES_VALID_MAG_RANGE[0]) & (mag < euclid_catalog.DES_VALID_MAG_RANGE[1])
+        des = read[f"{euclid_catalog.DES_NAMESPACE}_{band}_obs"].to_numpy()
+        np.testing.assert_array_equal(des[valid], mag[valid])
+        assert np.isnan(des[~valid]).all()
+    if not columns["des_magnitudes"]:
+        assert not any(c.startswith(euclid_catalog.DES_NAMESPACE) for c in read.columns)
 
 
 def test_stars(catalog_dir):
-    stars = euclid_catalog.get_euclid_stars(data_path=catalog_dir[0], verbose=False)
-    assert (stars["POINT_LIKE_PROB"] >= 0.5).all()
-    assert (stars["SPURIOUS_FLAG"] == 0).all()
-    assert (stars[f"{euclid_catalog.EUCLID_NAMESPACE}_VIS_obs"] >= euclid_catalog.EUCLID_VIS_SATURATION).all()
+    catalog, path, data = catalog_dir
+    cuts = euclid_catalog.default_star_cuts(catalog)
+    stars = euclid_catalog.get_euclid_stars(catalog, data_path=path, verbose=False)
+    all_rows = euclid_catalog.add_magnitudes(data.copy(), catalog)
+    assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
+    assert get_cut_mask(stars, cuts).all()
 
 
 def test_match_columns(download):

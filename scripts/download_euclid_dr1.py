@@ -3,7 +3,7 @@
 
 The output has the same layout as the Q1 catalog used before (``hats.properties``
 + ``dataset/Norder=*/Dir=*/Npix=*.parquet``), with upper-case column names and no
-suffix, so it is read by ``catalogs.euclid_catalog.open_euclid_data``.
+suffix, so it is read by ``catalogs.euclid_catalog`` (catalog ``"euclid_dr1"``).
 
 Two sources, chosen with ``--source``:
 
@@ -27,7 +27,7 @@ Two sources, chosen with ``--source``:
 Both sources add ``EBV_SFD98``, the Schlegel, Finkbeiner & Davis (1998) E(B-V) at
 the source position, read with ``dustmaps`` (Green 2018, JOSS 3, 695). The
 streamobs extinction coefficients apply to SFD98, not to the Euclid ``GAL_EBV``
-column (see ``catalogs.euclid_des_catalog``).
+column (see ``catalogs.euclid_catalog.catalog_columns``).
 
 Examples::
 
@@ -457,7 +457,8 @@ def parse_args(argv=None):
     ap.add_argument("--prefix", default="",
                     help="prefix of the source column names, e.g. 'mer_'")
     ap.add_argument("--where", default=None,
-                    help="row cut: ADQL in source names for tap (e.g. 'point_like_prob > 0.5'), "
+                    help="row cut: ADQL in source names for tap (e.g. 'point_like_prob >= 0.5 "
+                         "AND point_like_prob <= 1': on ESA, NaN passes 'point_like_prob > 0.5'), "
                          "pandas query in upper-case names for hats")
     ap.add_argument("--parallel-tiles", type=int, default=8,
                     help="tiles downloaded at once (tap; 8 is near ESA's maximum speed)")
