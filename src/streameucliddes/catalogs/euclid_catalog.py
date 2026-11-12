@@ -84,6 +84,7 @@ EUCLID_DEFAULT_COLUMNS = [
     "VIS_DET",  # 1: detected in VIS, 0: detected in NIR only
     "DET_QUALITY_FLAG",  # detection-step bitmask (0: no flag)
     "SPURIOUS_FLAG",  # 1: spurious source
+    "SPURIOUS_PROB",  # probability of being spurious
     "POINT_LIKE_PROB",  # probability of being point-like (NaN for NIR-only sources)
     "ELLIPTICITY",  # ellipticity of the source (0: circular, 1: linear)
     "MUMAX_MINUS_MAG",  # difference between the peak surface brightness and the total magnitude
@@ -105,6 +106,11 @@ DES_QUALITY_CUTS = {
 }
 DES_STAR_CUTS = {"EXT_XGB_des": (0, 1)}  # high-confidence or likely stars
 
+EUCLID_QUALITY_CUTS = {
+    "SPURIOUS_FLAG": 0,  # not spurious
+    "SPURIOUS_PROB": (None, 0.2),  # not likely spurious
+    "DET_QUALITY_FLAG": 0,  # no detection flag
+}
 
 # ===================================================
 # Catalog description
@@ -227,8 +233,10 @@ def default_star_cuts(catalog):
     if _catalog_info(catalog)["with_des"]:
         cuts.update(DES_QUALITY_CUTS)
         cuts.update(DES_STAR_CUTS)
+
+    # Euclid column names without suffix: "_euclid" added for crossmatched catalogs
+    cuts.update({euclid_column(catalog, c): spec for c, spec in EUCLID_QUALITY_CUTS.items()})
     cuts[euclid_column(catalog, "POINT_LIKE_PROB")] = (0.7, None)  # point-like
-    cuts[euclid_column(catalog, "SPURIOUS_FLAG")] = 0  # not spurious
     cuts[f"{survey.namespace}_VIS_obs"] = (survey.saturation["VIS"], None)  # not saturated
     cuts[euclid_column(catalog, "ELLIPTICITY")] = (None, 0.2)  # not elongated
     cuts[euclid_column(catalog, "MUMAX_MINUS_MAG")] = (-3.25, -2.7)  # within the expected range
