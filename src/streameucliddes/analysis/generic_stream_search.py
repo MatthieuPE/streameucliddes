@@ -149,9 +149,10 @@ def prepare_generic_search(
         Grid of the scan. Default: ``known_stream_search.DEFAULT_DISTANCE_MODULI``
         (15 to 22, every 0.1).
     cuts : mapping, optional
-        Format of ``catalogs.catalog_cuts.get_cut_mask``. Default: errors
-        <= 0.2 on the bands of the match filter
-        (``catalog_preparation.default_error_cuts``); ``{}`` for no cut.
+        Format of ``catalogs.catalog_cuts.get_cut_mask``. They update the
+        default cuts, errors <= 0.2 on the bands of the match filter
+        (``catalog_preparation.default_error_cuts``): a cut on an error column
+        replaces its default one, ``(None, None)`` removes it.
     nside : int, optional
         HEALPix resolution of the maps.
     footprint_mask : numpy.ndarray of bool, optional

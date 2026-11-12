@@ -157,8 +157,9 @@ def plot_match_filter(
         ``analysis.known_stream_search.prepare_search``. To draw the filter
         at many distance moduli (frames of a gif), prepare the stars once.
     cuts : mapping, optional
-        Cuts of ``catalog`` (format of ``catalogs.catalog_cuts.get_cut_mask``).
-        Default: ``analysis.catalog_preparation.default_error_cuts``.
+        Cuts of ``catalog`` (format of ``catalogs.catalog_cuts.get_cut_mask``),
+        updating the default ``analysis.catalog_preparation.default_error_cuts``
+        (see ``prepare_match_filter_catalog``).
     color_lim, mag_lim : tuple of float, optional
         Colour and magnitude ranges (``mag_lim`` as (bright, faint)). Default:
         the extent of the polygon of each panel plus

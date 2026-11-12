@@ -193,8 +193,9 @@ def prepare_search(
     distance_moduli : iterable of float, optional
         Grid of distance moduli of the scan.
     cuts : mapping, optional
-        Cuts of the preparation (default: errors <= 0.2 on the bands of the
-        match filter). Ignored with ``stars``.
+        Cuts of the preparation, updating the default errors <= 0.2 on the
+        bands of the match filter (see ``prepare_match_filter_catalog``).
+        Ignored with ``stars``.
     stars : pandas.DataFrame, optional
         The catalog already prepared with this frame, window, match filter
         and cuts: used instead of ``catalog``.

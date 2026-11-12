@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 KNOWN_STREAM_SEARCH_CONFIG = {
     # Match filter (see analysis.cmd_match_filter): Euclid VIS vs VIS - H
     "match_filter": copy.deepcopy(DEFAULT_MATCH_FILTER),
-    # None: errors <= 0.2 on the bands of the match filter (catalog_preparation.default_error_cuts)
+    # Update the default errors <= 0.2 on the bands of the match filter (catalog_preparation.default_error_cuts)
     "cuts": None,
     # None: catalogs.isochrone_parameters.default_isochrone_grid(), for the age and Z not known
     "default_grid": None,
@@ -69,7 +69,7 @@ KNOWN_STREAM_SEARCH_OTHER_ARGUMENTS = ("track_names", *SELECTION_ARGUMENTS)
 GENERIC_SEARCH_CONFIG = {
     # Match filter (see analysis.cmd_match_filter): Euclid VIS vs VIS - H
     "match_filter": copy.deepcopy(DEFAULT_MATCH_FILTER),
-    # None: errors <= 0.2 on the bands of the match filter (catalog_preparation.default_error_cuts)
+    # Update the default errors <= 0.2 on the bands of the match filter (catalog_preparation.default_error_cuts)
     "cuts": None,
     # None: catalogs.isochrone_parameters.default_isochrone_grid(): one set of maps per isochrone
     "default_grid": None,
