@@ -81,6 +81,9 @@ src/streameucliddes/
     catalog_preparation.py       [NEW] prepare_match_filter_catalog, check_columns,
                                  default_error_cuts; resolve_mag_columns and
                                  ensure_dust_corrected (moved from generic_stream_search)
+                                 (as_mask: the rows kept, no copy, for the generic search)
+                                 [NEW] star_healpix_pixels (pixel per star, by chunks;
+                                       generic-search preparation)
     star_density_maps.py         star_density_healpix
                                  (old: get_healpy_data_from_table, one copy,
                                   + compute part of plotting.get_hp_map)

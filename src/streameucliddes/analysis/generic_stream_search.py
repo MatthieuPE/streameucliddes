@@ -10,7 +10,10 @@ magnitudes are already dereddened).
 
 Every star of the catalog is in the search, and the catalog may be huge: it
 is neither copied nor modified. The preparation keeps, per star, whether it
-passes the cuts (1 byte) and its HEALPix pixel (4 bytes); each map then reads
+passes the cuts (1 byte,
+``catalog_preparation.prepare_match_filter_catalog`` with ``as_mask``) and
+its HEALPix pixel (4 bytes, ``catalog_preparation.star_healpix_pixels``);
+each map then reads
 the magnitude columns by chunks of ``CHUNK_SIZE`` stars (views) and counts the
 selected stars in their pixels.
 
@@ -32,14 +35,17 @@ import numpy as np
 import pandas as pd
 
 from streameucliddes.analysis.background_polynomial_fit import fit_background_model
-from streameucliddes.analysis.catalog_preparation import CHUNK_SIZE, check_columns, default_error_cuts
+from streameucliddes.analysis.catalog_preparation import (
+    CHUNK_SIZE,
+    prepare_match_filter_catalog,
+    star_healpix_pixels,
+)
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_MATCH_FILTER,
     match_filter_columns,
     select_stars_in_match_filter,
 )
 from streameucliddes.analysis.known_stream_search import DEFAULT_DISTANCE_MODULI
-from streameucliddes.catalogs.catalog_cuts import get_cut_mask
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.unit_conversions import convert_DM_to_kpc
 
@@ -73,7 +79,7 @@ class PreparedGenericSearch:
     keep : numpy.ndarray of bool
         Stars passing the cuts, with finite coordinates.
     pixels : numpy.ndarray of int32
-        HEALPix pixel (RING, ``nside``) of each star; 0 where not kept.
+        HEALPix pixel (RING, ``nside``) of each star; -1 without coordinates.
     nside : int
     footprint_mask : numpy.ndarray of bool
         HEALPix mask (RING), True outside the footprint.
@@ -117,7 +123,10 @@ def prepare_generic_search(
 
     The catalog is neither copied nor modified: its columns are read by
     chunks of ``CHUNK_SIZE`` stars. Kept per star: whether it passes the cuts
-    (1 byte) and its HEALPix pixel (4 bytes).
+    (1 byte: ``analysis.catalog_preparation.prepare_match_filter_catalog``
+    with ``as_mask``), and its HEALPix pixel (4 bytes:
+    ``analysis.catalog_preparation.star_healpix_pixels``). The stars without
+    finite coordinates are not kept.
 
     Parameters
     ----------
@@ -164,25 +173,13 @@ def prepare_generic_search(
         ``footprint_mask`` without ``nest``, or an empty footprint.
     """
     match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
-    cuts = default_error_cuts(match_filter) if cuts is None else cuts
-    check_columns(catalog, [*match_filter_columns(match_filter), ra_col, dec_col, *cuts])
-
-    keep = np.zeros(len(catalog), dtype=bool)  # 1 byte per star
-    pixels = np.zeros(len(catalog), dtype=np.int32)  # 4 bytes per star
-    npix = hp.nside2npix(nside)
-    star_counts = np.zeros(npix, dtype=np.int64) if footprint_mask is None else None
-    ra, dec = catalog[ra_col].to_numpy(), catalog[dec_col].to_numpy()  # views
-    for start in range(0, len(catalog), CHUNK_SIZE):
-        chunk = slice(start, start + CHUNK_SIZE)
-        finite = np.isfinite(ra[chunk]) & np.isfinite(dec[chunk])
-        chunk_pixels = hp.ang2pix(nside, ra[chunk][finite], dec[chunk][finite], lonlat=True, nest=False)
-        pixels[chunk][finite] = chunk_pixels
-        keep[chunk] = get_cut_mask(catalog.iloc[chunk], cuts) & finite  # temporaries of a chunk only
-        if star_counts is not None:  # every star with coordinates, cut or not
-            star_counts += np.bincount(chunk_pixels, minlength=npix)
+    keep = prepare_match_filter_catalog(catalog, match_filter, cuts=cuts, as_mask=True)  # 1 byte per star
+    pixels = star_healpix_pixels(catalog, nside, nest=False, ra_col=ra_col, dec_col=dec_col)  # 4 bytes per star
+    for start in range(0, len(catalog), CHUNK_SIZE):  # finite coordinates; temporaries of a chunk only
+        keep[start:start + CHUNK_SIZE] &= pixels[start:start + CHUNK_SIZE] >= 0
 
     if footprint_mask is None:
-        footprint_mask = star_counts < 1
+        footprint_mask = _star_counts(pixels, nside) < 1  # every star with coordinates, cut or not
     else:
         footprint_mask = _ring_mask(footprint_mask, nside, nest)
     if footprint_mask.all():
@@ -200,6 +197,15 @@ def prepare_generic_search(
         footprint_centre_lon=float(centre_lon % 360.0), match_filter=match_filter, isochrones=list(isochrones),
         distance_moduli=[float(dm) for dm in distance_moduli],
     )
+
+
+def _star_counts(pixels, nside):
+    """Stars per HEALPix pixel, counted by chunks; pixel -1 (no coordinates) not counted."""
+    counts = np.zeros(hp.nside2npix(nside), dtype=np.int64)
+    for start in range(0, pixels.size, CHUNK_SIZE):
+        chunk = pixels[start:start + CHUNK_SIZE]
+        counts += np.bincount(chunk[chunk >= 0], minlength=counts.size)
+    return counts
 
 
 def _ring_mask(footprint_mask, nside, nest):

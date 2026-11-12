@@ -5,6 +5,7 @@ import tracemalloc
 import astropy.coordinates as coord
 import astropy.units as u
 import gala.coordinates as gc
+import healpy as hp
 import numpy as np
 import pandas as pd
 import pytest
@@ -16,6 +17,7 @@ from streameucliddes.analysis.catalog_preparation import (
     default_error_cuts,
     prepare_match_filter_catalog,
     resolve_mag_columns,
+    star_healpix_pixels,
 )
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, DES_GR_MATCH_FILTER
 from streameucliddes.stream_frames import radec_to_phi12
@@ -136,6 +138,14 @@ def test_prepare_stream_frame_window(catalog, gc_frame):
     assert len(all_stars) == len(catalog) and "phi1" in all_stars.columns
 
 
+# as_mask: the mask of the rows kept, the same rows as the stars; with or without a window
+def test_prepare_as_mask(catalog, gc_frame):
+    for kwargs in ({}, {"stream_frame": gc_frame, "window": (-5.0, 5.0, -2.0, 2.0)}):
+        keep = prepare_match_filter_catalog(catalog, as_mask=True, **kwargs)
+        assert keep.dtype == bool and keep.shape == (len(catalog),)
+        assert prepare_match_filter_catalog(catalog, **kwargs).index.equals(catalog.index[keep])
+
+
 # Errors: missing columns (all named), a window without frame
 def test_prepare_errors(catalog):
     with pytest.raises(KeyError, match="euclid_q1_Y_obs"):
@@ -230,3 +240,59 @@ def test_prepare_memory(rng, monkeypatch, with_window):
     overhead = peak - stars.memory_usage(deep=True).sum()
     allowed = 4 * n + 40 * chunk_size
     assert overhead < allowed < 8 * n  # 8 * n: a copy of one column of floats
+
+
+# Peak memory with as_mask: the mask (1 byte per star) and the temporaries of a chunk
+def test_prepare_as_mask_memory(rng, monkeypatch):
+    chunk_size = 50_000
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", chunk_size)
+    n = 1_000_000
+    catalog = _full_sky_catalog(rng, n, n_extra_columns=6)
+    tracemalloc.start()
+    try:
+        prepare_match_filter_catalog(catalog, as_mask=True)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < n + 40 * chunk_size < 8 * n
+
+
+# ===================================================
+# Test star_healpix_pixels
+# ===================================================
+
+
+# The pixels of healpy.ang2pix, in the ordering asked, by chunks; -1 without coordinates
+@pytest.mark.parametrize("nest", [False, True])
+def test_star_healpix_pixels(rng, monkeypatch, nest):
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", 300)
+    catalog = _full_sky_catalog(rng, 1000)
+    catalog.loc[[3, 500], "ra"] = np.nan
+    catalog.loc[999, "dec"] = np.inf
+    pixels = star_healpix_pixels(catalog, 16, nest=nest)
+    assert pixels.dtype == np.int32
+    bad = np.zeros(len(catalog), dtype=bool)
+    bad[[3, 500, 999]] = True
+    assert (pixels[bad] == -1).all()
+    expected = hp.ang2pix(16, catalog["ra"][~bad], catalog["dec"][~bad], lonlat=True, nest=nest)
+    np.testing.assert_array_equal(pixels[~bad], expected)
+
+
+def test_star_healpix_pixels_errors(rng):
+    with pytest.raises(KeyError, match="ra"):
+        star_healpix_pixels(_full_sky_catalog(rng, 10).drop(columns="ra"), 16, nest=False)
+
+
+# Peak memory: the pixels (4 bytes per star) and the temporaries of a chunk
+def test_star_healpix_pixels_memory(rng, monkeypatch):
+    chunk_size = 50_000
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", chunk_size)
+    n = 1_000_000
+    catalog = _full_sky_catalog(rng, n)
+    tracemalloc.start()
+    try:
+        star_healpix_pixels(catalog, 512, nest=False)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * n + 60 * chunk_size < 8 * n

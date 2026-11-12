@@ -12,7 +12,7 @@ import pandas as pd
 import pytest
 from streamobs.match_filter import is_in_match_filter
 
-from streameucliddes.analysis import generic_stream_search
+from streameucliddes.analysis import catalog_preparation, generic_stream_search
 from streameucliddes.analysis.catalog_preparation import default_error_cuts
 from streameucliddes.analysis.cmd_match_filter import build_match_filter_polygon, select_stars_in_match_filter
 from streameucliddes.analysis.generic_stream_search import (
@@ -276,6 +276,7 @@ def test_dm_scan(catalog):
 def test_memory(monkeypatch):
     chunk_size = 50_000
     monkeypatch.setattr(generic_stream_search, "CHUNK_SIZE", chunk_size)
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", chunk_size)  # cuts and pixels
     n = 3_000_000
     catalog = _catalog(np.random.default_rng(6), n)
     tracemalloc.start()
