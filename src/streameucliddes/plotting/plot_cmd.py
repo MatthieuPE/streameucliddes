@@ -60,6 +60,12 @@ def plot_CMD(
     mag2 = pd.to_numeric(data[mag_cols[1]], errors="coerce")
 
     if bins_colors is None:
+        if xlim is None:
+            xlim = [None, None]
+        if xlim[0] is None:
+            xlim[0] = np.nanpercentile(mag1 - mag2, 1)
+        if xlim[1] is None:
+            xlim[1] = np.nanpercentile(mag1 - mag2, 99)
         bins_colors = np.arange(xlim[0], xlim[1], 0.01)
     if bins_mag is None:
         bins_mag = np.arange(ylim[0], ylim[1], 0.1)
