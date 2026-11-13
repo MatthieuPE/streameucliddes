@@ -7,7 +7,7 @@ import numpy as np
 import pytest
 
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER
-from streameucliddes.analysis.known_stream_search import prepare_search
+from streameucliddes.analysis.stream_frame_search import prepare_search
 from streameucliddes.catalogs.galstreams_catalog import select_galstreams_in_footprint
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm, prepare_generic_search
 from streameucliddes.workflows.run_config import (

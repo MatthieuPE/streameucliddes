@@ -152,6 +152,18 @@ def test_plot_residual_map_no_tracks(result):
     plt.close(fig)
 
 
+# In a panel of an existing figure: that figure, the title on the panel, no figure title
+def test_plot_residual_map_in_panel(result):
+    fig, (left, right) = plt.subplots(1, 2, figsize=(12.0, 5.0))
+    tracks = [("Inside", np.full(50, 5.0), np.linspace(-35.0, -5.0, 50))]
+    panel_fig, ax = plot_generic_search_residual_map(result, tracks=tracks, title="Sky map", ax=left)
+    assert panel_fig is fig and ax.figure is fig
+    assert ax.get_title() == "Sky map" and not fig.get_suptitle()
+    assert len(_track_lines(ax)) == 1
+    assert right.get_title() == ""  # the other panel is left alone
+    plt.close(fig)
+
+
 # Frames of a gif: the map stays in place from one distance modulus to the next
 def test_plot_residual_map_layout(search):
     tracks = [("Inside", np.full(50, 5.0), np.linspace(-35.0, -5.0, 50))]

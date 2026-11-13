@@ -13,7 +13,7 @@ True where masked.
 
 Both searches mask the five types by default (``mask_lmc``, ``mask_smc``,
 ``mask_dwarfs``, ``mask_gc``, ``mask_galaxies`` of ``analysis.generic_stream_search.prepare_generic_search`` and
-``analysis.known_stream_search.prepare_search``): the stars on them are
+``analysis.stream_frame_search.prepare_search``): the stars on them are
 dropped (``catalog_preparation.prepare_match_filter_catalog`` with
 ``excluded_pixels``), and their pixels or bins added to the footprint mask,
 so that no star is counted there and the background is fitted on the rest.
@@ -31,6 +31,7 @@ import numpy as np
 from astropy.coordinates import angular_separation, position_angle
 
 from streameucliddes.catalogs import overlapped_objects
+from streameucliddes.catalogs.survey_footprint import convert_footprint_healpix_mask
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -134,7 +135,7 @@ def objects_healpix_mask(
 def object_mask_nside(bin_size_deg: float) -> int:
     """HEALPix resolution of the object masks of a phi1/phi2 grid: pixels at most half a bin.
 
-    Used by ``analysis.known_stream_search.prepare_search``: the stars are
+    Used by ``analysis.stream_frame_search.prepare_search``: the stars are
     dropped by pixel, the bins masked by their centre; at the edge of a
     mask, a bin not masked loses at most the stars of the pixels it
     overlaps, less than half a bin wide.
@@ -274,3 +275,54 @@ def overlapped_objects_healpix_mask(
         if chosen[object_type]:
             mask |= masks[object_type](nside, nest=nest, radius_scale=scales[object_type])
     return mask
+
+
+def excluded_healpix_mask(
+    footprint_mask: NDArray[np.bool_],
+    object_healpix_mask: NDArray[np.bool_] | None,
+    *,
+    nest: bool,
+) -> tuple[NDArray[np.bool_], int]:
+    """HEALPix mask of the excluded sky: outside the footprint, or on a masked object.
+
+    One mask for the stars, the maps and the areas of a search in a stream
+    frame. The footprint is brought to the nside of the object mask and to
+    RING (``catalogs.survey_footprint.convert_footprint_healpix_mask``: each
+    sub-pixel takes the value of its pixel, exact), then OR the objects.
+
+    Parameters
+    ----------
+    footprint_mask : numpy.ndarray of bool
+        True outside the footprint
+        (``catalogs.survey_footprint.survey_footprint_healpix_mask``).
+    object_healpix_mask : numpy.ndarray of bool or None
+        True on the masked objects, RING, e.g. ``object_healpix_mask`` of
+        ``analysis.stream_frame_search.PreparedSearch``
+        (``overlapped_objects_healpix_mask`` at ``object_mask_nside``). None:
+        the footprint alone, in RING at its own nside.
+    nest : bool
+        HEALPix ordering of ``footprint_mask``.
+
+    Returns
+    -------
+    mask : numpy.ndarray of bool
+        True where excluded, RING.
+    nside : int
+        Its resolution: that of ``object_healpix_mask``, or of the footprint.
+
+    Raises
+    ------
+    ValueError
+        The object mask is coarser than the footprint (going down would
+        lose excluded pixels).
+    """
+    footprint_mask = np.asarray(footprint_mask, dtype=bool)
+    footprint_nside = hp.npix2nside(footprint_mask.size)
+    if object_healpix_mask is None:
+        return convert_footprint_healpix_mask(footprint_mask, footprint_nside, nest=nest, nest_out=False), footprint_nside
+    object_healpix_mask = np.asarray(object_healpix_mask, dtype=bool)
+    nside = hp.npix2nside(object_healpix_mask.size)
+    if nside < footprint_nside:
+        raise ValueError(f"Object mask at nside {nside}, coarser than the footprint ({footprint_nside}).")
+    footprint = convert_footprint_healpix_mask(footprint_mask, nside, nest=nest, nest_out=False)
+    return footprint | object_healpix_mask, nside

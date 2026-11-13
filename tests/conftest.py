@@ -296,3 +296,86 @@ def sample_sky_catalog(sample_sky_positions, sample_uniform_magnitudes):
     return sample_sky_positions.join(
         sample_uniform_magnitudes(len(sample_sky_positions))
     )
+
+
+# ===================================================
+# A stream candidate (analysis.candidate_investigation)
+# ===================================================
+
+CANDIDATE_NSIDE = 64  # coarse maps: fast tests
+NO_OBJECT_MASKS = {"mask_lmc": False, "mask_smc": False, "mask_dwarfs": False, "mask_gc": False, "mask_galaxies": False}
+
+
+@pytest.fixture(scope="session")
+def candidate_endpoints():
+    """(ra, dec) of the endpoints of the Euclid DR1 candidate of the example notebook (deg)."""
+    return (77.0, -40.0), (70.0, -43.0)
+
+
+@pytest.fixture(scope="session")
+def no_object_masks():
+    """prepare_search / prepare_generic_search arguments masking no object."""
+    return dict(NO_OBJECT_MASKS)
+
+
+@pytest.fixture(scope="session")
+def candidate_catalog():
+    """Uniform stars in an (ra, dec) box around the candidate, with the columns of the default match filter."""
+    rng = np.random.default_rng(3)
+    n = 50_000
+    vis = rng.uniform(18.0, 26.0, n)
+    return pd.DataFrame({
+        "ra": rng.uniform(58.0, 90.0, n),
+        "dec": np.degrees(np.arcsin(rng.uniform(*np.sin(np.radians([-52.0, -30.0])), n))),
+        "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
+    })
+
+
+@pytest.fixture
+def candidate_with_maps(candidate_endpoints, candidate_catalog):
+    """A CandidateInvestigation with its sky map, prepared stars and zoom map, at dm 17 (no object masked)."""
+    from streameucliddes.analysis.candidate_investigation import CandidateInvestigation
+
+    cand = CandidateInvestigation("test", *candidate_endpoints, prepare_kwargs={"bin_size_deg": 0.2, **NO_OBJECT_MASKS})
+    cand.compute_sky_map(candidate_catalog, 17.0, nside=CANDIDATE_NSIDE, **NO_OBJECT_MASKS)
+    return cand.prepare().compute_zoom_map()
+
+
+CANDIDATE_STREAM = {"distance_modulus": 17.0, "phi2_centre": 0.3, "sigma": 0.25, "n_stars": 1500}
+
+
+@pytest.fixture(scope="session")
+def candidate_stream():
+    """Parameters of the stream of candidate_stream_catalog."""
+    return dict(CANDIDATE_STREAM)
+
+
+@pytest.fixture(scope="session")
+def candidate_stream_catalog(candidate_endpoints, candidate_catalog):
+    """candidate_catalog plus a stream (CANDIDATE_STREAM): phi1 uniform between the endpoints, phi2 Gaussian,
+    magnitudes inside the default match filter of the default isochrone at its distance modulus."""
+    from streamobs.match_filter import is_in_match_filter
+
+    from streameucliddes.analysis.cmd_match_filter import match_filter_polygons
+    from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12, stream_frame_from_endpoints
+
+    rng = np.random.default_rng(5)
+    n = CANDIDATE_STREAM["n_stars"]
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    (ra_1, dec_1), (ra_2, dec_2) = candidate_endpoints
+    phi1_ends, _ = radec_to_phi12([ra_1, ra_2], [dec_1, dec_2], frame)
+    ra, dec = phi12_to_radec(rng.uniform(*phi1_ends, n),
+                             rng.normal(CANDIDATE_STREAM["phi2_centre"], CANDIDATE_STREAM["sigma"], n), frame)
+    (polygon,) = match_filter_polygons(CANDIDATE_STREAM["distance_modulus"])
+    vis, h = np.empty(0), np.empty(0)
+    while vis.size < n:
+        vis_try = rng.uniform(18.0, 26.0, 20 * n)
+        h_try = vis_try - rng.uniform(-1.0, 1.5, 20 * n)
+        inside = is_in_match_filter(vis_try, h_try, polygon_vertices=polygon)
+        vis, h = np.append(vis, vis_try[inside]), np.append(h, h_try[inside])
+    stream = pd.DataFrame({
+        "ra": ra, "dec": dec, "euclid_q1_VIS_obs": vis[:n], "euclid_q1_H_obs": h[:n],
+        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
+    })
+    return pd.concat([candidate_catalog, stream], ignore_index=True)

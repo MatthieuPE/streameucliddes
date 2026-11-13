@@ -1,7 +1,7 @@
 """Generic stream search over the survey footprint: match filter, smoothed HEALPix map,
 polynomial background, residual.
 
-Mirrors ``analysis.known_stream_search``: the search is prepared once
+Mirrors ``analysis.stream_frame_search``: the search is prepared once
 (``prepare_generic_search``), then one map per distance modulus and isochrone
 (``generic_search_single_dm``, ``generic_search_dm_scan``). The match filter
 is the shared one (``analysis.cmd_match_filter``, default Euclid VIS vs
@@ -46,7 +46,7 @@ from streameucliddes.analysis.cmd_match_filter import (
     match_filter_columns,
     select_stars_in_match_filter,
 )
-from streameucliddes.analysis.known_stream_search import DEFAULT_DISTANCE_MODULI
+from streameucliddes.analysis.stream_frame_search import DEFAULT_DISTANCE_MODULI
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
@@ -168,7 +168,7 @@ def prepare_generic_search(
         The isochrones otherwise. Default:
         ``catalogs.isochrone_parameters.default_isochrone_grid()``.
     distance_moduli : iterable of float, optional
-        Grid of the scan. Default: ``known_stream_search.DEFAULT_DISTANCE_MODULI``
+        Grid of the scan. Default: ``stream_frame_search.DEFAULT_DISTANCE_MODULI``
         (15 to 22, every 0.1).
     cuts : mapping, optional
         Format of ``catalogs.catalog_cuts.get_cut_mask``. They update the

@@ -11,9 +11,9 @@ import pandas as pd
 import pytest
 from PIL import Image
 
-from streameucliddes.analysis.known_stream_search import (
-    known_stream_search_dm_along_track,
-    known_stream_search_dm_scan,
+from streameucliddes.analysis.stream_frame_search import (
+    stream_frame_search_dm_along_track,
+    stream_frame_search_dm_scan,
     prepare_search,
 )
 from streameucliddes.catalogs.isochrone_parameters import known_stream_isochrone_parameters
@@ -114,9 +114,9 @@ def _read(path):
 # distance moduli, the bins, and the parameters as JSON; from the generator of the scan
 def test_save_maps(search, tmp_path):
     distance_moduli = [16.5, 17.0, 17.5]
-    results = list(known_stream_search_dm_scan(distance_moduli=distance_moduli, search=search))
+    results = list(stream_frame_search_dm_scan(distance_moduli=distance_moduli, search=search))
     path = save_known_stream_search_maps(
-        known_stream_search_dm_scan(distance_moduli=distance_moduli, search=search),  # a generator
+        stream_frame_search_dm_scan(distance_moduli=distance_moduli, search=search),  # a generator
         tmp_path / "new_folder" / "maps.npz", metadata={"run": "test", "n": np.int64(3)},
     )
     assert path == tmp_path / "new_folder" / "maps.npz" and path.exists()
@@ -139,7 +139,7 @@ def test_save_maps(search, tmp_path):
 # Maps following the track: the offsets and the distance modulus of each phi1 bin
 def test_save_maps_along_track(search, gc_frame, tmp_path):
     track = _track(gc_frame)
-    results = list(known_stream_search_dm_along_track(
+    results = list(stream_frame_search_dm_along_track(
         stars=search.stars, track=track, window=WINDOW, bin_size_deg=BIN, dm_offsets=(-0.5, 0.5),
     ))
     arrays, metadata = _read(save_known_stream_search_maps(results, tmp_path / "along.npz"))
@@ -152,9 +152,9 @@ def test_save_maps_along_track(search, gc_frame, tmp_path):
 # One file per isochrone and grid: mixed results, or none, are refused
 def test_save_maps_errors(search, tmp_path):
     two_isochrones = [
-        (17.0, result) for _, result in known_stream_search_dm_scan(distance_moduli=[17.0], search=search)
+        (17.0, result) for _, result in stream_frame_search_dm_scan(distance_moduli=[17.0], search=search)
     ] + [
-        (17.0, result) for _, result in known_stream_search_dm_scan(
+        (17.0, result) for _, result in stream_frame_search_dm_scan(
             distance_moduli=[17.0], isochrone={"age": 11.0, "metallicity": 0.0005}, search=search
         )
     ]
@@ -198,7 +198,7 @@ def test_run_outputs(search, tmp_path):
     arrays, metadata = _read(outputs["maps_path"])
     assert outputs["maps_path"] == folder / "Mock_maps.npz" and metadata["name"] == "Mock"
     np.testing.assert_array_equal(arrays["distance_modulus"], distance_moduli)
-    for density, (_, result) in zip(arrays["density"], known_stream_search_dm_scan(
+    for density, (_, result) in zip(arrays["density"], stream_frame_search_dm_scan(
         distance_moduli=distance_moduli, search=search,
     )):
         np.testing.assert_array_equal(density, result["density"].filled(np.nan))

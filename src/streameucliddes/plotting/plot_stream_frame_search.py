@@ -1,4 +1,4 @@
-"""Figures of the known-stream search (analysis.known_stream_search)."""
+"""Figures of the search in a stream frame (analysis.stream_frame_search)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.patheffects import withStroke
 
-from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS
+from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, format_distance_modulus
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike, NDArray
 
 TRACK_COLOR = CATEGORICAL_COLORS[0]  # one color for every track: the labels give their names
+TRACK_STYLE = {"color": TRACK_COLOR, "lw": 1.0, "ls": "--", "alpha": 0.8}  # thin dashed: not to hide the stream
 FOOTPRINT_GREY = "0.88"
 FOOTPRINT_OUTSIDE_GREY = "0.85"  # single-dm maps: bins outside the footprint
 DENSITY_PERCENTILES = (1.0, 99.5)  # single-dm maps: default colour scale
@@ -38,7 +39,7 @@ INK = "0.15"  # text
 LABEL_FRACTIONS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9)
 
 
-def plot_known_stream_search_single_dm(
+def plot_stream_frame_search_single_dm(
     result: Mapping[str, Any],
     *,
     track_phi12: tuple[ArrayLike, ArrayLike] | None = None,
@@ -48,7 +49,7 @@ def plot_known_stream_search_single_dm(
     cmap: str = "gray_r",
     title: str | None = None,
 ) -> tuple[Figure, Axes]:
-    """Map of a known-stream search at one distance modulus.
+    """Map of a search in a stream frame at one distance modulus.
 
     ``imshow`` of the density on the phi1/phi2 grid, phi1 increasing to the
     left, with the track of the stream and the other galstreams tracks in the
@@ -63,8 +64,8 @@ def plot_known_stream_search_single_dm(
     Parameters
     ----------
     result : mapping
-        Output of ``known_stream_search_single_dm``, or a result of
-        ``known_stream_search_dm_scan`` or ``known_stream_search_dm_along_track``.
+        Output of ``stream_frame_search_single_dm``, or a result of
+        ``stream_frame_search_dm_scan`` or ``stream_frame_search_dm_along_track``.
     track_phi12 : tuple of array_like, optional
         (phi1, phi2) of the stream track (deg), drawn as a line.
     other_tracks : sequence of (label, phi1, phi2), optional
@@ -116,8 +117,7 @@ def plot_known_stream_search_single_dm(
     fig.colorbar(image, cax=colorbar_ax, label="Counts (smoothed)", format=f"%.{COLORBAR_DECIMALS}f")
 
     if track_phi12 is not None:
-        ax.plot(*track_phi12, color=TRACK_COLOR, lw=1.0, ls="--", alpha=0.8,
-                label=result.get("track_name") or "Track")
+        draw_stream_track(ax, *track_phi12, label=result.get("track_name") or "Track")
     for color, (label, phi1, phi2) in zip(CATEGORICAL_COLORS[1:], other_tracks):
         ax.plot(phi1, phi2, color=color, lw=1.0, ls="--", alpha=0.8, label=label)
     if track_phi12 is not None or len(other_tracks):
@@ -129,11 +129,85 @@ def plot_known_stream_search_single_dm(
     return fig, ax
 
 
+def draw_stream_track(
+    ax: Axes,
+    phi1: ArrayLike,
+    phi2: ArrayLike,
+    *,
+    label: str | None = None,
+    phi2_offset_deg: float = 0.0,
+    **line_kwargs: Any,
+) -> list[Line2D]:
+    """Track on a phi1/phi2 map, e.g. from ``plot_stream_frame_search_single_dm``.
+
+    A thin dashed line (``TRACK_STYLE``), optionally shifted in phi2 not to
+    hide the stream. Takes arrays: a galstreams track, the arc between two
+    endpoints, the track of a candidate.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes of a phi1/phi2 map.
+    phi1, phi2 : array_like
+        Track (deg).
+    label : str, optional
+        Legend label.
+    phi2_offset_deg : float, optional
+        Shift of the line in phi2 (deg).
+    **line_kwargs
+        Arguments of ``ax.plot``, updating ``TRACK_STYLE``.
+
+    Returns
+    -------
+    lines : list of matplotlib.lines.Line2D
+    """
+    return ax.plot(phi1, np.asarray(phi2, dtype=float) + phi2_offset_deg, label=label,
+                   **{**TRACK_STYLE, **line_kwargs})
+
+
+def draw_stream_track_on_sky(
+    ax: Any,
+    ra: ArrayLike,
+    dec: ArrayLike,
+    *,
+    label: str | None = None,
+    **line_kwargs: Any,
+) -> list[Line2D]:
+    """Track on a skyproj sky map, split at the map edge (``_split_at_map_edge``).
+
+    No line crosses the map from one edge to the other.
+
+    Parameters
+    ----------
+    ax : skyproj.SkyAxes
+        Axes of a sky map, e.g. from ``plot_generic_search_residual_map``;
+        its ``plot`` takes (ra, dec) in degrees.
+    ra, dec : array_like
+        Track (deg).
+    label : str, optional
+        Legend label, on the first part only.
+    **line_kwargs
+        Arguments of ``ax.plot``, updating ``TRACK_STYLE``.
+
+    Returns
+    -------
+    lines : list of matplotlib.lines.Line2D
+        One per part of the track.
+    """
+    lon_0 = ax.projection.proj4_params["lon_0"]  # the map edge is at lon_0 + 180
+    style = {**TRACK_STYLE, **line_kwargs}
+    lines = []
+    parts = _split_at_map_edge(np.asarray(ra, dtype=float), np.asarray(dec, dtype=float), lon_0)
+    for index, (ra_part, dec_part) in enumerate(parts):
+        lines += ax.plot(ra_part, dec_part, label=label if index == 0 else None, **style)
+    return lines
+
+
 def _single_dm_title(result: Mapping[str, Any]) -> str:
     """Track, distance modulus (or offset along the track) and isochrone of a map."""
     parts = [result["track_name"]] if result.get("track_name") else []
     if "distance_modulus" in result:
-        parts.append(f"dm {result['distance_modulus']:.1f} ({result['distance_kpc']:.1f} kpc)")
+        parts.append(f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.1f} kpc)")
     else:
         parts.append(f"dm along the track {result['dm_offset']:+.1f}")
     isochrone = result["isochrone"]
