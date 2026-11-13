@@ -1,23 +1,26 @@
-"""Known-stream search: matched-filter maps of a stream, in its frame.
+"""Search in a stream frame: matched-filter maps on a phi1/phi2 grid.
 
-For one stream and one isochrone: the stars inside the match filter, counted
-on a phi1/phi2 grid in the stream frame, for each distance modulus. No
+For one stream frame, one window and one isochrone: the stars inside the
+match filter, counted on a phi1/phi2 grid, for each distance modulus. The
+frame and the window can be any (e.g. a great circle through two points of a
+stream candidate); a known galstreams stream is one use, which gives them
+from its track. No
 polynomial background is subtracted. Magnitudes are used as they are: the
 Euclid x DES magnitudes are already dereddened.
 
-Every search starts with ``prepare_search``, done once: the values not given
-taken from galstreams and the population table, the catalog prepared
+Every search starts with ``prepare_search``, done once: for a galstreams
+stream, the values not given taken from galstreams and the population table; the catalog prepared
 (``catalog_preparation.prepare_match_filter_catalog``), the footprint put on
 the grid, the Magellanic Clouds, the dwarf galaxies, the globular clusters and the bright galaxies masked
 (``analysis.build_masks``). Then each map is ``cmd_match_filter.select_stars_in_match_filter``
 and ``star_density_maps.star_density_phi12`` on the prepared stars:
 
-- ``known_stream_search_single_dm``: one map;
-- ``known_stream_search_dm_scan``: ``single_dm`` over a grid of distance
+- ``stream_frame_search_single_dm``: one map;
+- ``stream_frame_search_dm_scan``: ``single_dm`` over a grid of distance
   moduli, for each isochrone of the stream, yielding ``(dm, result)`` one at
   a time;
-- ``known_stream_search_dm_along_track``: maps following the distance of the
-  track along phi1.
+- ``stream_frame_search_dm_along_track``: maps following the distance of the
+  track along phi1 (galstreams tracks only: it needs a track distance).
 
 Each takes the arguments of ``prepare_search``, or a ``search`` already
 prepared (e.g. for several calls on the same stream).
@@ -88,7 +91,7 @@ SELECTION_ARGUMENTS = tuple(
 
 @dataclass(frozen=True)
 class PreparedSearch:
-    """Everything a known-stream search uses, from ``prepare_search``.
+    """Everything a search in a stream frame uses, from ``prepare_search``.
 
     Attributes
     ----------
@@ -167,7 +170,7 @@ def prepare_search(
     mask_radius_scale: float | Mapping[str, float] = DEFAULT_RADIUS_SCALES,
     **selection_kwargs: Any,
 ) -> PreparedSearch:
-    """Prepare a known-stream search: its values, its stars, its footprint.
+    """Prepare a search in a stream frame: its values, its stars, its footprint.
 
     Every value given is kept. With a galstreams ``stream_name`` (a stream:
     its default track, galstreams ``On`` flag; or a track) or ``track``,
@@ -354,7 +357,7 @@ def prepare_search(
 # ===================================================
 
 
-def known_stream_search_single_dm(
+def stream_frame_search_single_dm(
     catalog: pd.DataFrame | None = None,
     stream_frame: coord.BaseCoordinateFrame | None = None,
     window: tuple[float, float, float, float] | None = None,
@@ -429,7 +432,7 @@ def known_stream_search_single_dm(
     return result
 
 
-def known_stream_search_dm_scan(
+def stream_frame_search_dm_scan(
     catalog: pd.DataFrame | None = None,
     stream_frame: coord.BaseCoordinateFrame | None = None,
     window: tuple[float, float, float, float] | None = None,
@@ -444,7 +447,7 @@ def known_stream_search_dm_scan(
     """Matched-filter maps of a stream over a grid of distance moduli, per isochrone.
 
     The search is prepared once (``prepare_search``); then each isochrone
-    and distance modulus is a call of ``known_stream_search_single_dm``.
+    and distance modulus is a call of ``stream_frame_search_single_dm``.
     The maps are yielded one at a time: the caller can save or plot each
     one and drop it before the next one.
 
@@ -460,7 +463,7 @@ def known_stream_search_dm_scan(
     search : PreparedSearch, optional
         From ``prepare_search``; else prepared here from the other arguments.
     smoothing_deg : float, optional
-        See ``known_stream_search_single_dm``.
+        See ``stream_frame_search_single_dm``.
     n_workers : int, optional
         Processes computing the maps in parallel (1: none). Each process
         receives the search once. The results are still yielded in order.
@@ -473,7 +476,7 @@ def known_stream_search_dm_scan(
         One distance modulus of the grid; every distance modulus for the
         first isochrone, then for the next one.
     result : dict
-        ``known_stream_search_single_dm`` output for it (its ``isochrone``
+        ``stream_frame_search_single_dm`` output for it (its ``isochrone``
         says which).
 
     Notes
@@ -488,7 +491,7 @@ def known_stream_search_dm_scan(
 
     if n_workers <= 1:
         for isochrone, dm in tasks:
-            yield dm, known_stream_search_single_dm(
+            yield dm, stream_frame_search_single_dm(
                 distance_modulus=dm, isochrone=isochrone, search=search, smoothing_deg=smoothing_deg
             )
         return
@@ -497,7 +500,7 @@ def known_stream_search_dm_scan(
         yield from zip((dm for _, dm in tasks), executor.map(single_dm, tasks))
 
 
-def known_stream_search_dm_along_track(
+def stream_frame_search_dm_along_track(
     catalog: pd.DataFrame | None = None,
     track: galstreams.Track6D | None = None,
     stream_frame: coord.BaseCoordinateFrame | None = None,
@@ -511,6 +514,8 @@ def known_stream_search_dm_along_track(
     **prepare_kwargs: Any,
 ) -> Iterator[tuple[float, dict[str, Any]]]:
     """Matched-filter maps that follow the distance of the track along phi1, per isochrone.
+
+    For a galstreams track only: it needs the track distance.
 
     In each phi1 bin, the match filter is at the distance modulus of the
     track there plus an offset: one map per offset. Along the track, its
@@ -532,7 +537,7 @@ def known_stream_search_dm_along_track(
     window : tuple of float, optional
         See ``prepare_search``.
     isochrone : mapping, optional
-        See ``known_stream_search_dm_scan``.
+        See ``stream_frame_search_dm_scan``.
     search : PreparedSearch, optional
         From ``prepare_search`` with a track; else prepared here.
     dm_offsets : iterable of float, optional
@@ -540,7 +545,7 @@ def known_stream_search_dm_along_track(
     dm_step : float, optional
         Rounding step of the distance moduli of the track.
     smoothing_deg : float, optional
-        See ``known_stream_search_single_dm``.
+        See ``stream_frame_search_single_dm``.
     **prepare_kwargs
         Other arguments of ``prepare_search``; not with ``search``.
 
@@ -550,7 +555,7 @@ def known_stream_search_dm_along_track(
         One offset of ``dm_offsets``; every offset for the first isochrone,
         then for the next one.
     result : dict
-        As ``known_stream_search_single_dm``, with ``dm_along_phi1`` (the
+        As ``stream_frame_search_single_dm``, with ``dm_along_phi1`` (the
         distance modulus of each phi1 bin, offset included) and
         ``dm_offset`` instead of ``distance_modulus`` and ``distance_kpc``.
 
@@ -671,6 +676,6 @@ def _set_worker_search(search):
 
 def _worker_single_dm(task, *, smoothing_deg):
     isochrone, distance_modulus = task
-    return known_stream_search_single_dm(
+    return stream_frame_search_single_dm(
         distance_modulus=distance_modulus, isochrone=isochrone, search=_WORKER_SEARCH, smoothing_deg=smoothing_deg
     )

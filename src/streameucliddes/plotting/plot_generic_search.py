@@ -9,7 +9,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from streameucliddes.plotting.plot_cmd import plot_match_filter
-from streameucliddes.plotting.plot_known_stream_search import (
+from streameucliddes.plotting.plot_stream_frame_search import (
     DENSITY_PERCENTILES,
     TRACK_COLOR,
     _label_tracks,

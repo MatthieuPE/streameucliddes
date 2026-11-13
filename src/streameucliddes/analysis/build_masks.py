@@ -13,7 +13,7 @@ True where masked.
 
 Both searches mask the five types by default (``mask_lmc``, ``mask_smc``,
 ``mask_dwarfs``, ``mask_gc``, ``mask_galaxies`` of ``analysis.generic_stream_search.prepare_generic_search`` and
-``analysis.known_stream_search.prepare_search``): the stars on them are
+``analysis.stream_frame_search.prepare_search``): the stars on them are
 dropped (``catalog_preparation.prepare_match_filter_catalog`` with
 ``excluded_pixels``), and their pixels or bins added to the footprint mask,
 so that no star is counted there and the background is fitted on the rest.
@@ -134,7 +134,7 @@ def objects_healpix_mask(
 def object_mask_nside(bin_size_deg: float) -> int:
     """HEALPix resolution of the object masks of a phi1/phi2 grid: pixels at most half a bin.
 
-    Used by ``analysis.known_stream_search.prepare_search``: the stars are
+    Used by ``analysis.stream_frame_search.prepare_search``: the stars are
     dropped by pixel, the bins masked by their centre; at the edge of a
     mask, a bin not masked loses at most the stars of the pixels it
     overlaps, less than half a bin wide.

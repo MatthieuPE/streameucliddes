@@ -1,4 +1,4 @@
-"""Tests of plotting/plot_known_stream_search.py, with synthetic galstreams tracks."""
+"""Tests of plotting/plot_stream_frame_search.py, with synthetic galstreams tracks."""
 
 from types import SimpleNamespace
 
@@ -14,20 +14,20 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from streameucliddes.analysis.known_stream_search import (
-    known_stream_search_dm_along_track,
-    known_stream_search_single_dm,
+from streameucliddes.analysis.stream_frame_search import (
+    stream_frame_search_dm_along_track,
+    stream_frame_search_single_dm,
     prepare_search,
 )
 from streameucliddes.catalogs.galstreams_catalog import select_galstreams_in_footprint
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
-from streameucliddes.plotting import plot_known_stream_search
-from streameucliddes.plotting.plot_known_stream_search import (
+from streameucliddes.plotting import plot_stream_frame_search
+from streameucliddes.plotting.plot_stream_frame_search import (
     plot_galstreams_selection,
-    plot_known_stream_search_single_dm,
+    plot_stream_frame_search_single_dm,
 )
 
-pytestmark = pytest.mark.plot_known_stream_search
+pytestmark = pytest.mark.plot_stream_frame_search
 
 NSIDE = 128
 
@@ -77,19 +77,19 @@ def search(gc_frame):
 
 
 # ===================================================
-# Test plot_known_stream_search_single_dm
+# Test plot_stream_frame_search_single_dm
 # ===================================================
 
 
 # The density on the grid: phi1 increasing to the left, bins outside the footprint grey,
 # colour scale from the 1st to the 99.5th percentile, title from the result
 def test_plot_single_dm(search):
-    result = known_stream_search_single_dm(distance_modulus=17.0, search=search)
-    fig, ax = plot_known_stream_search_single_dm(result)
+    result = stream_frame_search_single_dm(distance_modulus=17.0, search=search)
+    fig, ax = plot_stream_frame_search_single_dm(result)
     image = ax.images[0]
     np.testing.assert_array_equal(image.get_array(), result["density"].T)
     np.testing.assert_array_equal(image.get_array().mask, result["density"].mask.T)  # outside: masked
-    assert matplotlib.colors.same_color(image.get_cmap().get_bad(), plot_known_stream_search.FOOTPRINT_OUTSIDE_GREY)
+    assert matplotlib.colors.same_color(image.get_cmap().get_bad(), plot_stream_frame_search.FOOTPRINT_OUTSIDE_GREY)
 
     half = BIN / 2  # the extent: the edges of the bins
     phi1_centres, phi2_centres = result["phi1_centres"], result["phi2_centres"]
@@ -97,7 +97,7 @@ def test_plot_single_dm(search):
                                                     phi2_centres[0] - half, phi2_centres[-1] + half])
     assert ax.get_xlim()[0] > ax.get_xlim()[1]  # phi1 increasing to the left
     values = result["density"].compressed()
-    low, high = plot_known_stream_search.DENSITY_PERCENTILES
+    low, high = plot_stream_frame_search.DENSITY_PERCENTILES
     np.testing.assert_allclose(image.get_clim(), (np.percentile(values, low), np.percentile(values, high)))
     assert ax.get_title() == "dm 17.0 (25.1 kpc), 13 Gyr, Z = 0.0002"
     assert ax.get_legend() is None  # no track
@@ -107,9 +107,9 @@ def test_plot_single_dm(search):
 # The colour bar, with its ticks and label, inside the saved figure (constrained layout, as
 # in plot_style), and the height of the map
 def test_plot_single_dm_colorbar_inside_figure(search):
-    result = known_stream_search_single_dm(distance_modulus=17.0, search=search)
+    result = stream_frame_search_single_dm(distance_modulus=17.0, search=search)
     with plt.rc_context({"figure.constrained_layout.use": True}):
-        fig, ax = plot_known_stream_search_single_dm(result)
+        fig, ax = plot_stream_frame_search_single_dm(result)
         fig.canvas.draw()
     colorbar_ax, = ax.child_axes
     assert colorbar_ax.get_ylabel()  # the colour bar, with its label
@@ -126,15 +126,15 @@ def test_plot_single_dm_colorbar_inside_figure(search):
 # The colour-bar labels have COLORBAR_DECIMALS decimals: maps of other colour scales (other
 # ticks) keep the same size, for regular gifs
 def test_plot_single_dm_colorbar_decimals(search):
-    result = known_stream_search_single_dm(distance_modulus=17.0, search=search)
+    result = stream_frame_search_single_dm(distance_modulus=17.0, search=search)
     positions = []
     for scale in (1.0, 1.7, 3.1):
         scaled = {**result, "density": result["density"] * scale}
         with plt.rc_context({"figure.constrained_layout.use": True}):
-            fig, ax = plot_known_stream_search_single_dm(scaled)
+            fig, ax = plot_stream_frame_search_single_dm(scaled)
             fig.canvas.draw()
         labels = [label.get_text() for label in ax.child_axes[0].get_yticklabels() if label.get_text()]
-        decimals = plot_known_stream_search.COLORBAR_DECIMALS
+        decimals = plot_stream_frame_search.COLORBAR_DECIMALS
         assert labels and all(len(label.split(".")[1]) == decimals for label in labels)
         positions.append(ax.get_position().bounds)
         plt.close(fig)
@@ -144,18 +144,18 @@ def test_plot_single_dm_colorbar_decimals(search):
 # Tracks: the stream's dashed, the others in their colours, all in the legend; the given
 # vmax, title and axes are used
 def test_plot_single_dm_tracks(search):
-    result = known_stream_search_single_dm(distance_modulus=17.0, search=search)
+    result = stream_frame_search_single_dm(distance_modulus=17.0, search=search)
     fig, ax = plt.subplots()
     phi1 = np.linspace(-6.0, 6.0, 50)
-    returned_fig, returned_ax = plot_known_stream_search_single_dm(
+    returned_fig, returned_ax = plot_stream_frame_search_single_dm(
         result, track_phi12=(phi1, np.zeros(50)), other_tracks=[("Other", phi1, np.full(50, 1.5))],
         ax=ax, vmax=50.0, title="My map",
     )
     assert returned_ax is ax and returned_fig is fig
     stream_line, other_line = ax.lines
     assert stream_line.get_linestyle() == "--"
-    assert matplotlib.colors.same_color(stream_line.get_color(), plot_known_stream_search.TRACK_COLOR)
-    assert not matplotlib.colors.same_color(other_line.get_color(), plot_known_stream_search.TRACK_COLOR)
+    assert matplotlib.colors.same_color(stream_line.get_color(), plot_stream_frame_search.TRACK_COLOR)
+    assert not matplotlib.colors.same_color(other_line.get_color(), plot_stream_frame_search.TRACK_COLOR)
     assert [text.get_text() for text in ax.get_legend().get_texts()] == ["Track", "Other"]
     assert ax.images[0].get_clim()[1] == 50.0 and ax.get_title() == "My map"
     plt.close(fig)
@@ -164,10 +164,10 @@ def test_plot_single_dm_tracks(search):
 # A map following the track: the offset in the title
 def test_plot_single_dm_along_track(search, gc_frame):
     track = _track(gc_frame, "Mock-T00")
-    (_, result), = known_stream_search_dm_along_track(
+    (_, result), = stream_frame_search_dm_along_track(
         stars=search.stars, track=track, window=WINDOW, bin_size_deg=BIN, dm_offsets=(0.5,),
     )
-    fig, ax = plot_known_stream_search_single_dm(result)
+    fig, ax = plot_stream_frame_search_single_dm(result)
     assert ax.get_title().startswith("Mock-T00, dm along the track +0.5, ")
     plt.close(fig)
 
@@ -190,7 +190,7 @@ def test_plot_galstreams_selection(gc_frame, southern_footprint):
 
     fig, ax = plot_galstreams_selection(selection, mws, southern_footprint, nest=False)
     assert ax.figure is fig
-    track_lines = [line for line in ax.lines if line.get_color() == plot_known_stream_search.TRACK_COLOR]
+    track_lines = [line for line in ax.lines if line.get_color() == plot_stream_frame_search.TRACK_COLOR]
     assert len(track_lines) == 2
     assert {text.get_text() for text in _label_texts(ax, {"Alpha", "Beta", "Gamma"})} == {"Alpha", "Beta"}
     assert [text.get_text() for text in ax.get_legend().get_texts()] == ["Footprint", "Selected tracks"]
@@ -217,7 +217,7 @@ def test_plot_galstreams_selection_empty(gc_frame, southern_footprint):
     mws = {"Gamma-T00": _track(gc_frame, "Gamma-T00", phi1_range=(150.0, 160.0))}
     selection = select_galstreams_in_footprint(mws, southern_footprint, nest=False)
     fig, ax = plot_galstreams_selection(selection, mws, southern_footprint, nest=False)
-    assert not [line for line in ax.lines if line.get_color() == plot_known_stream_search.TRACK_COLOR]
+    assert not [line for line in ax.lines if line.get_color() == plot_stream_frame_search.TRACK_COLOR]
     assert ax.get_title().endswith(": 0")
     plt.close(fig)
 
@@ -226,9 +226,9 @@ def test_plot_galstreams_selection_empty(gc_frame, southern_footprint):
 def test_split_at_map_edge():
     ra = np.array([170.0, 175.0, 179.0, 181.0, 185.0])
     dec = np.zeros(5)
-    parts = list(plot_known_stream_search._split_at_map_edge(ra, dec, lon_0=0.0))
+    parts = list(plot_stream_frame_search._split_at_map_edge(ra, dec, lon_0=0.0))
     assert [list(part_ra) for part_ra, _ in parts] == [[170.0, 175.0, 179.0], [181.0, 185.0]]
-    assert len(list(plot_known_stream_search._split_at_map_edge(ra, dec, lon_0=180.0))) == 1
+    assert len(list(plot_stream_frame_search._split_at_map_edge(ra, dec, lon_0=180.0))) == 1
 
 
 # The centre of the map is the mean right ascension on the circle: across ra = 0 too
@@ -236,5 +236,5 @@ def test_central_ra():
     ra, dec = hp.pix2ang(NSIDE, np.arange(hp.nside2npix(NSIDE)), lonlat=True)
     ra_wrapped = (ra + 180.0) % 360.0 - 180.0
     footprint_mask = ~((np.abs(ra_wrapped - (-10.0)) < 30.0) & (np.abs(dec) < 20.0))  # ra 320 to 20
-    central_ra = plot_known_stream_search._central_ra(footprint_mask, nest=False)
+    central_ra = plot_stream_frame_search._central_ra(footprint_mask, nest=False)
     assert (central_ra - 350.0 + 180.0) % 360.0 - 180.0 == pytest.approx(0.0, abs=0.5)

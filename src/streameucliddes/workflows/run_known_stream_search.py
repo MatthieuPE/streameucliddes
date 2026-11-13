@@ -11,10 +11,10 @@ import numpy as np
 import pandas as pd
 
 from streameucliddes.analysis.cmd_match_filter import match_filter_columns, match_filter_polygons
-from streameucliddes.analysis.known_stream_search import (
+from streameucliddes.analysis.stream_frame_search import (
     DEFAULT_SMOOTHING_DEG,
     SELECTION_ARGUMENTS,
-    known_stream_search_dm_scan,
+    stream_frame_search_dm_scan,
     prepare_search,
 )
 from streameucliddes.catalogs.galstreams_catalog import (
@@ -25,7 +25,7 @@ from streameucliddes.catalogs.galstreams_catalog import (
 from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 from streameucliddes.plotting.make_videos import make_gif_from_plots
 from streameucliddes.plotting.plot_cmd import MATCH_FILTER_MARGIN_MAG, plot_match_filter
-from streameucliddes.plotting.plot_known_stream_search import plot_known_stream_search_single_dm
+from streameucliddes.plotting.plot_stream_frame_search import plot_stream_frame_search_single_dm
 from streameucliddes.stream_frames import radec_to_phi12
 
 if TYPE_CHECKING:
@@ -36,7 +36,7 @@ if TYPE_CHECKING:
     import galstreams
     from numpy.typing import NDArray
 
-    from streameucliddes.analysis.known_stream_search import PreparedSearch
+    from streameucliddes.analysis.stream_frame_search import PreparedSearch
 
 DEFAULT_OUTPUT_DIR = "figures/outputs/known_stream_search"  # gitignored
 FRAME_DURATION_MS = 300  # gifs: time per distance modulus
@@ -65,14 +65,14 @@ def run_known_stream_search(
     """Known-stream search of one stream, with its figures, gifs and maps file.
 
     The search is prepared once
-    (``analysis.known_stream_search.prepare_search``: from the galstreams
+    (``analysis.stream_frame_search.prepare_search``: from the galstreams
     ``stream_name`` alone, the values not given come from galstreams), or
     given (``search``). Then, for each isochrone, in
     ``output_dir/<name>/age<age>_z<Z>/``:
 
     - the maps over the distance moduli
-      (``analysis.known_stream_search.known_stream_search_dm_scan``), drawn
-      (``plotting.plot_known_stream_search.plot_known_stream_search_single_dm``)
+      (``analysis.stream_frame_search.stream_frame_search_dm_scan``), drawn
+      (``plotting.plot_stream_frame_search.plot_stream_frame_search_single_dm``)
       in ``maps/``, and their gif ``<name>.gif``
       (``plotting.make_videos.make_gif_from_plots``, from the frames of this
       run only);
@@ -161,13 +161,13 @@ def run_known_stream_search(
         color_lim, mag_lim = _cmd_ranges(search.stars, search.match_filter, distance_moduli, isochrone)
 
         results, figure_paths, cmd_figure_paths = [], [], []
-        for dm, result in known_stream_search_dm_scan(
+        for dm, result in stream_frame_search_dm_scan(
             distance_moduli=distance_moduli, isochrone=isochrone, search=search,
             smoothing_deg=smoothing_deg, n_workers=n_workers,
         ):
             results.append((dm, result))
             frame = f"{name}_dm{dm:05.2f}.png"  # 05.2f: the names sort as the distance moduli (gif from a pattern)
-            fig, _ = plot_known_stream_search_single_dm(result, track_phi12=track_phi12)
+            fig, _ = plot_stream_frame_search_single_dm(result, track_phi12=track_phi12)
             figure_paths.append(_save(fig, folder / "maps" / frame, dpi))
             fig, _ = plot_match_filter(dm, isochrone, search.match_filter, stars=search.stars,
                                        color_lim=color_lim, mag_lim=mag_lim)
@@ -324,7 +324,7 @@ def save_known_stream_search_maps(
     ``metadata``, a JSON string: track, window, bin size, smoothing,
     isochrone, match filter, plus the ``metadata`` given. The phi1/phi2 maps
     are small: they all fit in memory. Maps following the track
-    (``known_stream_search_dm_along_track``) are saved the same way, with
+    (``stream_frame_search_dm_along_track``) are saved the same way, with
     ``dm_offset`` and ``dm_along_phi1`` (n_offset, n_phi1) instead of
     ``distance_modulus``.
 
@@ -333,8 +333,8 @@ def save_known_stream_search_maps(
     Parameters
     ----------
     results : iterable of (distance_modulus, result)
-        As yielded by ``analysis.known_stream_search.known_stream_search_dm_scan``
-        (or ``(dm_offset, result)`` by ``known_stream_search_dm_along_track``),
+        As yielded by ``analysis.stream_frame_search.stream_frame_search_dm_scan``
+        (or ``(dm_offset, result)`` by ``stream_frame_search_dm_along_track``),
         for one isochrone, on one grid.
     output_path : str or pathlib.Path
         File to write (its folder is created).

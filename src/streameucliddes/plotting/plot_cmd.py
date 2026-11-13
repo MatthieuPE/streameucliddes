@@ -154,7 +154,7 @@ def plot_match_filter(
         copied.
     stars : pandas.DataFrame, optional
         Stars already prepared, used as they are, e.g. ``search.stars`` of
-        ``analysis.known_stream_search.prepare_search``. To draw the filter
+        ``analysis.stream_frame_search.prepare_search``. To draw the filter
         at many distance moduli (frames of a gif), prepare the stars once.
     cuts : mapping, optional
         Cuts of ``catalog`` (format of ``catalogs.catalog_cuts.get_cut_mask``),

@@ -1,4 +1,4 @@
-"""Figures of the known-stream search (analysis.known_stream_search)."""
+"""Figures of the search in a stream frame (analysis.stream_frame_search)."""
 
 from __future__ import annotations
 
@@ -38,7 +38,7 @@ INK = "0.15"  # text
 LABEL_FRACTIONS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9)
 
 
-def plot_known_stream_search_single_dm(
+def plot_stream_frame_search_single_dm(
     result: Mapping[str, Any],
     *,
     track_phi12: tuple[ArrayLike, ArrayLike] | None = None,
@@ -48,7 +48,7 @@ def plot_known_stream_search_single_dm(
     cmap: str = "gray_r",
     title: str | None = None,
 ) -> tuple[Figure, Axes]:
-    """Map of a known-stream search at one distance modulus.
+    """Map of a search in a stream frame at one distance modulus.
 
     ``imshow`` of the density on the phi1/phi2 grid, phi1 increasing to the
     left, with the track of the stream and the other galstreams tracks in the
@@ -63,8 +63,8 @@ def plot_known_stream_search_single_dm(
     Parameters
     ----------
     result : mapping
-        Output of ``known_stream_search_single_dm``, or a result of
-        ``known_stream_search_dm_scan`` or ``known_stream_search_dm_along_track``.
+        Output of ``stream_frame_search_single_dm``, or a result of
+        ``stream_frame_search_dm_scan`` or ``stream_frame_search_dm_along_track``.
     track_phi12 : tuple of array_like, optional
         (phi1, phi2) of the stream track (deg), drawn as a line.
     other_tracks : sequence of (label, phi1, phi2), optional
