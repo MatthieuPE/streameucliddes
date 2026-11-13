@@ -53,7 +53,7 @@ def _clim(ax):
 
 # Four panels: the match filter of the map on the CMD of the stars, with the number of stars
 # the map selects; the map, the background (same colour scale: percentiles of the map) and
-# the corrected map (its own); the default title
+# the corrected map (its own), with a faint grid; the default title
 def test_plot_result(search, result):
     cmd_stars = generic_search_cmd_stars(search, max_stars=5000)
     fig, axes = plot_generic_search_result(result, cmd_stars=cmd_stars)
@@ -70,7 +70,11 @@ def test_plot_result(search, result):
     np.testing.assert_allclose(_clim(axes[2]), density_scale)
     np.testing.assert_allclose(_clim(axes[3]), np.percentile(result["residual"].compressed(), [low, high]))
     assert [ax.get_title() for ax in axes[1:]] == [title for _, title in plot_generic_search.MAP_PANELS]
+    assert all(ax.gridlines.get_alpha() == plot_generic_search.GRID_ALPHA < 1 for ax in axes[1:])
     assert fig.get_suptitle().startswith("dm 17.0 (25.1 kpc), ")
+    plt.close(fig)
+    fig, axes = plot_generic_search_result(result, cmd_stars=cmd_stars, grid_alpha=0.8)
+    assert all(ax.gridlines.get_alpha() == 0.8 for ax in axes[1:])
     plt.close(fig)
 
 
@@ -111,8 +115,9 @@ def _track_lines(ax):
     return [line for line in ax.lines if line.get_linestyle() == "--"]
 
 
-# The corrected map, with the colour scale of the fourth panel; each track a faint dashed line
-# (one line per side of the map edge at ra = 180), labelled only if it crosses the footprint
+# The corrected map, with the colour scale of the fourth panel and a faint grid; each track a
+# faint dashed line (one line per side of the map edge at ra = 180), not labelled by default;
+# with label_tracks, labelled only if it crosses the footprint
 def test_plot_residual_map(result):
     dec = np.linspace(-35.0, -5.0, 50)
     tracks = [
@@ -127,10 +132,16 @@ def test_plot_residual_map(result):
     assert len(lines) == 4  # Edge: two parts
     style = plot_generic_search.KNOWN_TRACK_STYLE
     assert all(line.get_alpha() == style["alpha"] < 1 and line.get_linewidth() == style["lw"] for line in lines)
-    names = {text.get_text() for text in ax.texts}
-    assert "Inside" in names and not names & {"Outside", "Edge"}
+    assert not ax.texts
+    assert ax.gridlines.get_alpha() == plot_generic_search.GRID_ALPHA < 1
     assert ax.get_title() == plot_generic_search.MAP_PANELS[2][1]
     assert fig.get_suptitle().startswith("dm 17.0 (25.1 kpc), ")
+    plt.close(fig)
+
+    fig, ax = plot_generic_search_residual_map(result, tracks=tracks, label_tracks=True, grid_alpha=0.8)
+    names = {text.get_text() for text in ax.texts}
+    assert "Inside" in names and not names & {"Outside", "Edge"}
+    assert ax.gridlines.get_alpha() == 0.8
     plt.close(fig)
 
 

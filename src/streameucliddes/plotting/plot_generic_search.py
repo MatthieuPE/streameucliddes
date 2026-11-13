@@ -35,6 +35,8 @@ MAP_PANELS = (
 # Known stream tracks on the corrected map: faint and dashed, to see the map through them
 KNOWN_TRACK_STYLE = {"color": TRACK_COLOR, "lw": 1.0, "ls": "--", "alpha": 0.5}
 KNOWN_TRACK_LABEL_ALPHA = 0.7
+# Opacity of the coordinate grid of the sky maps (skyproj draws it opaque): the maps show through
+GRID_ALPHA = 0.3
 
 
 def plot_generic_search_result(
@@ -46,6 +48,7 @@ def plot_generic_search_result(
     lon_range: tuple[float, float] | None = None,
     lat_range: tuple[float, float] | None = None,
     cmap: str = "gray_r",
+    grid_alpha: float = GRID_ALPHA,
     title: str | None = None,
 ) -> tuple[Figure, list[Axes]]:
     """Four panels of a generic-search map: CMD selection, map, background, corrected map.
@@ -58,7 +61,8 @@ def plot_generic_search_result(
        (``plotting.plot_sky_density.plot_2D_density_from_hp``), zoomed on the
        footprint. The map and the background share their colour scale (1st
        to 99.5th percentile of the map, ``DENSITY_PERCENTILES``); the
-       corrected map has its own.
+       corrected map has its own. Their coordinate grid is faint
+       (``grid_alpha``).
 
     The figure is not saved.
 
@@ -78,6 +82,8 @@ def plot_generic_search_result(
         (``_footprint_lonlat_ranges``).
     cmap : str, optional
         Colour map of the maps.
+    grid_alpha : float, optional
+        Opacity of the coordinate grid of the maps (1: as skyproj draws it).
     title : str, optional
         Default: the distance modulus and distance, and the isochrone.
 
@@ -118,6 +124,7 @@ def plot_generic_search_result(
             fig=fig, ax=axes[index], lon_range=lon_range, lat_range=lat_range, title=panel_title,
             cmap=cmap, vmin=vmin, vmax=vmax, label_fontsize=9, title_fontsize=11, tick_labelsize=7,
         )
+        axes[index].gridlines.set_alpha(grid_alpha)  # skyproj's grid, a LineCollection
 
     fig.suptitle(_title(result) if title is None else title)
     return fig, axes
@@ -127,6 +134,8 @@ def plot_generic_search_residual_map(
     result: Mapping[str, Any],
     *,
     tracks: Sequence[tuple[str, ArrayLike, ArrayLike]] = (),
+    label_tracks: bool = False,
+    grid_alpha: float = GRID_ALPHA,
     lon_range: tuple[float, float] | None = None,
     lat_range: tuple[float, float] | None = None,
     cmap: str = "gray_r",
@@ -136,8 +145,9 @@ def plot_generic_search_residual_map(
 
     The corrected map (``residual``) alone, as in the fourth panel of
     ``plot_generic_search_result`` (same colour scale), larger. The tracks
-    are faint dashed lines, not to hide the map, each labelled on its part
-    inside the footprint.
+    are faint dashed lines, not to hide the map; with ``label_tracks``, each
+    is labelled on its part inside the footprint. The coordinate grid is
+    faint (``grid_alpha``).
 
     The figure is not saved.
 
@@ -148,6 +158,10 @@ def plot_generic_search_residual_map(
     tracks : sequence of (label, ra, dec), optional
         Tracks to draw (deg), e.g. the galstreams tracks crossing the
         footprint.
+    label_tracks : bool, optional
+        Write the name of each track crossing the footprint.
+    grid_alpha : float, optional
+        Opacity of the coordinate grid (1: as skyproj draws it).
     lon_range, lat_range : tuple of float, optional
         Ranges of the map (deg). Default: those of the footprint.
     cmap : str, optional
@@ -175,11 +189,13 @@ def plot_generic_search_residual_map(
         fig=fig, ax=ax, lon_range=lon_range, lat_range=lat_range, title=MAP_PANELS[2][1],
         cmap=cmap, vmin=vmin, vmax=vmax, label_fontsize=11, title_fontsize=12, tick_labelsize=9,
     )
+    ax.gridlines.set_alpha(grid_alpha)  # skyproj's grid, a LineCollection
     lon_0 = ax.projection.proj4_params["lon_0"]  # the map edge is at lon_0 + 180
     for _, ra, dec in tracks:
         for ra_part, dec_part in _split_at_map_edge(np.asarray(ra, dtype=float), np.asarray(dec, dtype=float), lon_0):
             ax.plot(ra_part, dec_part, **KNOWN_TRACK_STYLE)
-    _label_tracks(ax, tracks, footprint_mask, nest=result["nest"], alpha=KNOWN_TRACK_LABEL_ALPHA)
+    if label_tracks:
+        _label_tracks(ax, tracks, footprint_mask, nest=result["nest"], alpha=KNOWN_TRACK_LABEL_ALPHA)
 
     fig.suptitle(_title(result) if title is None else title)
     return fig, ax
