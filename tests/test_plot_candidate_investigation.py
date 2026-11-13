@@ -12,6 +12,7 @@ from streameucliddes.plotting.plot_candidate_investigation import (
     plot_candidate_frame_check,
     plot_candidate_hess,
     plot_candidate_map,
+    plot_candidate_overview,
     plot_phi1_profile,
     plot_phi2_profile,
     plot_width_fit_map,
@@ -131,9 +132,24 @@ def test_plot_candidate_hess(candidate_endpoints, candidate_stream_catalog, cand
         plot_candidate_hess(cand, "both")
 
 
-@pytest.mark.skip(reason="stub")
-def test_plot_candidate_overview():
-    """Four panels."""
+# Four panels: the map with the regions, the phi2 and phi1 profiles, the difference Hess with the isochrone;
+# before the steps: ValueError naming the missing one
+def test_plot_candidate_overview(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    cand.prepare(candidate_stream_catalog).compute_zoom_map()
+    with pytest.raises(ValueError, match="fit_width"):
+        plot_candidate_overview(cand)
+    cand.fit_width().define_regions()
+    with pytest.raises(ValueError, match="compute_hess"):
+        plot_candidate_overview(cand)
+    cand.compute_hess().compute_isochrone()
+    fig, axes = plot_candidate_overview(cand)
+    map_ax, phi2_ax, phi1_ax, hess_ax = axes
+    assert "on" in {line.get_label() for line in map_ax.lines}
+    assert phi2_ax.lines and phi1_ax.containers and hess_ax.images and hess_ax.lines
+    assert "excess" in fig.get_suptitle()
+    plt.close(fig)
 
 
 # Two panels at the distance modulus of the maps: the sky map with the great circle, the window and the

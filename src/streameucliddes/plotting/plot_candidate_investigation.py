@@ -59,6 +59,7 @@ ENDPOINT_STYLE = {"ls": "none", "marker": "o", "ms": 7, "mfc": "none", "mec": CA
 FRAME_CHECK_FIGSIZE = (17.0, 6.5)
 PROFILE_FIGSIZE = (8.0, 4.5)
 WIDTH_MAP_FIGSIZE = (15.0, 7.0)
+OVERVIEW_FIGSIZE = (16.0, 11.0)
 DENSITY_PERCENTILES = (2.0, 98.0)  # colour scale of the observed and model densities
 RESIDUAL_PERCENTILE = 98.0  # symmetric limit of the residual: this percentile of |observed - model|
 RESIDUAL_CMAP = "RdBu_r"
@@ -446,14 +447,40 @@ def plot_candidate_hess(
 def plot_candidate_overview(cand: CandidateInvestigation) -> tuple[Figure, list[Axes]]:
     """Summary figure: map with the regions, phi2 profile, phi1 profile, difference Hess with the isochrone.
 
+    ``plot_candidate_map``, ``plot_phi2_profile`` (with the width fit),
+    ``plot_phi1_profile`` and ``plot_candidate_hess``, on a 2 x 2 grid; the
+    title gives the key numbers of ``cand.summary()``.
+
     Parameters
     ----------
     cand : CandidateInvestigation
-        With every step done (``run_all_steps``).
+        With every step done (``run_all_steps``); the isochrone is drawn
+        when computed.
 
     Returns
     -------
     fig : matplotlib.figure.Figure
     axes : list of matplotlib.axes.Axes
+        Map, phi2 profile, phi1 profile, difference Hess.
+
+    Raises
+    ------
+    ValueError
+        A step not done (the message names it).
     """
-    raise NotImplementedError
+    for name, step in (("width_fit", "fit_width"), ("phi1_profile", "define_regions"), ("diff_hess", "compute_hess")):
+        if getattr(cand, name) is None:
+            raise ValueError(f"No {name}: call cand.{step}() first.")
+    fig, axes = plt.subplots(2, 2, figsize=OVERVIEW_FIGSIZE, layout="constrained")
+    map_ax, phi2_ax, phi1_ax, hess_ax = axes.flat
+    plot_candidate_map(cand, ax=map_ax)
+    plot_phi2_profile(cand.phi2_profile, cand.width_fit, ax=phi2_ax)
+    plot_phi1_profile(cand.phi1_profile, cand.regions, ax=phi1_ax)
+    plot_candidate_hess(cand, ax=hess_ax)
+    summary = cand.summary()
+    fig.suptitle(
+        f"{escape_underscores(cand.name)}: dm {format_distance_modulus(summary['distance_modulus'])} "
+        f"({summary['distance_kpc']:.1f} kpc), $\\sigma$ = {summary['sigma']:.2f} deg, "
+        f"excess {summary['n_excess']:.0f} $\\pm$ {summary['n_excess_error']:.0f} stars in the match filter"
+    )
+    return fig, [map_ax, phi2_ax, phi1_ax, hess_ax]

@@ -51,12 +51,14 @@ BIN = 0.2  # bins of the maps in the frame (deg)
 # The plain dict of the inputs, as floats
 def test_stream_regions_keys():
     regions = stream_regions((-3, 2), 0.2, 0.3, on_n_sigma=1.5, off_n_sigma=(2.5, 4.0))
-    assert regions == {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)}
+    assert regions == {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0),
+                       "on_phi2_offset_deg": 0.0, "off_phi2_offsets_deg": (0.0, 0.0)}
 
 
-# Off bands overlapping the on region, off_n_sigma not increasing, sigma <= 0, phi1_range not increasing
-@pytest.mark.parametrize("kwargs", [{"on_n_sigma": 2.6}, {"off_n_sigma": (3.0, 2.5)}, {"sigma": 0.0},
-                                    {"phi1_range": (2.0, -3.0)}])
+# Off bands overlapping the on region (wider, or shifted), off_n_sigma not increasing, sigma <= 0, phi1_range
+# not increasing
+@pytest.mark.parametrize("kwargs", [{"on_n_sigma": 2.6}, {"on_phi2_offset_deg": 0.5}, {"off_phi2_offsets_deg": (0.5, 0.0)},
+                                    {"off_n_sigma": (3.0, 2.5)}, {"sigma": 0.0}, {"phi1_range": (2.0, -3.0)}])
 def test_stream_regions_rejects_overlap(kwargs):
     arguments = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.0, "sigma": 0.3, "on_n_sigma": 1.4,
                  "off_n_sigma": (2.5, 4.5), **kwargs}
@@ -72,6 +74,17 @@ def test_region_windows():
     assert below == pytest.approx((-3.0, 2.0, 0.2 - 1.2, 0.2 - 0.75))
     assert above == pytest.approx((-3.0, 2.0, 0.2 + 0.75, 0.2 + 1.2))
     assert below[3] <= windows["on"][2] and windows["on"][3] <= above[2]
+
+
+# Offsets shift each window in phi2, phi1 unchanged
+def test_region_windows_offsets():
+    regions = stream_regions((-3.0, 2.0), 0.2, 0.3, on_n_sigma=1.5, off_n_sigma=(2.5, 4.0), on_phi2_offset_deg=1.5,
+                             off_phi2_offsets_deg=(-0.1, 1.5))
+    shifted, nominal = region_windows(regions), region_windows({**regions, "on_phi2_offset_deg": 0.0,
+                                                                 "off_phi2_offsets_deg": (0.0, 0.0)})
+    for window, reference, offset in [(shifted["on"], nominal["on"], 1.5), (shifted["off"][0], nominal["off"][0], -0.1),
+                                      (shifted["off"][1], nominal["off"][1], 1.5)]:
+        assert window == pytest.approx((reference[0], reference[1], reference[2] + offset, reference[3] + offset))
 
 
 # No mask: on and off areas of the band formula; half of the phi1 range masked: half the areas
@@ -453,6 +466,36 @@ def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate
     assert cand.regions["phi1_range"] == (-1.0, 1.0) and cand.regions["sigma"] == 0.4
     with pytest.raises(ValueError, match="leave the window"):
         cand.define_regions(sigma=2.0)  # off bands to 8 deg
+    cand.define_regions(on_phi2_offset_deg=1.0, off_phi2_offsets_deg=(0.0, 1.0))
+    assert cand.regions["on_phi2_offset_deg"] == 1.0 and cand.regions["off_phi2_offsets_deg"] == (0.0, 1.0)
+    with pytest.raises(ValueError, match="leave the window"):
+        cand.define_regions(on_phi2_offset_deg=cand.window[3])  # on region beyond the top of the window
+
+
+# A footprint hole across half of the bottom off band, no stream: define_regions leaves the hole out of the
+# off area (the on area untouched), so the off density of the uniform field stays that of the on region (on - off
+# consistent with 0); divided by the full off area, it would be too low
+def test_compute_hess_areas_outside_footprint_hole(candidate_endpoints, candidate_catalog, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0,
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    nside = 256
+    ra, dec = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    phi1, phi2 = radec_to_phi12(ra, dec, cand.stream_frame)
+    sigma = 0.4
+    hole = (phi1 < 0.0) & (phi2 < -0.5 * (cand.on_n_sigma + cand.off_n_sigma[0]) * sigma)  # between on and off
+    cand.prepare(candidate_catalog, footprint_mask=hole, nest=False)
+    cand.define_regions(phi2_centre=0.0, sigma=sigma).compute_hess()
+    full = region_area_deg2(cand.regions, cand.stream_frame, None)
+    below = region_windows(cand.regions)["off"][0]
+    full_below = unmasked_area_deg2(cand.stream_frame, below[:2], below[2:], None)[0, 0]
+    phi1_min, phi1_max = cand.regions["phi1_range"]
+    hole_fraction = (0.0 - phi1_min) / (phi1_max - phi1_min)
+    assert cand.areas["on"] == pytest.approx(full["on"])
+    assert cand.areas["off"] == pytest.approx(full["off"] - hole_fraction * full_below, rel=0.02)
+    n_on, n_off = cand.on_hess["n_stars"], cand.off_hess["n_stars"]
+    error = np.sqrt(n_on / cand.areas["on"] ** 2 + n_off / cand.areas["off"] ** 2)
+    assert abs(n_on / cand.areas["on"] - n_off / cand.areas["off"]) < 3 * error
+    assert n_on / cand.areas["on"] - n_off / full["off"] > 3 * error
 
 
 # compute_hess: every prepared star of the on region and of the off bands, per deg² with the region areas,
@@ -547,11 +590,67 @@ def test_fit_width(candidate_endpoints, candidate_stream_catalog, candidate_stre
     assert width_map["counts"].sum() == cand.phi2_profile["counts"].sum()
 
 
-@pytest.mark.skip(reason="stub")
-def test_run_all_steps_recovers_stream():
-    """run_all_steps on the synthetic catalog: sigma and phi2_centre recovered; on - off excess positive."""
+# run_all_steps on the synthetic catalog: the results of the steps called one by one (with the same step_kwargs),
+# the stream recovered, a positive on - off excess; no distance_modulus or an unknown step: ValueError
+def test_run_all_steps(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    inputs = {"distance_modulus": candidate_stream["distance_modulus"], "distance_moduli": [16.5, 17.0],
+              "prepare_kwargs": {"bin_size_deg": BIN, **no_object_masks}}
+    sky_kwargs = {"nside": NSIDE, **no_object_masks}
+    hess_kwargs = {"color_bins": np.linspace(-1.0, 1.5, 11), "mag_bins": np.linspace(18.0, 26.0, 9)}
+    cand = CandidateInvestigation("test", *candidate_endpoints, **inputs)
+    assert cand.run_all_steps(candidate_stream_catalog, step_kwargs={
+        "compute_sky_map": sky_kwargs, "fit_width": {"background_degree": 1}, "compute_hess": hess_kwargs}) is cand
+    by_step = CandidateInvestigation("test", *candidate_endpoints, **inputs)
+    by_step.compute_sky_map(candidate_stream_catalog, **sky_kwargs).prepare().compute_zoom_map()
+    by_step.scan_distance_moduli().fit_width(background_degree=1).define_regions().compute_hess(**hess_kwargs)
+    by_step.compute_isochrone()
+    assert list(cand.maps) == [16.5, 17.0] and cand.sky_map["distance_modulus"] == cand.distance_modulus
+    assert cand.width_fit["phi2_centre"] == by_step.width_fit["phi2_centre"]
+    assert len(cand.width_fit["background_coefficients"]) == 2
+    assert cand.regions == by_step.regions and cand.areas == by_step.areas
+    np.testing.assert_array_equal(cand.diff_hess["density"], by_step.diff_hess["density"])
+    np.testing.assert_array_equal(cand.isochrone_track["color"], by_step.isochrone_track["color"])
+    fit = cand.width_fit
+    assert abs(fit["phi2_centre"] - candidate_stream["phi2_centre"]) < 3 * fit["errors"]["phi2_centre"]
+    assert abs(fit["sigma"] - candidate_stream["sigma"]) < 3 * fit["errors"]["sigma"]
+    summary = cand.summary()
+    assert summary["n_excess"] > 5 * summary["n_excess_error"]
+    with pytest.raises(ValueError, match="distance_modulus"):
+        CandidateInvestigation("test", *candidate_endpoints).run_all_steps(candidate_stream_catalog)
+    with pytest.raises(ValueError, match="prepare"):
+        cand.run_all_steps(candidate_stream_catalog, step_kwargs={"prepare": {}})
 
 
-@pytest.mark.skip(reason="stub")
-def test_summary_keys():
-    """summary keys; None for the steps not done."""
+# summary: the same keys at every step, None for the steps not done; after define_regions, the counts of the stars
+# in the match filter outside the excluded mask, in the on region and in the off bands, and the excess
+def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    keys = {"name", "endpoint_1", "endpoint_2", "window", "age", "metallicity", "feh", "distance_modulus",
+            "distance_kpc", "phi2_centre", "sigma", "phi1_range", "area_on_deg2", "area_off_deg2", "n_on", "n_off",
+            "n_excess", "n_excess_error"}
+    cand = CandidateInvestigation("test", *candidate_endpoints, age=12.0, feh=-2.0,
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    summary = cand.summary()
+    assert set(summary) == keys
+    assert summary["age"] == 12.0 and summary["feh"] == -2.0 and summary["metallicity"] == cand.isochrone["metallicity"]
+    assert summary["window"] == pytest.approx(cand.window)
+    assert all(summary[key] is None for key in keys - {"name", "endpoint_1", "endpoint_2", "window", "age",
+                                                        "metallicity", "feh"})
+    cand.distance_modulus = candidate_stream["distance_modulus"]
+    cand.prepare(candidate_stream_catalog).fit_width()
+    summary = cand.summary()
+    assert summary["distance_kpc"] == pytest.approx(10 ** (cand.distance_modulus / 5 + 1) / 1e3)
+    assert summary["sigma"] == cand.width_fit["sigma"] and summary["n_on"] is None
+    cand.define_regions(phi2_centre=0.2, sigma=0.3)
+    summary = cand.summary()
+    assert set(summary) == keys and summary["sigma"] == 0.3 and summary["phi2_centre"] == 0.2
+    assert summary["phi1_range"] == cand.regions["phi1_range"] and summary["area_on_deg2"] == cand.areas["on"]
+    windows = region_windows(cand.regions)
+    phi1, phi2 = cand.search.stars["phi1"], cand.search.stars["phi2"]
+    selected = cand._stars_in_match_filter()
+    n_on = (selected & in_phi12_window(phi1, phi2, windows["on"])).sum()
+    n_off = (selected & (in_phi12_window(phi1, phi2, windows["off"][0])
+                         | in_phi12_window(phi1, phi2, windows["off"][1]))).sum()
+    ratio = cand.areas["on"] / cand.areas["off"]
+    assert (summary["n_on"], summary["n_off"]) == (n_on, n_off)
+    assert summary["n_excess"] == pytest.approx(n_on - ratio * n_off)
+    assert summary["n_excess_error"] == pytest.approx(np.sqrt(n_on + ratio**2 * n_off))

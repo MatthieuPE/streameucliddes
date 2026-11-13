@@ -329,6 +329,27 @@ Done:
   `plot_match_filter_polygon` (`plot_match_filter` calls it); isochrone
   and polygon in `plot_candidate_hess`. Notebook section 9: four panels
   with the isochrone, three trial (age, [Fe/H], dm).
+- Regions offsets (user, 2026-11-13, null test): `stream_regions` and
+  `define_regions` take `on_phi2_offset_deg` and `off_phi2_offsets_deg`
+  (below, above), 0 by default; `region_windows` shifts each window, the
+  overlap and window checks use the shifted windows. On DR1 (stream 2,
+  dm 17), on region and top off band up 5 sigma: match-filter on - off
+  -1.2 sigma (+6.7 sigma not shifted).
+- Stars outside the excluded mask (2026-11-13): `prepare_search` drops the
+  stars on masked objects but not those outside the footprint (a footprint
+  map, a given one, or a `min_count` > 1 can leave stars there). The areas
+  leave the whole excluded mask out, so `cand.stars_not_excluded` (set by
+  `prepare`) restricts the stars of `fit_width`, `define_regions`,
+  `compute_hess` and `summary` to the same mask. Test: a footprint hole
+  across an off band.
+- S9 (2026-11-13): `summary` (the planned keys plus `n_excess_error`;
+  `n_on`, `n_off` are stars in the match filter at `distance_modulus`),
+  `run_all_steps(catalog, *, footprint_mask, nest, step_kwargs)`
+  (`step_kwargs` by method name, `RUN_ALL_STEPS`, so that the tuned
+  arguments of the notebook, e.g. Hess bins, background degree, offsets,
+  are reproduced), `plot_candidate_overview` (2 x 2: map with regions, phi2
+  and phi1 profiles, difference Hess with the isochrone). Notebook sections
+  10-11.
 
 ## 4. New functions, by module
 
