@@ -1,5 +1,9 @@
 """Mock sky shared by the tests: a projection, a survey footprint, a polynomial
-background density and a stream, plus fixtures sampling star positions from them."""
+background density and a stream, plus fixtures sampling star positions from them.
+
+Every test runs with an empty mock LVDB and Siena Galaxy Atlas, and no download
+(``empty_lvdb``): the searches mask their objects by default; the tests of the masks give
+their own objects."""
 
 import astropy.coordinates as coord
 import astropy.units as u
@@ -9,6 +13,35 @@ import numpy as np
 import pandas as pd
 import pytest
 from numpy.polynomial import polynomial
+
+from streameucliddes.catalogs import overlapped_objects
+
+LVDB_COLUMNS = ["key", "name", "ra", "dec", "rhalf", "ellipticity", "position_angle", "distance", "confirmed_real"]
+
+
+@pytest.fixture(scope="session", autouse=True)
+def empty_lvdb(tmp_path_factory):
+    """No LVDB object, no SGA galaxy, and no download, unless a test sets its own.
+
+    Session-wide, so that the fixtures of a module or of the session see it too.
+    """
+    lvdb_dir = tmp_path_factory.mktemp("lvdb")
+    (lvdb_dir / overlapped_objects.LVDB_VERSION).mkdir()
+    for table in (overlapped_objects.DWARF_TABLE, *overlapped_objects.GLOBULAR_CLUSTER_TABLES):
+        pd.DataFrame(columns=LVDB_COLUMNS).to_csv(lvdb_dir / overlapped_objects.LVDB_VERSION / f"{table}.csv",
+                                                  index=False)
+    sga_dir = tmp_path_factory.mktemp("sga")
+    pd.DataFrame(columns=overlapped_objects.SGA_COLUMNS).to_csv(sga_dir / overlapped_objects.SGA_BRIGHT_FILE,
+                                                                index=False)
+
+    def no_download(url, *args, **kwargs):
+        raise AssertionError(f"download in a test: {url}")
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(overlapped_objects, "LVDB_DIR", lvdb_dir)
+        patch.setattr(overlapped_objects, "SGA_DIR", sga_dir)
+        patch.setattr(overlapped_objects.urllib.request, "urlopen", no_download)
+        yield
 
 NSIDE = 64
 LON0, LAT0 = 50.0, -25.0  # patch centre (deg)

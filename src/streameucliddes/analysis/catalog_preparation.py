@@ -1,8 +1,8 @@
 """Preparation of the star catalogs for the searches, before the match filter.
 
 Columns checked, magnitude columns resolved (dust-corrected or not), cuts,
-stream-frame coordinates and window. The selection itself is in
-``analysis.cmd_match_filter``.
+stream-frame coordinates and window, HEALPix pixels of the stars. The
+selection itself is in ``analysis.cmd_match_filter``.
 """
 
 from __future__ import annotations
@@ -29,8 +29,8 @@ if TYPE_CHECKING:
 DEFAULT_ERR_CUT = (None, 0.2)
 # HEALPix pixels (about 0.9 deg) of the pre-selection of the stars near a phi1/phi2 window
 WINDOW_PRESELECTION_NSIDE = 64
-# Stars per chunk of the window pre-selection and of the phi1/phi2 transformation:
-# bounds their temporary arrays
+# Stars per chunk of the cuts, the window pre-selection, the phi1/phi2 transformation and the
+# HEALPix pixels: bounds their temporary arrays
 CHUNK_SIZE = 500_000
 
 
@@ -124,9 +124,12 @@ def prepare_match_filter_catalog(
     cuts: Mapping[str, Any] | None = None,
     stream_frame: coord.BaseCoordinateFrame | None = None,
     window: tuple[float, float, float, float] | None = None,
+    excluded_pixels: NDArray[np.bool_] | None = None,
+    excluded_pixels_nest: bool | None = None,
     ra_col: str = "ra",
     dec_col: str = "dec",
-) -> pd.DataFrame:
+    as_mask: bool = False,
+) -> pd.DataFrame | NDArray[np.bool_]:
     """Stars ready for a match filter: columns checked, cuts applied, phi1/phi2.
 
     Done once for a scan, then reused for every distance modulus and
@@ -135,58 +138,85 @@ def prepare_match_filter_catalog(
     columns.
 
     The catalog may be huge: it is neither modified nor copied. The rows to
-    keep are found first, as a boolean mask (cuts, then window), and only
-    their needed columns are copied, once. With a window, the stars far
+    keep are found first, as a boolean mask (cuts, excluded pixels, then
+    window), and only
+    their needed columns are copied, once; with ``as_mask``, nothing is
+    copied: the mask is returned (e.g. for a search over the whole catalog,
+    ``analysis.generic_stream_search``). With a window, the stars far
     from it are dropped before the transformation to phi1/phi2, the slow
     part: only those in the HEALPix pixels (nside
     ``WINDOW_PRESELECTION_NSIDE``) of the window, or next to them, are
-    transformed. The pre-selection and the transformation go by chunks of
+    transformed. The stars in ``excluded_pixels`` (e.g. on the LMC, a dwarf
+    galaxy, a globular cluster: ``analysis.build_masks``) are dropped
+    before the window, too. The cuts, the exclusion, the pre-selection and
+    the transformation go by chunks of
     ``CHUNK_SIZE`` stars: their temporary arrays do not grow with the
     catalog.
 
     Parameters
     ----------
     catalog : pandas.DataFrame
-        Stars, e.g. ``catalogs.euclid_des_catalog.get_eucliddes_stars()``.
+        Stars, e.g. ``catalogs.euclid_catalog.get_euclid_stars()``.
     match_filter : mapping, optional
         See ``cmd_match_filter``. Default: ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
     cuts : mapping, optional
-        Format of ``catalogs.catalog_cuts.get_cut_mask``. Default:
-        ``default_error_cuts(match_filter)``; ``{}`` for no cut.
+        Format of ``catalogs.catalog_cuts.get_cut_mask``. They update the
+        default error cuts ``default_error_cuts(match_filter)``, which are
+        always applied: a cut on an error column replaces its default one,
+        ``(None, None)`` removes it.
     stream_frame : astropy.coordinates.BaseCoordinateFrame, optional
         Adds the ``phi1`` and ``phi2`` columns (deg) in this frame
         (``stream_frames.radec_to_phi12``).
     window : tuple of float, optional
         ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg, inclusive): keeps
         only the stars inside. Needs ``stream_frame``.
+    excluded_pixels : numpy.ndarray of bool, optional
+        HEALPix mask, of any nside: the stars in its True pixels are
+        dropped (those without finite coordinates are not). Needs
+        ``excluded_pixels_nest``.
+    excluded_pixels_nest : bool, optional
+        HEALPix ordering of ``excluded_pixels``.
     ra_col, dec_col : str, optional
-        Coordinate columns (deg), read when ``stream_frame`` is given.
+        Coordinate columns (deg), read when ``stream_frame`` or
+        ``excluded_pixels`` is given.
+    as_mask : bool, optional
+        Return the mask of the rows kept instead of the stars.
 
     Returns
     -------
     stars : pandas.DataFrame
         The stars passing the cuts (and inside the window), with the index of
         ``catalog``.
+    keep : numpy.ndarray of bool
+        With ``as_mask``: True for the rows of ``catalog`` kept (1 byte per
+        star).
 
     Raises
     ------
     KeyError
         Columns missing from the catalog (all of them listed).
     ValueError
-        ``window`` without ``stream_frame``.
+        ``window`` without ``stream_frame``; ``excluded_pixels`` without
+        ``excluded_pixels_nest``.
     """
     if window is not None and stream_frame is None:
         raise ValueError("a window needs a stream_frame")
+    if excluded_pixels is not None and excluded_pixels_nest is None:
+        raise ValueError("excluded_pixels needs excluded_pixels_nest")
     match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
-    cuts = default_error_cuts(match_filter) if cuts is None else cuts
+    cuts = {**default_error_cuts(match_filter), **(cuts or {})}  # given cuts replace the defaults
 
     columns = match_filter_columns(match_filter)
     if stream_frame is not None:
         columns += [ra_col, dec_col]
     columns = list(dict.fromkeys([*columns, *cuts]))
-    check_columns(catalog, columns)
+    check_columns(catalog, columns if excluded_pixels is None else [*columns, ra_col, dec_col])
 
-    keep = get_cut_mask(catalog, cuts)  # rows kept, 1 byte per star
+    keep = np.zeros(len(catalog), dtype=bool)  # rows kept, 1 byte per star
+    for start in range(0, len(catalog), CHUNK_SIZE):  # temporaries of a chunk only
+        keep[start:start + CHUNK_SIZE] = get_cut_mask(catalog.iloc[start:start + CHUNK_SIZE], cuts)
+    if excluded_pixels is not None:
+        _drop_excluded_pixels(catalog, keep, excluded_pixels, excluded_pixels_nest, ra_col, dec_col)
     phi12 = {}
     if stream_frame is not None:
         ra = catalog[ra_col].to_numpy()  # views of numpy-backed columns, not copies
@@ -207,19 +237,67 @@ def prepare_match_filter_catalog(
                 inside = (phi1 >= phi1_min) & (phi1 <= phi1_max) & (phi2 >= phi2_min) & (phi2 <= phi2_max)
                 keep_chunk[keep_chunk] = inside
                 phi1, phi2 = phi1[inside], phi2[inside]
-            phi1_parts.append(phi1)
-            phi2_parts.append(phi2)
+            if not as_mask:
+                phi1_parts.append(phi1)
+                phi2_parts.append(phi2)
         phi12 = {
             "phi1": np.concatenate(phi1_parts) if phi1_parts else np.empty(0),
             "phi2": np.concatenate(phi2_parts) if phi2_parts else np.empty(0),
         }
 
+    if as_mask:
+        return keep
     return pd.DataFrame(
         {**{column: catalog[column].to_numpy()[keep] for column in columns}, **phi12},
         # take: indexing a RangeIndex (with a mask or positions) builds and caches all its values
         index=catalog.index.take(np.flatnonzero(keep)),
         copy=False,  # the selected rows are already copies: not copied again
     )
+
+
+def star_healpix_pixels(
+    catalog: pd.DataFrame,
+    nside: int,
+    *,
+    nest: bool,
+    ra_col: str = "ra",
+    dec_col: str = "dec",
+) -> NDArray[np.int32]:
+    """HEALPix pixel of each star of a catalog, by chunks.
+
+    The catalog is neither modified nor copied: its coordinate columns are
+    read by chunks of ``CHUNK_SIZE`` stars (views). 4 bytes per star.
+
+    Parameters
+    ----------
+    catalog : pandas.DataFrame
+        Stars, with ``ra_col``, ``dec_col`` (deg).
+    nside : int
+        HEALPix resolution.
+    nest : bool
+        HEALPix ordering of the pixels.
+    ra_col, dec_col : str, optional
+        Coordinate columns (deg).
+
+    Returns
+    -------
+    pixels : numpy.ndarray of int32
+        Pixel of each star, in the order of ``catalog``; -1 for a star
+        without finite coordinates.
+
+    Raises
+    ------
+    KeyError
+        Coordinate columns missing from the catalog.
+    """
+    check_columns(catalog, [ra_col, dec_col])
+    ra, dec = catalog[ra_col].to_numpy(), catalog[dec_col].to_numpy()  # views
+    pixels = np.full(len(catalog), -1, dtype=np.int32)
+    for start in range(0, len(catalog), CHUNK_SIZE):
+        chunk = slice(start, start + CHUNK_SIZE)
+        finite = np.isfinite(ra[chunk]) & np.isfinite(dec[chunk])
+        pixels[chunk][finite] = hp.ang2pix(nside, ra[chunk][finite], dec[chunk][finite], lonlat=True, nest=nest)
+    return pixels
 
 
 def _window_pixels(
@@ -246,12 +324,25 @@ def _window_pixels(
     return pixel_near
 
 
+def _drop_excluded_pixels(catalog, keep, excluded_pixels, nest, ra_col, dec_col):
+    """Set keep to False for the stars in the True pixels of excluded_pixels, by chunks."""
+    excluded_pixels = np.asarray(excluded_pixels, dtype=bool)
+    if not excluded_pixels.any():
+        return
+    ra = catalog[ra_col].to_numpy()  # views of numpy-backed columns, not copies
+    dec = catalog[dec_col].to_numpy()
+    for start in range(0, len(catalog), CHUNK_SIZE):
+        chunk = slice(start, start + CHUNK_SIZE)
+        keep_chunk = keep[chunk]  # a view: setting it updates keep
+        keep_chunk[keep_chunk] = ~_in_pixels(ra[chunk][keep_chunk], dec[chunk][keep_chunk], excluded_pixels, nest=nest)
+
+
 def _in_pixels(
-    ra: NDArray[np.float64], dec: NDArray[np.float64], pixel_mask: NDArray[np.bool_]
+    ra: NDArray[np.float64], dec: NDArray[np.float64], pixel_mask: NDArray[np.bool_], *, nest: bool = False
 ) -> NDArray[np.bool_]:
-    """Stars in the True pixels of a HEALPix mask (RING); NaN coordinates are not."""
+    """Stars in the True pixels of a HEALPix mask (RING by default); NaN coordinates are not."""
     nside = hp.npix2nside(pixel_mask.size)
     finite = np.isfinite(ra) & np.isfinite(dec)
     inside = np.zeros(ra.size, dtype=bool)
-    inside[finite] = pixel_mask[hp.ang2pix(nside, ra[finite], dec[finite], lonlat=True)]
+    inside[finite] = pixel_mask[hp.ang2pix(nside, ra[finite], dec[finite], lonlat=True, nest=nest)]
     return inside

@@ -5,6 +5,8 @@ are ICRS itself (phi1 = ra, phi2 = dec) and the gala great-circle frame of
 conftest.py.
 """
 
+import tracemalloc
+
 import astropy.coordinates as coord
 import healpy as hp
 import numpy as np
@@ -12,6 +14,7 @@ import pytest
 
 from streameucliddes.catalogs import survey_footprint
 from streameucliddes.catalogs.survey_footprint import (
+    convert_footprint_healpix_mask,
     survey_footprint_healpix_mask,
     survey_footprint_phi12_mask,
 )
@@ -25,6 +28,11 @@ NSIDE = 16
 def _reorder_to(values, nest):
     """RING values in the requested ordering."""
     return hp.reorder(values, r2n=True) if nest else values
+
+
+def _reorder_to_nest(values_nest, nest):
+    """NESTED values in the requested ordering."""
+    return values_nest if nest else hp.reorder(values_nest, n2r=True).astype(bool)
 
 
 @pytest.fixture
@@ -54,6 +62,31 @@ def test_mask_from_star_counts(nest):
 
     mask = survey_footprint_healpix_mask(ra, dec, NSIDE, nest=nest, min_count=2)
     np.testing.assert_array_equal(np.flatnonzero(~mask), [3])
+
+
+# Min_count across chunks: the stars of a pixel counted in several chunks add up
+def test_mask_from_star_counts_by_chunks(monkeypatch):
+    ra, dec = hp.pix2ang(NSIDE, [3, 10, 3, 500, 10, 3], lonlat=True, nest=False)
+    expected = survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False, min_count=2)
+    monkeypatch.setattr(survey_footprint, "CHUNK_SIZE", 2)
+    np.testing.assert_array_equal(survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False, min_count=2), expected)
+    np.testing.assert_array_equal(np.flatnonzero(~expected), [3, 10])
+
+
+# Peak memory: the counts per pixel and the temporaries of a chunk, not of the catalog (no
+# copy of ra, dec)
+def test_mask_from_star_counts_memory(rng, monkeypatch):
+    chunk_size = 50_000
+    monkeypatch.setattr(survey_footprint, "CHUNK_SIZE", chunk_size)
+    n = 1_000_000
+    ra, dec = rng.uniform(0.0, 360.0, n), rng.uniform(-90.0, 90.0, n)
+    tracemalloc.start()
+    try:
+        survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 60 * chunk_size + 20 * hp.nside2npix(NSIDE) < 8 * n
 
 
 # Stars with a non-finite position are left out
@@ -115,6 +148,40 @@ def test_survey_without_footprint_map(footprint_dir):
     ra, dec = hp.pix2ang(NSIDE, [42], lonlat=True)
     mask = survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False, survey_name="missing")
     np.testing.assert_array_equal(mask, survey_footprint_healpix_mask(ra, dec, NSIDE, nest=False))
+
+
+# ===================================================
+# Test convert_footprint_healpix_mask
+# ===================================================
+
+
+def _ring_footprint():
+    """RING mask at NSIDE: inside, the pixels of dec -60 to -20 and ra 0 to 90."""
+    ra, dec = hp.pix2ang(NSIDE, np.arange(hp.nside2npix(NSIDE)), lonlat=True)
+    return ~((dec > -60.0) & (dec < -20.0) & (ra < 90.0))
+
+
+# Same nside: the mask in the ordering asked (both ways), a copy
+@pytest.mark.parametrize("nest, nest_out", [(False, False), (False, True), (True, False), (True, True)])
+def test_convert_ordering(nest, nest_out):
+    ring = _ring_footprint()
+    given = _reorder_to(ring, nest).astype(bool)
+    converted = convert_footprint_healpix_mask(given, NSIDE, nest=nest, nest_out=nest_out)
+    assert converted.dtype == bool and converted is not given
+    np.testing.assert_array_equal(converted, _reorder_to(ring, nest_out).astype(bool))
+
+
+# Coarser: a pixel is outside when any of its sub-pixels is (fully covered pixels only);
+# finer: the sub-pixels of a pixel take its value
+@pytest.mark.parametrize("nest", [False, True])
+def test_convert_nside(nest):
+    fine = np.zeros(hp.nside2npix(2 * NSIDE), dtype=bool)  # NESTED: the 4 sub-pixels of p are 4p..4p+3
+    fine[[4 * 10, 4 * 11, 4 * 11 + 1, 4 * 11 + 2, 4 * 11 + 3]] = True  # pixel 10: one quarter out
+    coarse = convert_footprint_healpix_mask(_reorder_to_nest(fine, nest), NSIDE, nest=nest, nest_out=True)
+    np.testing.assert_array_equal(np.flatnonzero(coarse), [10, 11])
+
+    back = convert_footprint_healpix_mask(coarse, 2 * NSIDE, nest=True, nest_out=True)
+    np.testing.assert_array_equal(np.flatnonzero(back), np.arange(4 * 10, 4 * 12))
 
 
 # ===================================================

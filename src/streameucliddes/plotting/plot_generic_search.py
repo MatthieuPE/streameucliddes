@@ -1,180 +1,241 @@
-"""Figures of the generic stream search (analysis.generic_stream_search).
+"""Figures of the generic stream search (analysis.generic_stream_search)."""
 
-plot_generic_search_result calls _apply_overlay_tracks, plot_overlapped_objects and
-plot_single_stream_track, which were never defined in this package (see
-docs/dev/package_structure.md)."""
+from __future__ import annotations
 
-import os
+from typing import TYPE_CHECKING
 
+import healpy as hp
 import matplotlib.pyplot as plt
+import numpy as np
 
-from streameucliddes.plotting.plot_cmd import plot_CMD
+from streameucliddes.plotting.plot_cmd import plot_match_filter
+from streameucliddes.plotting.plot_known_stream_search import (
+    DENSITY_PERCENTILES,
+    TRACK_COLOR,
+    _label_tracks,
+    _split_at_map_edge,
+)
 from streameucliddes.plotting.plot_sky_density import plot_2D_density_from_hp
 
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+    from typing import Any
+
+    import pandas as pd
+    from matplotlib.axes import Axes
+    from matplotlib.figure import Figure
+    from numpy.typing import ArrayLike, NDArray
+
+# The three maps of a result, with their titles
+MAP_PANELS = (
+    ("density", "Map before correction"),
+    ("background", "Fitted background"),
+    ("residual", "Corrected map (map - background)"),
+)
+# Known stream tracks on the corrected map: faint and dashed, to see the map through them
+KNOWN_TRACK_STYLE = {"color": TRACK_COLOR, "lw": 1.0, "ls": "--", "alpha": 0.5}
+KNOWN_TRACK_LABEL_ALPHA = 0.7
+# Opacity of the coordinate grid of the sky maps (skyproj draws it opaque): the maps show through
+GRID_ALPHA = 0.3
+
+
 def plot_generic_search_result(
-    results,
-    mag_bounds=(16.0, 28.0),
-    color_bounds=(-0.5, 1.5),
-    cmap="Greys",
-    overlay_tracks=None,
-    stream_name=None,
-    show_overlapped_objects=True,
-    overlap_kwargs=None,
-    suptitle=None,
-    save=False,
-    show=True,
-    fig_folder="../../figures",
-    fname=None,
-    fname_template="streamfind_dm{dm:.2f}.png",
-    dpi=150,
-):
-    """
-    2x2 panel figure from analysis.generic_stream_search.generic_search_single_dm() output:
-    1. CMD + match filter polygon (+ a line per bound of a range cut on the
-       CMD magnitude, if any)
-    2. data_map, with dwarves/globular clusters/stream tracks overlaid (see
-       `stream_name` and `show_overlapped_objects`)
-    3. fit_map
-    4. residual_map
+    result: Mapping[str, Any],
+    *,
+    cmd_stars: pd.DataFrame | None = None,
+    color_lim: tuple[float, float] | None = None,
+    mag_lim: tuple[float, float] | None = None,
+    lon_range: tuple[float, float] | None = None,
+    lat_range: tuple[float, float] | None = None,
+    cmap: str = "gray_r",
+    grid_alpha: float = GRID_ALPHA,
+    title: str | None = None,
+) -> tuple[Figure, list[Axes]]:
+    """Four panels of a generic-search map: CMD selection, map, background, corrected map.
+
+    1. The match filter on the CMD of ``cmd_stars``
+       (``plotting.plot_cmd.plot_match_filter``), with the number of stars
+       the map selects.
+    2. The map before correction (``density``), 3. the fitted background,
+       4. the corrected map (``residual``): HEALPix maps
+       (``plotting.plot_sky_density.plot_2D_density_from_hp``), zoomed on the
+       footprint. The map and the background share their colour scale (1st
+       to 99.5th percentile of the map, ``DENSITY_PERCENTILES``); the
+       corrected map has its own. Their coordinate grid is faint
+       (``grid_alpha``).
+
+    The figure is not saved.
 
     Parameters
     ----------
-    stream_name : str, optional
-        If given, the data_map panel highlights only this one galstreams
-        stream by name (via plot_single_stream_track, individually labeled
-        with its name/distance) plus globular clusters and dwarves (each
-        collapsed to a single "type" legend entry). If None (default),
-        every stream crossing the DP2 footprint is drawn instead, and all
-        three object types (streams/GCs/dwarves) are each collapsed to a
-        single "type" legend entry too (see plot_overlapped_objects).
-    show_overlapped_objects : bool
-        If False, skip the data_map overlay entirely -- e.g. for repeated
-        calls (like run_generic_search's gif frames) where the extra
-        network/file I/O and visual clutter aren't wanted.
-    overlap_kwargs : dict, optional
-        Forwarded to plot_overlapped_objects (e.g. {"gc_kwargs": {"s": 10}}).
+    result : mapping
+        Output of ``analysis.generic_stream_search.generic_search_single_dm``.
+    cmd_stars : pandas.DataFrame, optional
+        Stars of the CMD panel, e.g.
+        ``analysis.generic_stream_search.generic_search_cmd_stars(search)``.
+        Default: the match filter alone.
+    color_lim, mag_lim : tuple of float, optional
+        Ranges of the CMD panel (see ``plot_match_filter``): give them for
+        frames of a gif.
+    lon_range, lat_range : tuple of float, optional
+        Ranges of the maps (deg). Default: those of the footprint
+        (``_footprint_lonlat_ranges``).
+    cmap : str, optional
+        Colour map of the maps.
+    grid_alpha : float, optional
+        Opacity of the coordinate grid of the maps (1: as skyproj draws it).
+    title : str, optional
+        Default: the distance modulus and distance, and the isochrone.
 
     Returns
     -------
-    fig, ax, fname_path : figure, flattened (4,) axes array, path the figure
-        was saved to (fname_path is None if save=False).
+    fig : matplotlib.figure.Figure
+    axes : list of matplotlib.axes.Axes
+        CMD, map, background, corrected map.
+
+    Notes
+    -----
+    Adapted from the old ``plot_results_find_stream`` (2x2 panels); the
+    overlays of known objects are left out for now.
     """
-    data = results["data"]
-    mag_to_use = results["mag_to_use"]
-    cuts = results.get("cuts") or {}
-    polygon_vertices = results["polygon_vertices"]
-    ra_min, ra_max, dec_min, dec_max = results["footprint_bounds"]
-    dm = results["distance_modulus"]
+    if lon_range is None or lat_range is None:
+        default_lon, default_lat = _footprint_lonlat_ranges(result["footprint_mask"], nest=result["nest"])
+        lon_range = default_lon if lon_range is None else lon_range
+        lat_range = default_lat if lat_range is None else lat_range
 
-    figsize1 = plt.rcParams["figure.figsize"]
-    fig, ax = plt.subplots(
-        2, 2, figsize=(2.5 * figsize1[0], 2.5 * figsize1[1]), constrained_layout=True
+    fig, axes = plt.subplots(2, 2, figsize=(12.0, 9.0))
+    axes = list(axes.ravel())
+    plot_match_filter(
+        result["distance_modulus"], result["isochrone"], result["match_filter"], stars=cmd_stars,
+        color_lim=color_lim, mag_lim=mag_lim, axes=axes[0],
+        title=f"Match filter: {result['n_selected']:,} stars selected",
     )
-    ax = ax.ravel()
 
-    # skyproj lays out its own ticks/labels/colorbars rather than following
-    # rcParams, and the global constrained-layout padding (set very tight in
-    # plot_style.py for compact single-panel figures) is too small once two
-    # skyproj panels sit stacked in the same figure -- widen it here and use
-    # smaller fonts so the panels stop bleeding into each other.
-    w_pad, h_pad, wspace, hspace = 0.05, 0.05, 0.15, 0.15
-    try:
-        # print(f"1 - Applying w_pad={w_pad}, h_pad={h_pad}, wspace={wspace}, hspace = {hspace}")
-        fig.get_layout_engine().set(
-            w_pad=w_pad, h_pad=h_pad, wspace=wspace, hspace=hspace
+    density_values = np.ma.compressed(result["density"])
+    low, high = DENSITY_PERCENTILES
+    density_scale = tuple(np.percentile(density_values, [low, high])) if density_values.size else (None, None)
+    for index, (key, panel_title) in enumerate(MAP_PANELS, start=1):
+        values = np.ma.compressed(result[key])
+        vmin, vmax = density_scale if key != "residual" else (
+            tuple(np.percentile(values, [low, high])) if values.size else (None, None)
         )
-    except AttributeError:
-        # print(f"2 - Applying w_pad={w_pad}, h_pad={h_pad}, wspace={wspace}, hspace = {hspace}")
-        fig.set_constrained_layout_pads(
-            w_pad=w_pad, h_pad=h_pad, wspace=wspace, hspace=hspace
+        _, axes[index] = plot_2D_density_from_hp(
+            np.ma.filled(np.ma.asarray(result[key], dtype=float), hp.UNSEEN), nest=result["nest"],
+            fig=fig, ax=axes[index], lon_range=lon_range, lat_range=lat_range, title=panel_title,
+            cmap=cmap, vmin=vmin, vmax=vmax, label_fontsize=9, title_fontsize=11, tick_labelsize=7,
         )
+        axes[index].gridlines.set_alpha(grid_alpha)  # skyproj's grid, a LineCollection
 
-    fig, ax[0] = plot_CMD(
-        data,
-        fig=fig,
-        ax=ax[0],
-        mag_cols=mag_to_use,
-        ylim=mag_bounds,
-        xlim=color_bounds,
-        cmap=cmap,
+    fig.suptitle(_title(result) if title is None else title)
+    return fig, axes
+
+
+def plot_generic_search_residual_map(
+    result: Mapping[str, Any],
+    *,
+    tracks: Sequence[tuple[str, ArrayLike, ArrayLike]] = (),
+    label_tracks: bool = False,
+    grid_alpha: float = GRID_ALPHA,
+    lon_range: tuple[float, float] | None = None,
+    lat_range: tuple[float, float] | None = None,
+    cmap: str = "gray_r",
+    title: str | None = None,
+) -> tuple[Figure, Axes]:
+    """Corrected map of a generic search, with the known stream tracks over it.
+
+    The corrected map (``residual``) alone, as in the fourth panel of
+    ``plot_generic_search_result`` (same colour scale), larger. The tracks
+    are faint dashed lines, not to hide the map; with ``label_tracks``, each
+    is labelled on its part inside the footprint. The coordinate grid is
+    faint (``grid_alpha``).
+
+    The figure is not saved.
+
+    Parameters
+    ----------
+    result : mapping
+        Output of ``analysis.generic_stream_search.generic_search_single_dm``.
+    tracks : sequence of (label, ra, dec), optional
+        Tracks to draw (deg), e.g. the galstreams tracks crossing the
+        footprint.
+    label_tracks : bool, optional
+        Write the name of each track crossing the footprint.
+    grid_alpha : float, optional
+        Opacity of the coordinate grid (1: as skyproj draws it).
+    lon_range, lat_range : tuple of float, optional
+        Ranges of the map (deg). Default: those of the footprint.
+    cmap : str, optional
+        Colour map.
+    title : str, optional
+        Default: the distance modulus and distance, and the isochrone.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax : skyproj.SkyAxes
+        Its ``plot`` and ``text`` take (ra, dec) in degrees.
+    """
+    footprint_mask = np.asarray(result["footprint_mask"], dtype=bool)
+    if lon_range is None or lat_range is None:
+        default_lon, default_lat = _footprint_lonlat_ranges(footprint_mask, nest=result["nest"])
+        lon_range = default_lon if lon_range is None else lon_range
+        lat_range = default_lat if lat_range is None else lat_range
+
+    fig, ax = plt.subplots(figsize=(10.0, 7.0))
+    values = np.ma.compressed(result["residual"])
+    vmin, vmax = tuple(np.percentile(values, DENSITY_PERCENTILES)) if values.size else (None, None)
+    fig, ax = plot_2D_density_from_hp(
+        np.ma.filled(np.ma.asarray(result["residual"], dtype=float), hp.UNSEEN), nest=result["nest"],
+        fig=fig, ax=ax, lon_range=lon_range, lat_range=lat_range, title=MAP_PANELS[2][1],
+        cmap=cmap, vmin=vmin, vmax=vmax, label_fontsize=11, title_fontsize=12, tick_labelsize=9,
     )
-    ax[0].plot(
-        polygon_vertices[:, 0],
-        polygon_vertices[:, 1],
-        color="C0",
-        lw=2,
-        label="Match filter",
-    )
-    mag_cut = cuts.get(mag_to_use[0])
-    if isinstance(mag_cut, tuple):
-        for bound in mag_cut:
-            if bound is not None:
-                ax[0].axhline(
-                    bound,
-                    color="C1",
-                    lw=1.5,
-                    ls="dashed",
-                    label=f"Magnitude cut ({bound:g})",
-                )
-    ax[0].legend(fontsize=8)
-    ax[0].set_title("Match filter", fontsize=11)
+    ax.gridlines.set_alpha(grid_alpha)  # skyproj's grid, a LineCollection
+    lon_0 = ax.projection.proj4_params["lon_0"]  # the map edge is at lon_0 + 180
+    for _, ra, dec in tracks:
+        for ra_part, dec_part in _split_at_map_edge(np.asarray(ra, dtype=float), np.asarray(dec, dtype=float), lon_0):
+            ax.plot(ra_part, dec_part, **KNOWN_TRACK_STYLE)
+    if label_tracks:
+        _label_tracks(ax, tracks, footprint_mask, nest=result["nest"], alpha=KNOWN_TRACK_LABEL_ALPHA)
 
-    panels = [
-        ("data_map", "Data map"),
-        ("fit_map", "Fit map"),
-        ("residual_map", "Residual map"),
-    ]
-    for i, (key, panel_title) in enumerate(panels, start=1):
-        fig, ax[i] = plot_2D_density_from_hp(
-            results[key],
-            lon_range=[ra_min, ra_max],
-            lat_range=[dec_min, dec_max],
-            fig=fig,
-            ax=ax[i],
-            cmap=cmap,
-            title=panel_title,
-            label_fontsize=9,
-            title_fontsize=11,
-            tick_labelsize=7,
-        )
-        _apply_overlay_tracks(ax[i], overlay_tracks)
+    fig.suptitle(_title(result) if title is None else title)
+    return fig, ax
 
-    if show_overlapped_objects:
-        overlap_kwargs = dict(overlap_kwargs or {})
-        if stream_name is None:
-            # Every crossing stream, all three object types collapsed to one
-            # "type" legend entry each.
-            overlap_kwargs.setdefault("stream_kwargs", {"label_mode": "type"})
-            plot_overlapped_objects(
-                fig=fig, ax=ax[1], plot_footprint=False, **overlap_kwargs
-            )
-        else:
-            # Just GCs + dwarves (plot_overlapped_objects' own defaults already
-            # collapse these to one "type" entry each) plus the one target stream,
-            # individually labeled, combined into a single legend.
-            plot_overlapped_objects(
-                fig=fig,
-                ax=ax[1],
-                object_to_plot=("gc", "dwarf"),
-                plot_footprint=False,
-                **overlap_kwargs,
-            )
-            plot_single_stream_track(stream_name, fig=fig, ax=ax[1], show_legend=False)
-            handles, labels = ax[1].get_legend_handles_labels()
-            if handles:
-                ax[1].legend(handles, labels, loc="upper right", fontsize=8)
 
-    if suptitle is None:
-        suptitle = f"dm = {dm:.2f} ({results['distance_kpc']:.1f})"
-    fig.suptitle(suptitle)
+def _title(result: Mapping[str, Any]) -> str:
+    """Distance modulus and distance, and isochrone of a map."""
+    isochrone = result["isochrone"]
+    return (f"dm {result['distance_modulus']:.1f} ({result['distance_kpc']:.1f} kpc), "
+            f"{isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}")
 
-    fname_path = None
-    if save:
-        os.makedirs(fig_folder, exist_ok=True)
-        fname_path = os.path.join(fig_folder, fname or fname_template.format(dm=dm))
-        fig.savefig(fname_path, dpi=dpi)
 
-    if not show:
-        plt.close(fig)
+def _footprint_lonlat_ranges(
+    footprint_mask: NDArray[np.bool_], *, nest: bool, margin_deg: float = 1.0
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """Longitude and latitude ranges of a HEALPix footprint, for zoomed maps.
 
-    return fig, ax, fname_path
+    The longitude range is taken around the footprint centre, so that a
+    footprint across ra = 0 gives e.g. (-20, 100), not (0, 360).
+
+    Parameters
+    ----------
+    footprint_mask : numpy.ndarray of bool
+        HEALPix mask, True outside the footprint.
+    nest : bool
+        HEALPix ordering of ``footprint_mask``.
+    margin_deg : float, optional
+        Added on each side (deg).
+
+    Returns
+    -------
+    lon_range, lat_range : tuple of float
+        (deg), the longitudes in [-180, 360).
+    """
+    nside = hp.npix2nside(np.size(footprint_mask))
+    lon, lat = hp.pix2ang(nside, np.flatnonzero(~np.asarray(footprint_mask, dtype=bool)), lonlat=True, nest=nest)
+    if lon.size == 0:
+        return (-180.0, 180.0), (-90.0, 90.0)
+    centre = np.degrees(np.arctan2(np.sin(np.radians(lon)).mean(), np.cos(np.radians(lon)).mean()))
+    offset = (lon - centre + 180.0) % 360.0 - 180.0  # around the centre
+    lon_range = (float(centre + offset.min() - margin_deg), float(centre + offset.max() + margin_deg))
+    lat_range = (float(max(lat.min() - margin_deg, -90.0)), float(min(lat.max() + margin_deg, 90.0)))
+    return lon_range, lat_range

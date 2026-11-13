@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 from streamobs.match_filter import is_in_match_filter
 
+from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, object_mask_nside, objects_healpix_mask
 from streameucliddes.analysis.catalog_preparation import prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_MATCH_FILTER,
@@ -31,7 +32,7 @@ from streameucliddes.analysis.known_stream_search import (
     prepare_search,
 )
 from streameucliddes.analysis.star_density_maps import star_density_phi12
-from streameucliddes.catalogs import isochrone_parameters
+from streameucliddes.catalogs import isochrone_parameters, overlapped_objects
 from streameucliddes.catalogs.galstreams_catalog import (
     galstreams_dm_along_track,
     galstreams_phi12_window,
@@ -218,6 +219,56 @@ def test_single_dm_footprint(stream_catalog, gc_frame):
     np.testing.assert_array_equal(result["density"].mask, expected)
     with pytest.raises(ValueError, match="nest"):
         known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, footprint_mask=healpix_mask)
+
+
+def _objects(frame, phi1, phi2, radius_arcmin):
+    """One object at (phi1, phi2) of frame, with the columns of catalogs.overlapped_objects."""
+    ra, dec = phi12_to_radec(np.atleast_1d(phi1), np.atleast_1d(phi2), frame)
+    return pd.DataFrame({"key": ["mock"], "name": ["Mock"], "ra": ra, "dec": dec, "radius_arcmin": [radius_arcmin],
+                         "ellipticity": [0.4], "position_angle": [30.0], "distance_kpc": [30.0]})
+
+
+# By default the LMC, the SMC, the dwarfs and the clusters are masked: their stars dropped from the prepared
+# stars, the bins whose centre is on them masked (with the footprint); the others as without
+# masks. Mock objects (ellipses): a cluster beside the stream, a dwarf on it, the Clouds outside the window
+def test_prepare_search_object_masks(stream_catalog, gc_frame, monkeypatch):
+    objects = {"lmc": _objects(gc_frame, 60.0, 0.0, 190.0), "smc": _objects(gc_frame, -60.0, 0.0, 60.0),
+               "dwarfs": _objects(gc_frame, -4.0, 0.0, 10.0), "gc": _objects(gc_frame, 3.0, 1.5, 15.0)}
+    monkeypatch.setattr(overlapped_objects, "get_lmc", lambda: objects["lmc"])
+    monkeypatch.setattr(overlapped_objects, "get_smc", lambda: objects["smc"])
+    monkeypatch.setattr(overlapped_objects, "get_dwarf_galaxies", lambda: objects["dwarfs"])
+    monkeypatch.setattr(overlapped_objects, "get_globular_clusters", lambda: objects["gc"])
+    no_masks = {"mask_lmc": False, "mask_smc": False, "mask_dwarfs": False, "mask_gc": False, "mask_galaxies": False}
+    plain = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN, **no_masks)
+    masked = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN)
+    assert plain.object_mask is None and plain.footprint_mask is None
+
+    nside = object_mask_nside(BIN)
+    healpix = np.zeros(hp.nside2npix(nside), dtype=bool)
+    for object_type, object_table in objects.items():
+        healpix |= objects_healpix_mask(object_table, nside, nest=False, radius_scale=DEFAULT_RADIUS_SCALES[object_type])
+    expected = survey_footprint_phi12_mask(healpix, gc_frame, WINDOW, BIN, nest=False)
+    assert 0 < expected.sum() < expected.size / 4
+    np.testing.assert_array_equal(masked.object_mask, expected)
+    np.testing.assert_array_equal(masked.footprint_mask, expected)
+
+    on_object = healpix[hp.ang2pix(nside, plain.stars["ra"], plain.stars["dec"], lonlat=True)]
+    assert on_object.sum() > 100
+    assert masked.stars.index.equals(plain.stars.index[~on_object])
+
+    result = known_stream_search_single_dm(search=masked, distance_modulus=STREAM_DM)
+    np.testing.assert_array_equal(result["density"].mask, expected)
+    assert result["n_selected"] < known_stream_search_single_dm(search=plain, distance_modulus=STREAM_DM)["n_selected"]
+
+    phi1_centres, phi2_centres = phi12_bin_centres(WINDOW, BIN)
+    footprint = np.broadcast_to(phi1_centres[:, None] > 5.0, (phi1_centres.size, phi2_centres.size))
+    with_footprint = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN, footprint_mask=footprint)
+    np.testing.assert_array_equal(with_footprint.footprint_mask, footprint | expected)
+
+    only_gc = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN, mask_lmc=False, mask_smc=False,
+                             mask_dwarfs=False)
+    np.testing.assert_array_equal(only_gc.object_mask, survey_footprint_phi12_mask(
+        objects_healpix_mask(objects["gc"], nside, nest=False), gc_frame, WINDOW, BIN, nest=False))
 
 
 # ===================================================

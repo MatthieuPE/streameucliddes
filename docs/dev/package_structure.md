@@ -62,6 +62,8 @@ src/streameucliddes/
     dust_correction.py           correct_dust_map          (old: missing, locate it)
     survey_footprint.py          [NEW] survey_footprint_healpix_mask
                                  [NEW] survey_footprint_phi12_mask
+                                 [NEW] convert_footprint_healpix_mask (nside, ordering;
+                                       generic search)
     galstreams_catalog.py        [NEW] load_galstreams
                                  [NEW] galstreams_track_length_in_footprint
                                  [NEW] select_galstreams_in_footprint
@@ -72,6 +74,10 @@ src/streameucliddes/
                                  [NEW] known_stream_isochrone_parameters
                                  [NEW] load_stream_population_table
     stream_populations.csv       [NEW] age, [Fe/H], Z, references
+    overlapped_objects.py        [NEW] load_lvdb_table (LVDB v1.1.2, cached in data/lvdb/)
+                                 [NEW] get_lmc, get_smc, get_dwarf_galaxies, get_globular_clusters
+                                 [NEW] load_sga_bright_galaxies, extract_sga_bright_galaxies,
+                                       get_galaxies (SGA-2020, MAG_LEDA < 16.5, data/sga/)
 
   analysis/
     cmd_match_filter.py          build_match_filter_polygon
@@ -81,10 +87,21 @@ src/streameucliddes/
     catalog_preparation.py       [NEW] prepare_match_filter_catalog, check_columns,
                                  default_error_cuts; resolve_mag_columns and
                                  ensure_dust_corrected (moved from generic_stream_search)
+                                 (as_mask: the rows kept, no copy, for the generic search)
+                                 (excluded_pixels: stars on masked objects dropped)
+                                 [NEW] star_healpix_pixels (pixel per star, by chunks;
+                                       generic-search preparation)
     star_density_maps.py         star_density_healpix
                                  (old: get_healpy_data_from_table, one copy,
                                   + compute part of plotting.get_hp_map)
                                  [NEW] star_density_phi12
+    build_masks.py               [NEW] objects_healpix_mask (reference ellipses x k)
+                                 [NEW] object_mask_nside (known-stream grids)
+                                 [NEW] lmc_healpix_mask, smc_healpix_mask, dwarf_galaxies_healpix_mask,
+                                       globular_clusters_healpix_mask, galaxies_healpix_mask
+                                 [NEW] overlapped_objects_healpix_mask (union; mask_lmc,
+                                       mask_smc, mask_dwarfs, mask_gc, mask_galaxies, True by default, of
+                                       prepare_generic_search and prepare_search)
     background_polynomial_fit.py fit_background_model, polyfit2d,
                                  fit_background_model_polyfit2d, process_data,
                                  process_data_polyfit2d, polynomial_formula
@@ -92,6 +109,10 @@ src/streameucliddes/
     generic_stream_search.py     generic_search_single_dm  (old: pipeline.find_stream)
                                  generic_search_dm_scan    (old: compute part of
                                                             pipeline.scan_find_stream)
+                                 [NEW] prepare_generic_search, PreparedGenericSearch,
+                                 generic_search_cmd_stars
+                                 (generic-search branch: API mirrors known_stream_search;
+                                  shared match filter, no copy of the catalog, chunks)
     known_stream_search.py       [NEW] known_stream_search_single_dm
                                  [NEW] known_stream_search_dm_scan
                                  [NEW] known_stream_search_dm_along_track
@@ -109,7 +130,10 @@ src/streameucliddes/
                                  plot_overlapped_objects, plot_single_stream_track
                                  (old: plotting.py; last two missing, locate them)
     plot_generic_search.py       plot_generic_search_result
-                                 (old: plotting.plot_results_find_stream)
+                                 (old: plotting.plot_results_find_stream; generic-search
+                                  branch: CMD selection, map, background, corrected map)
+                                 [NEW] plot_generic_search_residual_map (corrected map
+                                       alone, known stream tracks faint and dashed)
     plot_known_stream_search.py  [NEW] plot_known_stream_search_single_dm
                                  [NEW] plot_galstreams_selection
     plot_injected_stream_snr.py  plot_snr_contours, plot_snr_maps + helpers
@@ -121,10 +145,12 @@ src/streameucliddes/
                                        as celestial_currents)
 
   workflows/
-    run_config.py                [NEW] KNOWN_STREAM_SEARCH_CONFIG (dict of the run arguments,
-                                       to copy and update), RunConfig (YAML overrides)
+    run_config.py                [NEW] KNOWN_STREAM_SEARCH_CONFIG, GENERIC_SEARCH_CONFIG (dicts
+                                       of the run arguments, to copy and update),
+                                       RunConfig (YAML overrides)
     run_generic_search.py        run_generic_search
-                                 (old: loop, plots and gif of scan_find_stream)
+                                 (old: loop, plots and gif of scan_find_stream; gifs of the
+                                  four panels and of the corrected map with known tracks)
                                  [NEW] save_generic_search_healpix_maps
     run_known_stream_search.py   [NEW] run_known_stream_search
                                  [NEW] run_all_known_stream_searches
@@ -133,6 +159,8 @@ src/streameucliddes/
 scripts/                         [NEW] run_generic_search.py, run_known_stream_search.py
 configs/                         [NEW] generic_search.yaml, known_stream_search.yaml
 notebooks/                       [NEW] known_stream_search_example.ipynb (usage example)
+                                 [NEW] generic_search_example.ipynb (fake data first,
+                                       then the Euclid x DES stars)
 ```
 
 Naming rules used:

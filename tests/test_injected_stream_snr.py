@@ -1,7 +1,7 @@
 """Tests of the stream SNR estimate (injected_stream_snr.get_stream_snr).
 
 The Euclid x DES stars are replaced by a mock background with the same columns as
-get_eucliddes_stars(), uniform on the sky around the default stream and uniform in
+get_euclid_stars("euclid_q1_des"), uniform on the sky around the default stream and uniform in
 colour-magnitude space, so the tests neither need the real catalog nor depend on it.
 """
 

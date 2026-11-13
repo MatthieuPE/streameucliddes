@@ -175,16 +175,16 @@ def fit_background_model_polyfit2d(
                 if i + j > total_degree:
                     coeff_2d[i, j] = 0.0
 
-    model_plane_all = polynomial.polyval2d(
-        prepared_poly["x_all"], prepared_poly["y_all"], coeff_2d
+    # Evaluated on the unmasked pixels only, then placed in a full-sky map (NaN elsewhere)
+    model_plane = polynomial.polyval2d(
+        prepared_poly["x_eval"], prepared_poly["y_eval"], coeff_2d
     )
     if fit_log_space:
-        # bkg = np.exp(model_plane_all)
         # fix the fact that exp(710) is above float range
-        model_plane_all_clipped = np.clip(model_plane_all, -700, 700)
-        bkg = np.exp(model_plane_all_clipped)
-    else:
-        bkg = model_plane_all
+        model_plane = np.exp(np.clip(model_plane, -700, 700))
+    bkg = np.full(prepared_poly["npix"], np.nan)
+    bkg[prepared_poly["eval_idx"]] = model_plane
+    del model_plane
 
     bkg = np.ma.array(bkg, mask=prepared_poly["mask"], fill_value=np.nan)
 
@@ -297,14 +297,13 @@ def process_data(data, **kwargs):
             f"Input map size={data_map.size} is inconsistent with nside={nside} (expected npix={npix})."
         )
 
-    lon, lat = hp.pix2ang(nside, np.arange(npix), lonlat=True, nest=nest)
-    x = _normalize_to_minus_one_plus_one(lon)
-    y = _normalize_to_minus_one_plus_one(lat)
-
-    selection = (~mask) & np.isfinite(x) & np.isfinite(y)
-    fit_idx = np.where(selection)[
-        0
-    ]  # Indices of pixels used for fitting (unmasked and valid coordinates)
+    selection = ~mask
+    fit_idx = np.flatnonzero(selection)  # Indices of pixels used for fitting (unmasked)
+    # Coordinates of these pixels only, not of the whole sky: a footprint is often a few
+    # percent of it
+    lon, lat = hp.pix2ang(nside, fit_idx, lonlat=True, nest=nest)
+    x = _normalize_to_minus_one_plus_one(lon) if fit_idx.size else lon
+    y = _normalize_to_minus_one_plus_one(lat) if fit_idx.size else lat
     # We will evaluate the likelihood only on these selected pixels to avoid
     # issues with masked/invalid data. This is better than selection mask, because it gives us the actual indices
     #  to index into the full data_map when computing expected counts, and avoid
@@ -315,8 +314,8 @@ def process_data(data, **kwargs):
         "mask": mask,
         "selection": selection,
         "fit_idx": fit_idx,
-        "x": x[selection],
-        "y": y[selection],
+        "x": x,
+        "y": y,
         "observed": np.clip(data_map[selection], 0.0, None),
         "nside": nside,
         "npix": npix,
@@ -370,18 +369,18 @@ def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **k
         )
         data_ma = np.ma.array(smoothed, mask=mask)
 
-    lon, lat = hp.pix2ang(nside, np.arange(npix), lonlat=True)
-    # Prefer the selection computed by process_data (handles mask and finite lon/lat).
-    sel = prepared.get("selection", None)
-    if sel is None:
-        sel = ~data_ma.mask
-
-    x_sel, y_sel = proj.ang2xy(lon[sel], lat[sel], lonlat=True)
+    # Coordinates of the unmasked pixels only (not of the whole sky), in the ordering of the map
+    nest = bool(kwargs.get("nest", False))
+    eval_idx = prepared["fit_idx"]
+    lon, lat = hp.pix2ang(nside, eval_idx, lonlat=True, nest=nest)
+    x_sel, y_sel = proj.ang2xy(lon, lat, lonlat=True)
     x_sel = np.asarray(x_sel, dtype=float)
     y_sel = np.asarray(y_sel, dtype=float)
-    v_sel = np.asarray(data_ma[sel], dtype=float)
+    v_sel = np.asarray(data_ma.data[eval_idx], dtype=float)
+    del lon, lat
 
-    sel2 = np.isfinite(x_sel) & np.isfinite(y_sel) & np.isfinite(v_sel)
+    finite_xy = np.isfinite(x_sel) & np.isfinite(y_sel)
+    sel2 = finite_xy & np.isfinite(v_sel)
     extent_count = None
     if hasattr(proj, "get_extent"):
         xmin, xmax, ymin, ymax = proj.get_extent()
@@ -393,7 +392,7 @@ def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **k
         sel2 &= extent_mask
 
     if debug:
-        print("[process_data_polyfit2d debug] sel_count:", int(np.count_nonzero(sel)))
+        print("[process_data_polyfit2d debug] sel_count:", int(eval_idx.size))
         print(
             "[process_data_polyfit2d debug] proj finite x/y:",
             int(np.count_nonzero(np.isfinite(x_sel))),
@@ -410,66 +409,40 @@ def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **k
     x_fit = x_sel[sel2]
     y_fit = y_sel[sel2]
     v_fit = v_sel[sel2]
+    # The background is evaluated on every unmasked pixel with finite coordinates
+    x_eval = x_sel[finite_xy]
+    y_eval = y_sel[finite_xy]
+    eval_idx = eval_idx[finite_xy]
 
-    x_all, y_all = proj.ang2xy(lon, lat, lonlat=True)
-    x_all = np.asarray(x_all, dtype=float)
-    y_all = np.asarray(y_all, dtype=float)
+    LOGGER.debug(
+        "process_data_polyfit2d: sel_count=%d, sel2_count=%d, mask_sum=%d",
+        eval_idx.size,
+        np.count_nonzero(sel2),
+        np.sum(data_ma.mask),
+    )
 
-    # Debug logging to help trace empty-fit issues
-    try:
-        LOGGER.debug(
-            "process_data_polyfit2d: sel_count=%d, sel2_count=%d, mask_sum=%d",
-            np.count_nonzero(sel),
-            np.count_nonzero(sel2),
-            np.sum(data_ma.mask),
-        )
-    except Exception:
-        pass
+    # Normalize the coordinates to [-1, 1] over the fitted pixels, for the numerical
+    # stability of high-order fits (over the whole sky, a small footprint would only span
+    # a narrow part of [-1, 1])
+    x_min, x_max = (float(x_fit.min()), float(x_fit.max())) if x_fit.size else (-1.0, 1.0)
+    y_min, y_max = (float(y_fit.min()), float(y_fit.max())) if y_fit.size else (-1.0, 1.0)
 
-    # Normalize projected coordinates for numerical stability of high-order fits.
-    finite_x_all = np.isfinite(x_all)
-    finite_y_all = np.isfinite(y_all)
-
-    if np.any(finite_x_all):
-        x_min, x_max = float(np.nanmin(x_all[finite_x_all])), float(
-            np.nanmax(x_all[finite_x_all])
-        )
-    else:
-        x_min, x_max = -1.0, 1.0
-    if np.any(finite_y_all):
-        y_min, y_max = float(np.nanmin(y_all[finite_y_all])), float(
-            np.nanmax(y_all[finite_y_all])
-        )
-    else:
-        y_min, y_max = -1.0, 1.0
-
-    x_span = x_max - x_min
-    y_span = y_max - y_min
-
-    if x_span < 1e-12:
-        x_all_norm = np.zeros_like(x_all)
-        x_fit_norm = np.zeros_like(x_fit)
-    else:
-        x_all_norm = 2.0 * (x_all - x_min) / x_span - 1.0
-        x_fit_norm = 2.0 * (x_fit - x_min) / x_span - 1.0
-
-    if y_span < 1e-12:
-        y_all_norm = np.zeros_like(y_all)
-        y_fit_norm = np.zeros_like(y_fit)
-    else:
-        y_all_norm = 2.0 * (y_all - y_min) / y_span - 1.0
-        y_fit_norm = 2.0 * (y_fit - y_min) / y_span - 1.0
+    def _normalized(values, low, high):
+        if high - low < 1e-12:
+            return np.zeros_like(values)
+        return 2.0 * (values - low) / (high - low) - 1.0
 
     return {
         "nside": nside,
         "npix": npix,
         "mask": np.asarray(data_ma.mask, dtype=bool),
         "data_map": np.asarray(data_ma.filled(0.0), dtype=float),
-        "x_fit": x_fit_norm,
-        "y_fit": y_fit_norm,
+        "x_fit": _normalized(x_fit, x_min, x_max),
+        "y_fit": _normalized(y_fit, y_min, y_max),
         "v_fit": v_fit,
-        "x_all": x_all_norm,
-        "y_all": y_all_norm,
+        "x_eval": _normalized(x_eval, x_min, x_max),
+        "y_eval": _normalized(y_eval, y_min, y_max),
+        "eval_idx": eval_idx,
         "data_ma": data_ma,
     }
 

@@ -40,7 +40,7 @@ if TYPE_CHECKING:  # imported in load_galstreams only, so that the rest works wi
 LOGGER = logging.getLogger(__name__)
 
 # Cache of the galstreams library (see load_galstreams), next to the catalogs (see
-# euclid_des_catalog.DEFAULT_DATA_PATH): the data/ folder of the repository, gitignored.
+# euclid_catalog.DATA_DIR): the data/ folder of the repository, gitignored.
 GALSTREAMS_CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "galstreams"
 
 IBATA2024_REFERENCE = "ibata2024"  # galstreams reference of the Ibata et al. 2024 tracks

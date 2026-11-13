@@ -1,32 +1,36 @@
 # Generic stream search over the survey footprint, read by
-# workflows.run_config.RunConfig.from_yaml and scripts/run_generic_search.py.
+# workflows.run_config.RunConfig.from_yaml.
 #
-# Phase 2 stub: the keys below are proposals for review, commented out until
-# RunConfig is written (phase 3). See the RunConfig docstring.
+# Only the values that change: the others are those of
+# workflows.run_config.GENERIC_SEARCH_CONFIG (the defaults, in Python).
+# Uncomment and edit what you need. Keys: those of GENERIC_SEARCH_CONFIG, and
+# isochrone (one isochrone instead of the grid).
 #
-# search: generic
+# No dust correction: the Euclid x DES magnitudes are already dereddened.
+
+search: generic
+
+# distance_moduli: {start: 15.0, stop: 22.0, step: 0.1}   # default: 15 to 22 every 0.1
 #
-# distance_moduli: {start: 15.0, stop: 22.0, step: 0.1}   # plan, section 1
+# match_filter:                # default: Euclid VIS vs VIS - H
+#   name: euclid_vis_h
+#   reference_band: [euclid_q1, VIS]
+#   color_bands: [[euclid_q1, H]]
 #
-# # Arguments of streamobs.match_filter.build_match_filter
-# match_filter_parameters:
-#   age: 12.0                  # Gyr
-#   metallicity: 0.0001        # Z
-#   survey_1: des
-#   survey_2: des
-#   band_1: g
-#   band_2: r
+# default_grid:                # one set of maps per isochrone
+#   - {age: 13.0, metallicity: 0.0002}
 #
-# # find_stream_kwargs of workflows.run_generic_search.run_generic_search
-# search_kwargs:
-#   mag_cols: [des_yr6_g_obs, des_yr6_r_obs]
-#   ra_col: ra
-#   dec_col: dec
-#   use_dust_corrected: false  # the Euclid x DES magnitudes are already dereddened
-#   nside: 512
-#   smoothing_scale_degrees: 0.3
-#   cuts: {}                   # see catalogs.catalog_cuts.get_cut_mask
-#   model_type_fit: {polynomial: {degree: 5}}   # fixed degree for now (the current default)
+# nside: 512
+# mask_lmc: true               # mask the LMC, the SMC, the dwarf galaxies, the globular clusters (LVDB),
+# mask_smc: true               # the bright galaxies (SGA); false: not masked
+# mask_dwarfs: true
+# mask_gc: true
+# mask_galaxies: true
+# mask_radius_scale: {lmc: 6.5, smc: 11.0, dwarfs: 4.0, gc: 4.0, galaxies: 5.0}   # in reference radii (or one value)
+# smoothing_deg: 0.3
+# polynomial_degree: 5         # fixed for now
+# map_key: residual            # map of the Parquet file: residual, density or background
+# known_tracks: true           # galstreams tracks on the residual gif
 #
 # output_dir: figures/outputs/generic_search   # gitignored
-# n_workers: 1
+# n_workers: 8

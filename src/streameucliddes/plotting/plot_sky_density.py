@@ -5,16 +5,16 @@ defined in this package (see docs/dev/package_structure.md)."""
 
 import healpy as hp
 import matplotlib.pyplot as plt
-import numpy as np
 import skyproj
 
+from streameucliddes.analysis.star_density_maps import star_density_healpix
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
+
 
 def plot_2D_density(
     data,
     columns=("ra", "dec"),
     nside=48,
-    nest=False,
     fig=None,
     ax=None,
     lon_range=None,
@@ -26,9 +26,17 @@ def plot_2D_density(
     add_colorbar=True,
     smoothing=False,
     smoothing_scale_degrees=0.3,
+    label_fontsize=14,
+    title_fontsize=14,
+    tick_labelsize=None,
 ):
     """
-    Plot a 2D stellar density map on the sky using skyproj + HEALPix.
+    Plot the star counts of a catalog on the sky (skyproj + HEALPix, RING).
+
+    The map is built with
+    :func:`~streameucliddes.analysis.star_density_maps.star_density_healpix`
+    (pixels without stars are masked, so they stay blank) and drawn with
+    :func:`plot_2D_density_from_hp`, so both functions give the same figure.
 
     Parameters
     ----------
@@ -38,12 +46,10 @@ def plot_2D_density(
         Names of (RA, Dec) columns in degrees.
     nside : int
         HEALPix NSIDE resolution (power of 2).
-    nest : bool
-        HEALPix ordering scheme. False = RING, True = NESTED.
     fig, ax : matplotlib Figure/Axes, optional
         Existing figure and axes.
     lon_range, lat_range : tuple, optional
-        Plot bounds in degrees. If None, inferred from data.
+        Plot bounds in degrees. If None, skyproj zooms on the pixels with stars.
     title : str
         Plot title.
     cmap : str
@@ -52,56 +58,40 @@ def plot_2D_density(
         Color scale limits.
     add_colorbar : bool
         Whether to add a colorbar.
+    smoothing : bool
+        Gaussian smoothing of the counts (see ``star_density_healpix``).
+    smoothing_scale_degrees : float
+        Gaussian smoothing width in degrees.
+    label_fontsize, title_fontsize, tick_labelsize : float
+        Font sizes, see :func:`plot_2D_density_from_hp`.
 
     Returns
     -------
     fig, ax
     """
-
-    if fig is None or ax is None:
-        fig, ax = plt.subplots(1, 1, figsize=(8, 4.5))
-
-    # Read coordinates and keep only valid values
-    ra = np.asarray(data[columns[0]], dtype=float)
-    dec = np.asarray(data[columns[1]], dtype=float)
-    valid = np.isfinite(ra) & np.isfinite(dec) & (dec >= -90.0) & (dec <= 90.0)
-
-    ra = ra[valid]
-    dec = dec[valid]
-
-    # Build HEALPix count map
-    npix = hp.nside2npix(nside)
-    pix_idx = hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)
-    hp_map = np.bincount(pix_idx, minlength=npix).astype(np.float32)
-    # convert degrees in radian
-    smoothing_scale_radian = 2 * np.pi / 360.0 * smoothing_scale_degrees
-    if smoothing:
-        hp_map = hp.sphtfunc.smoothing(hp_map, sigma=smoothing_scale_radian)
-    # Build projection
-    sp = skyproj.McBrydeSkyproj(ax=ax)
-
-    # Optional auto-zoom around data (with small padding)
-    if lon_range is None and ra.size > 0:
-        pad = 1.0
-        lon_range = (max(0.0, np.nanmin(ra) - pad), min(360.0, np.nanmax(ra) + pad))
-    if lat_range is None and dec.size > 0:
-        pad = 1.0
-        lat_range = (max(-90.0, np.nanmin(dec) - pad), min(90.0, np.nanmax(dec) + pad))
-
-    im, *_ = sp.draw_hpxmap(
-        hp_map,
-        nest=nest,
+    hp_map, *_ = star_density_healpix(
+        data,
+        columns=columns,
+        nside=nside,
+        smoothing=smoothing,
+        smoothing_scale_degrees=smoothing_scale_degrees,
+    )
+    return plot_2D_density_from_hp(
+        hp_map.filled(hp.UNSEEN),  # masked pixels -> UNSEEN, left blank by skyproj
+        nest=False,
+        fig=fig,
+        ax=ax,
         lon_range=lon_range,
         lat_range=lat_range,
+        title=title,
         cmap=cmap,
         vmin=vmin,
         vmax=vmax,
+        add_colorbar=add_colorbar,
+        label_fontsize=label_fontsize,
+        title_fontsize=title_fontsize,
+        tick_labelsize=tick_labelsize,
     )
-
-    if add_colorbar:
-        fig.colorbar(im, ax=sp.ax, label="Counts per HEALPix pixel")
-    sp.ax.set_title(title)
-    return fig, sp.ax
 
 
 def plot_2D_density_from_hp(

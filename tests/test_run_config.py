@@ -9,11 +9,15 @@ import pytest
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER
 from streameucliddes.analysis.known_stream_search import prepare_search
 from streameucliddes.catalogs.galstreams_catalog import select_galstreams_in_footprint
+from streameucliddes.analysis.generic_stream_search import generic_search_single_dm, prepare_generic_search
 from streameucliddes.workflows.run_config import (
+    GENERIC_SEARCH_CONFIG,
+    GENERIC_SEARCH_OTHER_ARGUMENTS,
     KNOWN_STREAM_SEARCH_CONFIG,
     KNOWN_STREAM_SEARCH_OTHER_ARGUMENTS,
     RunConfig,
 )
+from streameucliddes.workflows.run_generic_search import run_generic_search
 from streameucliddes.workflows.run_known_stream_search import (
     run_all_known_stream_searches,
     run_known_stream_search,
@@ -24,11 +28,14 @@ pytestmark = pytest.mark.run_config
 CONFIGS = Path(__file__).resolve().parents[1] / "configs"
 
 
-def _defaults():
-    """Default values of the arguments of the run and of the functions it calls."""
+KNOWN_STREAM_FUNCTIONS = (prepare_search, run_known_stream_search, run_all_known_stream_searches,
+                          select_galstreams_in_footprint)
+GENERIC_FUNCTIONS = (prepare_generic_search, generic_search_single_dm, run_generic_search)
+
+
+def _defaults(functions=KNOWN_STREAM_FUNCTIONS):
+    """Default values of the arguments of a run and of the functions it calls."""
     defaults = {}
-    functions = (prepare_search, run_known_stream_search, run_all_known_stream_searches,
-                 select_galstreams_in_footprint)
     for function in functions:
         for name, parameter in inspect.signature(function).parameters.items():
             if parameter.default is not inspect.Parameter.empty:
@@ -46,6 +53,17 @@ def test_config_is_the_defaults():
         assert value == expected, key
     assert KNOWN_STREAM_SEARCH_CONFIG["match_filter"] is not DEFAULT_MATCH_FILTER  # a copy
     assert set(KNOWN_STREAM_SEARCH_OTHER_ARGUMENTS) <= set(defaults)
+
+
+# The same for the generic search
+def test_generic_config_is_the_defaults():
+    defaults = _defaults(GENERIC_FUNCTIONS)
+    assert set(GENERIC_SEARCH_CONFIG) <= set(defaults)
+    for key, value in GENERIC_SEARCH_CONFIG.items():
+        expected = DEFAULT_MATCH_FILTER if key == "match_filter" and defaults[key] is None else defaults[key]
+        assert value == expected, key
+    assert GENERIC_SEARCH_CONFIG["match_filter"] is not DEFAULT_MATCH_FILTER  # a copy
+    assert set(GENERIC_SEARCH_OTHER_ARGUMENTS) <= set(defaults)
 
 
 # Values given in the file replace the defaults; the others stay; distance_moduli from
@@ -77,18 +95,37 @@ def test_from_yaml_defaults(tmp_path):
     assert KNOWN_STREAM_SEARCH_CONFIG["match_filter"]["name"] == DEFAULT_MATCH_FILTER["name"]
 
 
-# The configuration of the repository reads
+# A generic configuration: GENERIC_SEARCH_CONFIG updated by the file; the keys of the other
+# search are refused
+def test_from_yaml_generic(tmp_path):
+    path = tmp_path / "generic.yaml"
+    path.write_text("search: generic\nnside: 256\nisochrone: {age: 12.0, metallicity: 0.0001}\n")
+    config = RunConfig.from_yaml(path)
+    assert config.search == "generic"
+    assert config.kwargs == {**GENERIC_SEARCH_CONFIG, "nside": 256, "isochrone": {"age": 12.0, "metallicity": 0.0001}}
+    assert RunConfig(search="generic").kwargs == GENERIC_SEARCH_CONFIG
+    path.write_text("search: generic\ntrack_names: [AAU-ATLAS-L21]\n")
+    with pytest.raises(ValueError, match="track_names"):
+        RunConfig.from_yaml(path)
+
+
+# The configurations of the repository read
 def test_repository_config():
     config = RunConfig.from_yaml(CONFIGS / "known_stream_search.yaml")
     assert config.search == "known_stream"
     assert set(config.kwargs) >= set(KNOWN_STREAM_SEARCH_CONFIG)
+    config = RunConfig.from_yaml(CONFIGS / "generic_search.yaml")
+    assert config.search == "generic"
+    assert set(config.kwargs) >= set(GENERIC_SEARCH_CONFIG)
 
 
 def test_from_yaml_errors(tmp_path):
     path = tmp_path / "run.yaml"
-    path.write_text("search: generic\n")
-    with pytest.raises(ValueError, match="only 'known_stream'"):
+    path.write_text("search: other\n")
+    with pytest.raises(ValueError, match="one of"):
         RunConfig.from_yaml(path)
+    with pytest.raises(ValueError, match="one of"):
+        RunConfig(search="other")
     path.write_text("search: known_stream\nsmoothing: 0.3\n")
     with pytest.raises(ValueError, match="smoothing"):
         RunConfig.from_yaml(path)

@@ -68,3 +68,24 @@ def test_partial_footprint_is_recovered(proj, nside, footprint, background_map, 
 
     # The footprint includes its outer and inner (hole) edges.
     np.testing.assert_allclose(bkg[footprint], truth[footprint], rtol=1e-6)
+
+
+# Memory: only the unmasked pixels are projected and evaluated. On a small footprint the
+# fit costs a few full-sky maps (input, mask, background), about 35 bytes per sky pixel;
+# computing the coordinates of the whole sky cost about 200
+def test_fit_memory_small_footprint():
+    import tracemalloc
+
+    nside = 256
+    lon, lat = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    outside = ~((((lon + 15.0) % 360.0) < 30.0) & (lat > -30.0) & (lat < -10.0))  # across ra = 0
+    density = np.ma.array(np.exp(1.0 + 0.01 * lat), mask=outside)
+    tracemalloc.start()
+    try:
+        bkg = fit_background(density, 5, True, proj=background_polynomial_fit.SimpleLonLatProj(), nside=nside,
+                             mask=outside)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 60 * hp.nside2npix(nside)
+    assert np.isnan(bkg[outside]).all() and np.isfinite(bkg[~outside]).all()

@@ -5,6 +5,7 @@ import tracemalloc
 import astropy.coordinates as coord
 import astropy.units as u
 import gala.coordinates as gc
+import healpy as hp
 import numpy as np
 import pandas as pd
 import pytest
@@ -16,6 +17,7 @@ from streameucliddes.analysis.catalog_preparation import (
     default_error_cuts,
     prepare_match_filter_catalog,
     resolve_mag_columns,
+    star_healpix_pixels,
 )
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, DES_GR_MATCH_FILTER
 from streameucliddes.stream_frames import radec_to_phi12
@@ -27,6 +29,8 @@ MATCH_FILTER_GRI = {
     "reference_band": ("des_yr6", "g"),
     "color_bands": [("des_yr6", "r"), ("des_yr6", "i")],
 }
+# No cut at all: the default error cuts of the default match filter removed
+NO_ERROR_CUTS = {column: (None, None) for column in default_error_cuts()}
 
 
 @pytest.fixture
@@ -110,21 +114,33 @@ def test_prepare_default_cuts(catalog):
     assert list(stars.columns) == ["euclid_q1_VIS_obs", "euclid_q1_H_obs", "euclid_q1_VIS_err", "euclid_q1_H_err"]
     des = prepare_match_filter_catalog(catalog, DES_GR_MATCH_FILTER)
     assert list(des.columns) == ["des_yr6_g_obs", "des_yr6_r_obs", "des_yr6_g_err", "des_yr6_r_err"]
-    assert len(prepare_match_filter_catalog(catalog, cuts={})) == len(catalog)  # no cut
+    assert prepare_match_filter_catalog(catalog, cuts={}).index.equals(stars.index)  # {}: the defaults
+    assert len(prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS)) == len(catalog)  # no cut
 
 
-# The given cuts replace the default ones
+# The given cuts are added to the default error cuts; on an error column, they replace its default
 def test_prepare_given_cuts(catalog):
+    error_cuts = default_error_cuts(MATCH_FILTER_GRI)
     stars = prepare_match_filter_catalog(catalog, MATCH_FILTER_GRI, cuts={"des_yr6_i_obs": (None, 22.0)})
-    assert stars.index.equals(catalog.index[catalog["des_yr6_i_obs"] <= 22.0])
-    assert catalog.loc[stars.index, "des_yr6_g_err"].max() > 0.2  # no error cut
-    assert "des_yr6_g_err" not in stars.columns  # not a cut column any more
+    passing = catalog["des_yr6_i_obs"] <= 22.0
+    for column, (_, err_max) in error_cuts.items():
+        passing &= catalog[column] <= err_max
+    assert 0 < len(stars) and stars.index.equals(catalog.index[passing])
+
+    replaced = prepare_match_filter_catalog(catalog, MATCH_FILTER_GRI, cuts={"des_yr6_g_err": (None, 0.05)})
+    passing = catalog["des_yr6_g_err"] <= 0.05
+    for column in ("des_yr6_r_err", "des_yr6_i_err"):  # still the default
+        passing &= catalog[column] <= error_cuts[column][1]
+    assert 0 < len(replaced) and replaced.index.equals(catalog.index[passing])
+
+    removed = prepare_match_filter_catalog(catalog, MATCH_FILTER_GRI, cuts={"des_yr6_g_err": (None, None)})
+    assert catalog.loc[removed.index, "des_yr6_g_err"].max() > error_cuts["des_yr6_g_err"][1]
 
 
 # With a frame: phi1/phi2 of radec_to_phi12, and only the stars inside the window
 def test_prepare_stream_frame_window(catalog, gc_frame):
     window = (-5.0, 5.0, -2.0, 2.0)
-    stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=gc_frame, window=window)
+    stars = prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS, stream_frame=gc_frame, window=window)
     phi1, phi2 = radec_to_phi12(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(), gc_frame)
     inside = (phi1 >= -5) & (phi1 <= 5) & (phi2 >= -2) & (phi2 <= 2)
     assert 0 < len(stars) == inside.sum()
@@ -132,8 +148,47 @@ def test_prepare_stream_frame_window(catalog, gc_frame):
     np.testing.assert_allclose(stars["phi2"], phi2[inside])
     assert {"ra", "dec"} <= set(stars.columns) and "other" not in stars.columns
 
-    all_stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=gc_frame)  # no window
+    all_stars = prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS, stream_frame=gc_frame)  # no window
     assert len(all_stars) == len(catalog) and "phi1" in all_stars.columns
+
+
+# as_mask: the mask of the rows kept, the same rows as the stars; with or without a window
+def test_prepare_as_mask(catalog, gc_frame):
+    for kwargs in ({}, {"stream_frame": gc_frame, "window": (-5.0, 5.0, -2.0, 2.0)}):
+        keep = prepare_match_filter_catalog(catalog, as_mask=True, **kwargs)
+        assert keep.dtype == bool and keep.shape == (len(catalog),)
+        assert prepare_match_filter_catalog(catalog, **kwargs).index.equals(catalog.index[keep])
+
+
+# excluded_pixels: the stars in its True pixels dropped, the others kept as without it; in
+# either ordering, with or without a window, by chunks; stars without coordinates not
+# dropped; the coordinates read, not returned without a frame
+@pytest.mark.parametrize("nest", [False, True])
+def test_prepare_excluded_pixels(catalog, gc_frame, monkeypatch, nest):
+    catalog = catalog.copy()
+    catalog.loc[catalog.index[:3], "ra"] = np.nan
+    catalog.loc[catalog.index[:3], ["euclid_q1_VIS_err", "euclid_q1_H_err"]] = 0.01  # pass the cuts
+    nside = 16
+    excluded = np.zeros(hp.nside2npix(nside), dtype=bool)
+    excluded[hp.query_disc(nside, hp.ang2vec(50.0, -25.0, lonlat=True), np.radians(6.0), nest=nest)] = True
+    finite = np.isfinite(catalog["ra"]).to_numpy()
+    in_excluded = np.zeros(len(catalog), dtype=bool)
+    in_excluded[finite] = excluded[hp.ang2pix(nside, catalog["ra"][finite], catalog["dec"][finite], lonlat=True,
+                                              nest=nest)]
+    assert 0 < in_excluded.sum() < finite.sum()
+
+    for kwargs in ({}, {"stream_frame": gc_frame, "window": (-15.0, 15.0, -5.0, 5.0)}):
+        plain = prepare_match_filter_catalog(catalog, as_mask=True, **kwargs)
+        keep = prepare_match_filter_catalog(catalog, as_mask=True, excluded_pixels=excluded,
+                                            excluded_pixels_nest=nest, **kwargs)
+        np.testing.assert_array_equal(keep, plain & ~in_excluded)
+
+    expected = prepare_match_filter_catalog(catalog, as_mask=True) & ~in_excluded
+    assert expected[:3].any()  # without coordinates: kept by the cuts, not dropped
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", 700)
+    stars = prepare_match_filter_catalog(catalog, excluded_pixels=excluded, excluded_pixels_nest=nest)
+    assert stars.index.equals(catalog.index[expected])
+    assert "ra" not in stars.columns
 
 
 # Errors: missing columns (all named), a window without frame
@@ -146,6 +201,11 @@ def test_prepare_errors(catalog):
         prepare_match_filter_catalog(catalog.drop(columns=["ra", "dec"]), stream_frame=object())
     with pytest.raises(ValueError, match="stream_frame"):
         prepare_match_filter_catalog(catalog, window=(-5.0, 5.0, -2.0, 2.0))
+    with pytest.raises(ValueError, match="excluded_pixels_nest"):
+        prepare_match_filter_catalog(catalog, excluded_pixels=np.zeros(12, dtype=bool))
+    with pytest.raises(KeyError, match="dec"):
+        prepare_match_filter_catalog(catalog.drop(columns="dec"), excluded_pixels=np.zeros(12, dtype=bool),
+                                     excluded_pixels_nest=False)
 
 
 # ===================================================
@@ -161,7 +221,7 @@ def test_prepare_window_brute_force(rng, monkeypatch, frame_name, window):
     monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", 7_777)
     catalog = _full_sky_catalog(rng, 200_000)
     frame = FRAMES[frame_name]
-    stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=frame, window=window)
+    stars = prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS, stream_frame=frame, window=window)
 
     phi1, phi2 = radec_to_phi12(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(), frame)
     inside = (phi1 >= window[0]) & (phi1 <= window[1]) & (phi2 >= window[2]) & (phi2 <= window[3])
@@ -183,7 +243,7 @@ def test_prepare_window_transforms_few_stars(rng, monkeypatch):
 
     monkeypatch.setattr(catalog_preparation, "radec_to_phi12", counting_radec_to_phi12)
     stars = prepare_match_filter_catalog(
-        catalog, cuts={}, stream_frame=FRAMES["across ra = 0"], window=(-20.0, 20.0, -3.0, 3.0)
+        catalog, cuts=NO_ERROR_CUTS, stream_frame=FRAMES["across ra = 0"], window=(-20.0, 20.0, -3.0, 3.0)
     )
     # Window of 240 deg^2 (0.6 % of the sky): a margin of about a HEALPix pixel around it
     assert len(stars) <= sum(transformed) < 2 * len(stars)
@@ -193,7 +253,7 @@ def test_prepare_window_transforms_few_stars(rng, monkeypatch):
 # Stars with NaN coordinates are never in a window
 def test_prepare_window_nan(catalog, gc_frame):
     catalog.loc[catalog.index[:100], "ra"] = np.nan
-    stars = prepare_match_filter_catalog(catalog, cuts={}, stream_frame=gc_frame, window=(-5.0, 5.0, -2.0, 2.0))
+    stars = prepare_match_filter_catalog(catalog, cuts=NO_ERROR_CUTS, stream_frame=gc_frame, window=(-5.0, 5.0, -2.0, 2.0))
     assert not stars.index.isin(catalog.index[:100]).any()
     assert np.isfinite(stars[["phi1", "phi2"]].to_numpy()).all()
 
@@ -230,3 +290,59 @@ def test_prepare_memory(rng, monkeypatch, with_window):
     overhead = peak - stars.memory_usage(deep=True).sum()
     allowed = 4 * n + 40 * chunk_size
     assert overhead < allowed < 8 * n  # 8 * n: a copy of one column of floats
+
+
+# Peak memory with as_mask: the mask (1 byte per star) and the temporaries of a chunk
+def test_prepare_as_mask_memory(rng, monkeypatch):
+    chunk_size = 50_000
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", chunk_size)
+    n = 1_000_000
+    catalog = _full_sky_catalog(rng, n, n_extra_columns=6)
+    tracemalloc.start()
+    try:
+        prepare_match_filter_catalog(catalog, as_mask=True)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < n + 40 * chunk_size < 8 * n
+
+
+# ===================================================
+# Test star_healpix_pixels
+# ===================================================
+
+
+# The pixels of healpy.ang2pix, in the ordering asked, by chunks; -1 without coordinates
+@pytest.mark.parametrize("nest", [False, True])
+def test_star_healpix_pixels(rng, monkeypatch, nest):
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", 300)
+    catalog = _full_sky_catalog(rng, 1000)
+    catalog.loc[[3, 500], "ra"] = np.nan
+    catalog.loc[999, "dec"] = np.inf
+    pixels = star_healpix_pixels(catalog, 16, nest=nest)
+    assert pixels.dtype == np.int32
+    bad = np.zeros(len(catalog), dtype=bool)
+    bad[[3, 500, 999]] = True
+    assert (pixels[bad] == -1).all()
+    expected = hp.ang2pix(16, catalog["ra"][~bad], catalog["dec"][~bad], lonlat=True, nest=nest)
+    np.testing.assert_array_equal(pixels[~bad], expected)
+
+
+def test_star_healpix_pixels_errors(rng):
+    with pytest.raises(KeyError, match="ra"):
+        star_healpix_pixels(_full_sky_catalog(rng, 10).drop(columns="ra"), 16, nest=False)
+
+
+# Peak memory: the pixels (4 bytes per star) and the temporaries of a chunk
+def test_star_healpix_pixels_memory(rng, monkeypatch):
+    chunk_size = 50_000
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", chunk_size)
+    n = 1_000_000
+    catalog = _full_sky_catalog(rng, n)
+    tracemalloc.start()
+    try:
+        star_healpix_pixels(catalog, 512, nest=False)
+        _, peak = tracemalloc.get_traced_memory()
+    finally:
+        tracemalloc.stop()
+    assert peak < 4 * n + 60 * chunk_size < 8 * n

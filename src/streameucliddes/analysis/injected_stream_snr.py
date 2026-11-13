@@ -10,7 +10,7 @@ import logging
 from streameucliddes.analysis.catalog_preparation import default_error_cuts, prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, select_stars_in_match_filter
 from streameucliddes.catalogs.catalog_cuts import cut_flow
-from streameucliddes.catalogs.euclid_des_catalog import get_eucliddes_stars
+from streameucliddes.catalogs.euclid_catalog import get_euclid_stars
 from streameucliddes.injection import inject
 
 # Euclid x DES stars used as background by get_stream_snr: read on first use (see
@@ -157,7 +157,7 @@ def _get_background(gc_frame, reload_data=False):
     """
     global STARS_BACKGROUND, _BACKGROUND_FRAME
     if STARS_BACKGROUND is None or reload_data:
-        STARS_BACKGROUND = get_eucliddes_stars()
+        STARS_BACKGROUND = get_euclid_stars("euclid_q1_des")
         _BACKGROUND_FRAME = None
 
     if _BACKGROUND_FRAME is None or not gc_frame.is_equivalent_frame(_BACKGROUND_FRAME):
