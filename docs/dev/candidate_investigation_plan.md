@@ -239,6 +239,19 @@ Then:
 
 Sections C1–C7 below describe the functions; the table says when each is filled.
 
+Done:
+
+- S1 (2026-11-13): `stream_frame_from_endpoints` (ValueError for equal or
+  antipodal endpoints), `in_phi12_window`, `phi12_window_outline`,
+  `phi12_window_radec_box` (no warning across ra = 0: `get_euclid_stars`
+  reads `ra_min > ra_max`; a window containing a pole gives every ra, up to
+  dec ±90), `__post_init__`. `metallicity` defaults to None and the
+  property `isochrone` gives `{"age", "metallicity"}` each time (Z from
+  `feh`, else `metallicity`, else the default Z; both set: ValueError), so
+  that `feh=...` alone works. The notebook passes the DR1 match filter
+  (`DEFAULT_MATCH_FILTER` has the Q1 columns). Candidate: window φ1 ±8.02,
+  φ2 ±5 deg; box ra 60.6–86.7, dec −50.2 to −32.6 deg.
+
 ## 4. New functions, by module
 
 Layout after the second review of the stubs (user, 2026-11-13): window code

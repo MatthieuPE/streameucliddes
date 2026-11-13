@@ -63,7 +63,12 @@ from streameucliddes.stream_frames import (
     DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
     DEFAULT_PADDING_PHI1_DEG,
     DEFAULT_PADDING_PHI2_DEG,
+    phi12_window_around,
+    phi12_window_radec_box,
+    radec_to_phi12,
+    stream_frame_from_endpoints,
 )
+from streameucliddes.unit_conversions import convert_FeH_to_z
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -332,10 +337,12 @@ class CandidateInvestigation:
     age : float, optional
         Isochrone age (Gyr).
     metallicity : float, optional
-        Isochrone Z (Marigo et al. 2017 scale). Exactly one of
-        ``metallicity`` and ``feh``.
+        Isochrone Z (Marigo et al. 2017 scale). At most one of
+        ``metallicity`` and ``feh``; neither: Z =
+        ``DEFAULT_METALLICITIES[0]`` of ``catalogs.isochrone_parameters``.
     feh : float, optional
-        Isochrone [Fe/H], converted to Z (``unit_conversions.convert_FeH_to_z``).
+        Isochrone [Fe/H], converted to Z (``unit_conversions.convert_FeH_to_z``)
+        each time the isochrone is used (``isochrone``).
     distance_modulus : float, optional
         Distance modulus of the stream, chosen by eye after the scan
         (``scan_distance_moduli``). Needed from ``fit_width`` on.
@@ -391,7 +398,7 @@ class CandidateInvestigation:
     endpoint_1: tuple[float, float]
     endpoint_2: tuple[float, float]
     age: float = DEFAULT_AGES_GYR[0]
-    metallicity: float | None = DEFAULT_METALLICITIES[0]
+    metallicity: float | None = None
     feh: float | None = None
     distance_modulus: float | None = None
     distance_moduli: Sequence[float] | None = None
@@ -428,9 +435,47 @@ class CandidateInvestigation:
         Raises
         ------
         ValueError
-            Neither or both of ``metallicity`` and ``feh``.
+            Both ``metallicity`` and ``feh`` given.
         """
-        raise NotImplementedError
+        _ = self.isochrone  # raises if both metallicity and feh are set
+        self._set_frame_and_window()
+
+    @property
+    def isochrone(self) -> dict[str, float]:
+        """``{"age", "metallicity"}`` of the match filter and of the isochrone track.
+
+        Z from ``feh`` when given (``unit_conversions.convert_FeH_to_z``),
+        else ``metallicity``, else ``DEFAULT_METALLICITIES[0]``. Computed each
+        time: changing ``age``, ``metallicity`` or ``feh`` changes it.
+
+        Raises
+        ------
+        ValueError
+            Both ``metallicity`` and ``feh`` set.
+        """
+        if self.metallicity is not None and self.feh is not None:
+            raise ValueError("Give metallicity (Z) or feh, not both.")
+        if self.feh is not None:
+            metallicity = float(convert_FeH_to_z(self.feh))
+        elif self.metallicity is not None:
+            metallicity = float(self.metallicity)
+        else:
+            metallicity = float(DEFAULT_METALLICITIES[0])
+        return {"age": float(self.age), "metallicity": metallicity}
+
+    def _set_frame_and_window(self) -> None:
+        """Frame from the endpoints, window around them, (ra, dec) box of the window."""
+        self.endpoint_1 = (float(self.endpoint_1[0]), float(self.endpoint_1[1]))
+        self.endpoint_2 = (float(self.endpoint_2[0]), float(self.endpoint_2[1]))
+        self.stream_frame = stream_frame_from_endpoints(self.endpoint_1, self.endpoint_2)
+        phi1, phi2 = radec_to_phi12(
+            [self.endpoint_1[0], self.endpoint_2[0]], [self.endpoint_1[1], self.endpoint_2[1]], self.stream_frame
+        )
+        self.window = phi12_window_around(
+            phi1, phi2, padding_phi1_deg=self.padding_phi1_deg, padding_phi2_deg=self.padding_phi2_deg,
+            min_phi2_half_width_deg=self.min_phi2_half_width_deg,
+        )
+        self.radec_box = phi12_window_radec_box(self.stream_frame, self.window)
 
     # ===================================================
     # Steps

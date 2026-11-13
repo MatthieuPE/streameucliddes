@@ -24,6 +24,7 @@ from typing import TYPE_CHECKING
 
 import astropy.coordinates as coord
 import astropy.units as u
+import gala.coordinates as gc
 import numpy as np
 
 if TYPE_CHECKING:
@@ -199,7 +200,9 @@ def in_phi12_window(
     -------
     mask : numpy.ndarray of bool
     """
-    raise NotImplementedError
+    phi1_min, phi1_max, phi2_min, phi2_max = window
+    phi1, phi2 = np.asarray(phi1), np.asarray(phi2)
+    return (phi1 >= phi1_min) & (phi1 <= phi1_max) & (phi2 >= phi2_min) & (phi2 <= phi2_max)
 
 
 def phi12_window_outline(
@@ -220,9 +223,21 @@ def phi12_window_outline(
     Returns
     -------
     phi1, phi2 : numpy.ndarray
-        (deg), a closed line: the last point is the first.
+        (deg), a closed line of ``4 * n_points_per_edge + 1`` points: the
+        last point is the first. Counter-clockwise from (phi1_min, phi2_min).
     """
-    raise NotImplementedError
+    phi1_min, phi1_max, phi2_min, phi2_max = window
+    step = np.linspace(0.0, 1.0, n_points_per_edge, endpoint=False)  # each edge without its end, the start of the next
+    phi1_span, phi2_span = phi1_max - phi1_min, phi2_max - phi2_min
+    phi1 = np.concatenate([
+        phi1_min + step * phi1_span, np.full(n_points_per_edge, phi1_max),
+        phi1_max - step * phi1_span, np.full(n_points_per_edge, phi1_min), [phi1_min],
+    ])
+    phi2 = np.concatenate([
+        np.full(n_points_per_edge, phi2_min), phi2_min + step * phi2_span,
+        np.full(n_points_per_edge, phi2_max), phi2_max - step * phi2_span, [phi2_min],
+    ])
+    return phi1, phi2
 
 
 def phi12_window_radec_box(
@@ -234,8 +249,11 @@ def phi12_window_radec_box(
     """(ra, dec) box containing a phi1/phi2 window, to read its stars.
 
     The outline of the window (``phi12_window_outline``) taken to the sky
-    (``phi12_to_radec``); the box is its min/max plus ``margin_deg``. A box
-    crossing ra = 0/360 is returned with ``ra_min > ra_max`` and a warning.
+    (``phi12_to_radec``); the box is its min/max plus ``margin_deg``. The
+    extremes of ra and dec over a region of the sphere are on its outline,
+    unless it contains a celestial pole: then the box is every ra, up to
+    that pole. A box across ra = 0/360 has ``ra_min > ra_max``, e.g. (350,
+    10), as ``catalogs.euclid_catalog.get_euclid_stars`` reads it.
 
     Parameters
     ----------
@@ -244,19 +262,33 @@ def phi12_window_radec_box(
     window : tuple of float
         ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg).
     margin_deg : float, optional
-        Margin added on each side of the box (deg).
+        Margin added on each side of the box (deg of ra and of dec).
 
     Returns
     -------
     ra_range, dec_range : tuple of float
-        ``(ra_min, ra_max)``, ``(dec_min, dec_max)`` (deg), e.g. for
-        ``catalogs.euclid_catalog.get_euclid_stars``.
+        ``(ra_min, ra_max)`` in [0, 360), ``(dec_min, dec_max)`` in [-90, 90]
+        (deg), e.g. for ``catalogs.euclid_catalog.get_euclid_stars``.
 
     Notes
     -----
     Idea of celestial_currents ``frame_utils.phi12_bounds_to_radec_bounds``.
     """
-    raise NotImplementedError
+    ra, dec = phi12_to_radec(*phi12_window_outline(window), stream_frame)
+    dec_range = (max(float(dec.min()) - margin_deg, -90.0), min(float(dec.max()) + margin_deg, 90.0))
+    pole_phi1, pole_phi2 = radec_to_phi12([0.0, 0.0], [90.0, -90.0], stream_frame)
+    north_inside, south_inside = in_phi12_window(pole_phi1, pole_phi2, window)
+    if north_inside or south_inside:
+        dec_range = (-90.0 if south_inside else dec_range[0], 90.0 if north_inside else dec_range[1])
+        return (0.0, 360.0), dec_range
+    # ra relative to the ra of the window centre: no jump at 0/360 inside the window
+    centre_ra, _ = phi12_to_radec((window[0] + window[1]) / 2, (window[2] + window[3]) / 2, stream_frame)
+    relative_ra = (ra - centre_ra + 180.0) % 360.0 - 180.0
+    if relative_ra.max() - relative_ra.min() + 2 * margin_deg >= 360.0:
+        return (0.0, 360.0), dec_range
+    ra_min = float((centre_ra + relative_ra.min() - margin_deg) % 360.0)
+    ra_max = float((centre_ra + relative_ra.max() + margin_deg) % 360.0)
+    return (ra_min, ra_max), dec_range
 
 
 # ===================================================
@@ -284,6 +316,12 @@ def stream_frame_from_endpoints(
     -------
     stream_frame : gala.coordinates.GreatCircleICRSFrame
 
+    Raises
+    ------
+    ValueError
+        The endpoints are the same point or antipodal (gala: no single great
+        circle).
+
     Notes
     -----
     celestial_currents ``frame_utils.stream_frame_from_endpoints`` is not
@@ -294,4 +332,9 @@ def stream_frame_from_endpoints(
     ----------
     Price-Whelan 2017, JOSS 2, 388 (gala).
     """
-    raise NotImplementedError
+    point_1 = coord.SkyCoord(ra=endpoint_1[0] * u.deg, dec=endpoint_1[1] * u.deg)
+    point_2 = coord.SkyCoord(ra=endpoint_2[0] * u.deg, dec=endpoint_2[1] * u.deg)
+    separation = point_1.separation(point_2).deg
+    if separation < 1e-6 or separation > 180.0 - 1e-6:
+        raise ValueError(f"Endpoints {endpoint_1} and {endpoint_2} are {separation:g} deg apart: no single great circle.")
+    return gc.GreatCircleICRSFrame.from_endpoints(point_1, point_2)
