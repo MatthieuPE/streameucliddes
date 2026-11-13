@@ -54,6 +54,8 @@ markers = [
     "isochrone_parameters: catalogs/isochrone_parameters.py (age and metallicity of the isochrones, literature table)",
     "survey_footprint: catalogs/survey_footprint.py (footprint masks)",
     "galstreams_catalog: catalogs/galstreams_catalog.py (known streams from galstreams)",
+    "overlapped_objects: catalogs/overlapped_objects.py (LMC, SMC, dwarf galaxies, globular clusters from the LVDB)",
+    "build_masks: analysis/build_masks.py (HEALPix masks of the overlapped objects)",
     "known_stream_search: analysis/known_stream_search.py (known-stream search)",
     "plot_known_stream_search: plotting/plot_known_stream_search.py (known-stream search figures)",
     "make_videos: plotting/make_videos.py (gifs from saved figures)",
