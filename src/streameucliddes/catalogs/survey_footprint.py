@@ -195,13 +195,18 @@ def survey_footprint_phi12_mask(
     are taken to ICRS (``stream_frames.phi12_to_radec``), then to HEALPix
     pixels.
     """
-    footprint_mask = np.asarray(footprint_mask, dtype=bool)
-    nside = hp.npix2nside(footprint_mask.size)
     phi1_centres, phi2_centres = phi12_bin_centres(window, bin_size_deg)
     phi1, phi2 = np.meshgrid(phi1_centres, phi2_centres, indexing="ij")
+    return _mask_at_phi12(footprint_mask, phi1, phi2, stream_frame, nest=nest)
+
+
+def _mask_at_phi12(
+    healpix_mask: ArrayLike, phi1: ArrayLike, phi2: ArrayLike, stream_frame: coord.BaseCoordinateFrame, *, nest: bool
+) -> NDArray[np.bool_]:
+    """Value of a HEALPix mask at phi1/phi2 points (nside from its length)."""
+    healpix_mask = np.asarray(healpix_mask, dtype=bool)
     ra, dec = phi12_to_radec(phi1, phi2, stream_frame)
-    pixels = hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)
-    return footprint_mask[pixels]
+    return healpix_mask[hp.ang2pix(hp.npix2nside(healpix_mask.size), ra, dec, lonlat=True, nest=nest)]
 
 
 def unmasked_area_deg2(
@@ -214,12 +219,14 @@ def unmasked_area_deg2(
 ) -> NDArray[np.float64]:
     """Area of each phi1/phi2 cell outside a HEALPix mask.
 
-    Each cell is sampled on a fine grid of ``step_deg``; each sample weighs
-    its solid angle (``cos(phi2)`` weights) and is kept when the HEALPix
-    pixel of its (ra, dec) is not masked: the same look-up as
-    ``survey_footprint_phi12_mask``, at the samples instead of the bin
-    centres. A window is one cell: ``phi1_edges = (phi1_min, phi1_max)``,
-    ``phi2_edges = (phi2_min, phi2_max)``.
+    Each cell is cut into a fine grid of about ``step_deg``; each piece
+    weighs its exact solid angle, ``dphi1 (sin phi2_top - sin phi2_bottom)``,
+    and is kept when the HEALPix pixel of its centre is not masked: the same
+    look-up as ``survey_footprint_phi12_mask``, at the pieces instead of the
+    bin centres. The area is exact without a mask; with a mask, its error
+    comes from the pieces across a pixel edge (``step_deg`` well below the
+    pixel size). A window is one cell: ``phi1_edges = (phi1_min, phi1_max)``,
+    ``phi2_edges = (phi2_min, phi2_max)``; a cell of zero width has zero area.
 
     Parameters
     ----------
@@ -239,4 +246,27 @@ def unmasked_area_deg2(
     area_deg2 : numpy.ndarray
         Shape (len(phi1_edges) - 1, len(phi2_edges) - 1) (deg²).
     """
-    raise NotImplementedError
+    phi1, cell_1, width_1 = _fine_pieces(phi1_edges, step_deg)
+    phi2, cell_2, width_2 = _fine_pieces(phi2_edges, step_deg)
+    half = np.radians(width_2) / 2
+    strip = np.sin(np.radians(phi2) + half) - np.sin(np.radians(phi2) - half)  # solid angle per radian of phi1
+    weight = np.outer(np.radians(width_1), strip) * np.degrees(1.0) ** 2  # deg²
+    if excluded_healpix_mask is not None:
+        grid_1, grid_2 = np.meshgrid(phi1, phi2, indexing="ij")
+        weight = np.where(_mask_at_phi12(excluded_healpix_mask, grid_1, grid_2, stream_frame, nest=False), 0.0, weight)
+    n_1, n_2 = np.size(phi1_edges) - 1, np.size(phi2_edges) - 1
+    cells = (cell_1[:, None] * n_2 + cell_2[None, :]).ravel()
+    return np.bincount(cells, weights=weight.ravel(), minlength=n_1 * n_2).reshape(n_1, n_2)
+
+
+def _fine_pieces(edges: ArrayLike, step_deg: float) -> tuple[NDArray[np.float64], NDArray[np.int64], NDArray[np.float64]]:
+    """Centres, cell indices and widths of the pieces of about ``step_deg`` cutting each cell between edges."""
+    edges = np.asarray(edges, dtype=float)
+    widths = np.diff(edges)
+    if np.any(widths < 0):
+        raise ValueError("Edges must be increasing.")
+    n_pieces = np.maximum(np.ceil(widths / step_deg).astype(int), 1)
+    cell = np.repeat(np.arange(widths.size), n_pieces)
+    width = np.repeat(widths / n_pieces, n_pieces)
+    rank = np.arange(cell.size) - np.repeat(np.cumsum(n_pieces) - n_pieces, n_pieces)  # rank of the piece in its cell
+    return edges[cell] + (rank + 0.5) * width, cell, width

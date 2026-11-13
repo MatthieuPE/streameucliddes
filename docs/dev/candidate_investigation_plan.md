@@ -285,6 +285,22 @@ Done:
   on DR1, 8.2 % of the bins, 5.1 % bright galaxies, 3.3 % footprint holes.
   Notebook: `DISTANCE_MODULI` 15–20 every 0.25 (21 maps, 9.3 s), grid with
   `layout="constrained"`, `cand.distance_modulus = 17.25` by eye.
+- S5 (2026-11-13): `survey_footprint.unmasked_area_deg2` (exact strip
+  areas, shares `_mask_at_phi12` with `survey_footprint_phi12_mask`);
+  `phi12_density_map` (2D, unsmoothed; `phi12_density_profile` sums it);
+  `fit_stream_width` fitted near the track only (`phi2_fit_range`, default
+  guess ± `DEFAULT_FIT_HALF_WIDTH_DEG` = 2: on DR1 the field rises ~40 %
+  over the ±5 deg window and a fit over all of it gave σ = 6.5 deg), with a
+  polynomial background (`background_degree`, 0 constant by default, 1
+  linear, more if needed; user 2026-11-13; a gradient left in the range
+  biases the centre of a constant-background fit, ~0.03 deg in tests);
+  `stream_width_model`; `fit_width` also stores `width_map` (cells 0.5 ×
+  0.2 deg); `plot_phi2_profile` (fitted range shaded), `plot_width_fit_map`
+  (observed, model, residual; user 2026-11-13). DR1, dm 17.25: φ2 centre
+  0.18 ± 0.06, σ 0.26 ± 0.06 deg, χ² 105/76 (linear: 0.17, 0.26).
+  Open: the footprint from the stars counts sparsely covered pixels as
+  inside (`min_count=1`); a shallow strip at φ1 ≈ 2.5–4 deg shows as
+  empty cells (to settle before the off areas, S6).
 
 ## 4. New functions, by module
 

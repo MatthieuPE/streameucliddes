@@ -17,6 +17,7 @@ from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
     survey_footprint_healpix_mask,
     survey_footprint_phi12_mask,
+    unmasked_area_deg2,
 )
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
 
@@ -275,20 +276,35 @@ def test_phi12_footprint_from_uniform_stars(rng, gc_frame):
     assert np.mean(mask[in_box]) < 0.01
 
 
-# Stubs of the candidate investigation (docs/dev/candidate_investigation_plan.md)
+# ===================================================
+# Test unmasked_area_deg2
+# ===================================================
 
 
-@pytest.mark.skip(reason="stub")
-def test_unmasked_area_matches_analytic():
-    """No mask: Delta phi1 (sin phi2_max - sin phi2_min) (180/pi)^2 within 1 %."""
+def _band_area_deg2(phi1_range, phi2_range):
+    """Area of a phi1/phi2 window (deg²): dphi1 (sin phi2_max - sin phi2_min) (180/pi)²."""
+    sin_band = np.sin(np.radians(phi2_range[1])) - np.sin(np.radians(phi2_range[0]))
+    return np.radians(phi1_range[1] - phi1_range[0]) * sin_band * np.degrees(1.0) ** 2
 
 
-@pytest.mark.skip(reason="stub")
-def test_unmasked_area_half_masked():
-    """Half of the sky excluded: about half the area."""
+# No mask: the exact area of each cell, whatever the step; a zero-width cell has none
+def test_unmasked_area_matches_analytic(icrs_frame):
+    area = unmasked_area_deg2(icrs_frame, [-8.0, 0.0, 8.0], [20.0, 40.0, 60.0], None, step_deg=0.3)
+    assert area.shape == (2, 2)
+    np.testing.assert_allclose(area[:, 0], _band_area_deg2((0.0, 8.0), (20.0, 40.0)), rtol=1e-10)
+    np.testing.assert_allclose(area[:, 1], _band_area_deg2((0.0, 8.0), (40.0, 60.0)), rtol=1e-10)
+    assert unmasked_area_deg2(icrs_frame, [1.0, 1.0, 2.0], [0.0, 1.0], None)[0, 0] == 0.0
 
 
-@pytest.mark.skip(reason="stub")
-def test_unmasked_area_cells_shape():
-    """Edges of n + 1 and m + 1 values: areas of shape (n, m), summing to the area of the whole window."""
-
+# Half of the window masked (ra < 10 deg in the icrs frame, phi1 = ra): about half the area;
+# the cells add up to the whole window
+def test_unmasked_area_half_masked(icrs_frame):
+    nside = 256
+    ra, _ = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    mask = ra < 10.0
+    whole = unmasked_area_deg2(icrs_frame, [5.0, 15.0], [-5.0, 5.0], None)[0, 0]
+    masked = unmasked_area_deg2(icrs_frame, [5.0, 15.0], [-5.0, 5.0], mask)[0, 0]
+    assert masked == pytest.approx(whole / 2, rel=0.02)
+    cells = unmasked_area_deg2(icrs_frame, np.linspace(5.0, 15.0, 11), np.linspace(-5.0, 5.0, 6), mask)
+    assert cells.sum() == pytest.approx(masked, rel=1e-3)
+    assert cells[:5].sum() < 0.05 * cells.sum()  # phi1 = ra < 10: masked

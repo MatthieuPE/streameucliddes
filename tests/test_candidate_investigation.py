@@ -7,12 +7,24 @@ import pytest
 
 from streameucliddes.analysis import stream_frame_search as stream_frame_search_module
 from streameucliddes.analysis.build_masks import object_mask_nside
-from streameucliddes.analysis.candidate_investigation import DEFAULT_FOOTPRINT_NSIDE, CandidateInvestigation
+from streameucliddes.analysis.candidate_investigation import (
+    DEFAULT_FIT_HALF_WIDTH_DEG,
+    DEFAULT_FOOTPRINT_NSIDE,
+    CandidateInvestigation,
+    fit_stream_width,
+    phi12_density_map,
+    phi12_density_profile,
+    stream_width_model,
+)
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_METALLICITIES
-from streameucliddes.catalogs.survey_footprint import convert_footprint_healpix_mask, survey_footprint_healpix_mask
-from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12
+from streameucliddes.catalogs.survey_footprint import (
+    convert_footprint_healpix_mask,
+    survey_footprint_healpix_mask,
+    unmasked_area_deg2,
+)
+from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12, stream_frame_from_endpoints
 from streameucliddes.unit_conversions import convert_FeH_to_z
 
 pytestmark = pytest.mark.candidate_investigation
@@ -46,24 +58,139 @@ def test_region_area_matches_analytic():
     """No mask: on and off areas within 1 % of the analytic ones."""
 
 
-@pytest.mark.skip(reason="stub")
-def test_phi2_profile_flat_with_half_masked():
-    """Uniform stars, half the window excluded: flat phi2 density, consistent with the true one."""
+def _uniform_in_window(rng, window, n):
+    """n points uniform on the sphere in a phi1/phi2 window."""
+    phi1 = rng.uniform(window[0], window[1], n)
+    phi2 = np.degrees(np.arcsin(rng.uniform(*np.sin(np.radians(window[2:])), n)))
+    return phi1, phi2
 
 
-@pytest.mark.skip(reason="stub")
-def test_profile_over_two_windows():
-    """Two windows: counts and areas add up."""
+def _mask_phi1_below(frame, nside, phi1_limit):
+    """HEALPix mask (RING) of the sky at phi1 < phi1_limit in the frame."""
+    ra, dec = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    phi1, _ = radec_to_phi12(ra, dec, frame)
+    return phi1 < phi1_limit
 
 
-@pytest.mark.skip(reason="stub")
-def test_fit_recovers_centre_and_sigma():
-    """Uniform stars + Gaussian stream of known centre and sigma: recovered within 3 errors."""
+# Uniform stars, half of the window excluded (and its stars dropped, as prepare does): flat density in
+# phi2, consistent with the true one; no dip where the mask is
+def test_phi2_profile_flat_with_half_masked(rng, candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    window = (-4.0, 4.0, -3.0, 3.0)
+    n = 40_000
+    phi1, phi2 = _uniform_in_window(rng, window, n)
+    true_density = n / unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0]
+    mask = _mask_phi1_below(frame, 256, 0.0)
+    ra, dec = phi12_to_radec(phi1, phi2, frame)
+    kept = ~mask[hp.ang2pix(256, ra, dec, lonlat=True)]
+    profile = phi12_density_profile(phi1[kept], phi2[kept], [window], frame, mask, axis="phi2", bin_deg=0.25)
+    assert profile["centres"].size == 24 and profile["bin_deg"] == pytest.approx(0.25)
+    assert profile["area_deg2"].sum() == pytest.approx(
+        unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0] / 2, rel=0.02)
+    pulls = (profile["density"] - true_density) / profile["error"]
+    assert abs(pulls.mean()) < 3 / np.sqrt(pulls.size) and 0.6 < pulls.std() < 1.4
 
 
-@pytest.mark.skip(reason="stub")
-def test_fit_rejects_phi1_profile():
-    """A profile along phi1: ValueError."""
+# Two windows: their counts and areas add up; bins outside both windows have no area
+def test_profile_over_two_windows(rng, candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    below, above = (-2.0, 2.0, -3.0, -1.0), (-2.0, 2.0, 1.0, 3.0)
+    phi1, phi2 = _uniform_in_window(rng, (-2.0, 2.0, -3.0, 3.0), 5000)
+    kwargs = {"axis": "phi1", "bin_deg": 0.5}
+    both = phi12_density_profile(phi1, phi2, [below, above], frame, None, **kwargs)
+    one, other = (phi12_density_profile(phi1, phi2, [window], frame, None, **kwargs) for window in (below, above))
+    np.testing.assert_array_equal(both["counts"], one["counts"] + other["counts"])
+    np.testing.assert_allclose(both["area_deg2"], one["area_deg2"] + other["area_deg2"])
+    wide = phi12_density_profile(phi1, phi2, [below], frame, None, axis="phi1", bin_deg=0.5, axis_range=(-4.0, 4.0))
+    outside = (wide["centres"] < -2.0) | (wide["centres"] > 2.0)
+    assert np.all(wide["area_deg2"][outside] == 0.0) and np.all(np.isnan(wide["density"][outside]))
+
+
+# Uniform stars + a Gaussian stream of known centre and sigma: both recovered within 3 errors
+def test_fit_recovers_centre_and_sigma(rng, candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    window = (-3.0, 3.0, -4.0, 4.0)
+    phi1, phi2 = _uniform_in_window(rng, window, 20_000)
+    centre, sigma = 0.4, 0.3
+    phi1 = np.append(phi1, rng.uniform(*window[:2], 3000))
+    phi2 = np.append(phi2, rng.normal(centre, sigma, 3000))
+    profile = phi12_density_profile(phi1, phi2, [window], frame, None, axis="phi2", bin_deg=0.1)
+    fit = fit_stream_width(profile, sigma_guess=0.5)
+    assert abs(fit["phi2_centre"] - centre) < 3 * fit["errors"]["phi2_centre"]
+    assert abs(fit["sigma"] - sigma) < 3 * fit["errors"]["sigma"]
+    assert fit["model"].shape == profile["centres"].shape and 0.5 < fit["chi2"] / fit["n_dof"] < 1.5
+
+
+# A field density with a gradient in phi2 (40 % over the 10 deg window) and a stream, at the statistics of
+# the Euclid DR1 candidate (about 8000 field stars, a stream about as dense as the field on its track): the fit
+# near the track recovers the stream; the default range is the first guess +- DEFAULT_FIT_HALF_WIDTH_DEG.
+# (With far more stars, the slope left in the fitted range biases the centre beyond the errors.)
+def test_fit_near_the_track_with_a_gradient(rng, candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    window = (-3.0, 3.0, -5.0, 5.0)
+    phi1, phi2 = _uniform_in_window(rng, window, 10_000)
+    keep = rng.uniform(0.0, 1.0, phi2.size) < 0.8 + 0.032 * phi2  # density rising with phi2: 0.64 to 0.96
+    phi1, phi2 = phi1[keep], phi2[keep]
+    centre, sigma = 0.2, 0.3
+    phi1 = np.append(phi1, rng.uniform(*window[:2], 400))
+    phi2 = np.append(phi2, rng.normal(centre, sigma, 400))
+    profile = phi12_density_profile(phi1, phi2, [window], frame, None, axis="phi2", bin_deg=0.1)
+    fit = fit_stream_width(profile)
+    assert fit["phi2_fit_range"] == (-DEFAULT_FIT_HALF_WIDTH_DEG, DEFAULT_FIT_HALF_WIDTH_DEG)
+    assert abs(fit["phi2_centre"] - centre) < 3 * fit["errors"]["phi2_centre"]
+    assert abs(fit["sigma"] - sigma) < 3 * fit["errors"]["sigma"]
+    narrow = fit_stream_width(profile, phi2_fit_range=(-1.0, 1.5))
+    assert narrow["phi2_fit_range"] == (-1.0, 1.5) and narrow["n_dof"] == 25 - 4
+    np.testing.assert_allclose(stream_width_model(fit, profile["centres"]), fit["model"])
+
+
+# Many stars, a field gradient left in the fitted range: a linear background recovers the stream (a
+# constant one shifts its centre beyond the errors, see fit_stream_width); the background coefficients
+# are those of a polynomial in phi2 - background_reference, constant first
+def test_fit_linear_background(rng, candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    window = (-3.0, 3.0, -5.0, 5.0)
+    phi1, phi2 = _uniform_in_window(rng, window, 60_000)
+    keep = rng.uniform(0.0, 1.0, phi2.size) < 0.8 + 0.032 * phi2
+    phi1, phi2 = phi1[keep], phi2[keep]
+    centre, sigma = 0.2, 0.3
+    phi1 = np.append(phi1, rng.uniform(*window[:2], 3000))
+    phi2 = np.append(phi2, rng.normal(centre, sigma, 3000))
+    profile = phi12_density_profile(phi1, phi2, [window], frame, None, axis="phi2", bin_deg=0.1)
+    fit = fit_stream_width(profile, background_degree=1)
+    assert abs(fit["phi2_centre"] - centre) < 3 * fit["errors"]["phi2_centre"]
+    assert abs(fit["sigma"] - sigma) < 3 * fit["errors"]["sigma"]
+    assert fit["background_degree"] == 1 and len(fit["background_coefficients"]) == 2
+    assert fit["background_reference"] == 0.0 and fit["background"] == fit["background_coefficients"][0]
+    field = 60_000 / unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0]  # stars/deg² before thinning
+    assert fit["background_coefficients"][1] == pytest.approx(0.032 * field, rel=0.3)
+    assert len(fit_stream_width(profile)["background_coefficients"]) == 1
+    with pytest.raises(ValueError, match="background_degree"):
+        fit_stream_width(profile, background_degree=-1)
+
+
+# 2D density of uniform stars, no mask: counts of every star, areas adding up to the window, density
+# consistent with the true one
+def test_phi12_density_map(rng, candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    window = (-3.0, 3.0, -2.0, 2.0)
+    n = 30_000
+    phi1, phi2 = _uniform_in_window(rng, window, n)
+    density_map = phi12_density_map(phi1, phi2, np.linspace(-3.0, 3.0, 13), np.linspace(-2.0, 2.0, 9), frame, None)
+    assert density_map["density"].shape == (12, 8) and density_map["counts"].sum() == n
+    total_area = unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0]
+    assert density_map["area_deg2"].sum() == pytest.approx(total_area)
+    pulls = (density_map["density"] - n / total_area) / density_map["error"]
+    assert abs(pulls.mean()) < 3 / np.sqrt(pulls.size) and 0.6 < pulls.std() < 1.4
+
+
+# A profile along phi1: ValueError
+def test_fit_rejects_phi1_profile(rng, candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    phi1, phi2 = _uniform_in_window(rng, (-3.0, 3.0, -1.0, 1.0), 1000)
+    profile = phi12_density_profile(phi1, phi2, [(-3.0, 3.0, -1.0, 1.0)], frame, None, axis="phi1", bin_deg=0.5)
+    with pytest.raises(ValueError, match="along phi2"):
+        fit_stream_width(profile)
 
 
 @pytest.mark.skip(reason="stub")
@@ -290,9 +417,27 @@ def test_steps_out_of_order_raise():
     """Each step before the previous one raises a ValueError naming the missing step (e.g. compute_hess before define_regions)."""
 
 
-@pytest.mark.skip(reason="stub")
-def test_fit_width_without_distance_modulus_raises():
-    """fit_width without distance_modulus: ValueError."""
+# fit_width: the stream of the synthetic catalog (conftest.py) recovered, over the phi1 of the endpoints;
+# before prepare, or without distance_modulus: ValueError
+def test_fit_width(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    with pytest.raises(ValueError, match="prepare"):
+        cand.fit_width()
+    cand.prepare(candidate_stream_catalog)
+    with pytest.raises(ValueError, match="distance_modulus"):
+        cand.fit_width()
+    cand.distance_modulus = candidate_stream["distance_modulus"]
+    assert cand.fit_width() is cand
+    fit = cand.width_fit
+    assert abs(fit["phi2_centre"] - candidate_stream["phi2_centre"]) < 3 * fit["errors"]["phi2_centre"]
+    assert abs(fit["sigma"] - candidate_stream["sigma"]) < 3 * fit["errors"]["sigma"]
+    phi1_ends, _ = radec_to_phi12([e[0] for e in candidate_endpoints], [e[1] for e in candidate_endpoints],
+                                  cand.stream_frame)
+    assert cand.phi2_profile["windows"][0] == pytest.approx((*phi1_ends, *cand.window[2:]))
+    width_map = cand.width_map  # the same stars in 2D, over the same window
+    assert width_map["phi1_edges"][[0, -1]] == pytest.approx(phi1_ends)
+    assert width_map["phi2_edges"][[0, -1]] == pytest.approx(cand.window[2:])
+    assert width_map["counts"].sum() == cand.phi2_profile["counts"].sum()
 
 
 @pytest.mark.skip(reason="stub")

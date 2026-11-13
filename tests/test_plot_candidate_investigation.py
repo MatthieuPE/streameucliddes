@@ -2,10 +2,16 @@
 the plot_candidate_* wrappers on a CandidateInvestigation of synthetic stars (conftest.py)."""
 
 import matplotlib.pyplot as plt
+import numpy as np
 import pytest
 
 from streameucliddes.analysis.candidate_investigation import CandidateInvestigation
-from streameucliddes.plotting.plot_candidate_investigation import plot_candidate_frame_check, plot_candidate_map
+from streameucliddes.plotting.plot_candidate_investigation import (
+    plot_candidate_frame_check,
+    plot_candidate_map,
+    plot_phi2_profile,
+    plot_width_fit_map,
+)
 
 pytestmark = pytest.mark.plot_candidate_investigation
 
@@ -15,9 +21,28 @@ def test_draw_stream_regions_three_outlines():
     """Three closed outlines: on and the two off bands."""
 
 
-@pytest.mark.skip(reason="stub")
-def test_plot_phi2_profile():
-    """Profile and fit drawn; returns (fig, ax)."""
+FIT = {"amplitude": 5.0, "phi2_centre": 0.0, "sigma": 0.3, "background": 10.0, "background_coefficients": (10.0,),
+       "background_reference": 0.0, "background_degree": 0, "phi2_fit_range": (-2.0, 2.0),
+       "errors": {"phi2_centre": 0.02, "sigma": 0.03}}
+
+
+# Points with error bars, the fitted range shaded, the model (solid in it, dashed beyond), the centre and
+# +-sigma lines, the phi1 range in the title
+def test_plot_phi2_profile(candidate_endpoints):
+    centres = np.linspace(-2.95, 2.95, 60)
+    profile = {"axis": "phi2", "centres": centres, "density": 10.0 + 5.0 * np.exp(-0.5 * (centres / 0.3) ** 2),
+               "error": np.ones(60), "windows": [(-3.02, 3.02, -3.0, 3.0)]}
+    fit = {**FIT, "model": profile["density"]}
+    fig, ax = plot_phi2_profile(profile, fit)
+    assert len(ax.lines) == 6 and len(ax.containers) == 1  # points, model x2, centre, two sigma lines; error bars
+    assert len(ax.patches) == 1  # the fitted range
+    assert "Gaussian + constant" in ax.get_legend().get_texts()[1].get_text()
+    assert sorted(line.get_xdata()[0] for line in ax.lines[-3:]) == pytest.approx([-0.3, 0.0, 0.3])
+    assert "-3.02" in ax.get_title() and "3.02" in ax.get_title()
+    plt.close(fig)
+    fig, ax = plot_phi2_profile(profile)  # without fit
+    assert len(ax.lines) == 1 and len(ax.containers) == 1
+    plt.close(fig)
 
 
 @pytest.mark.skip(reason="stub")
@@ -75,3 +100,20 @@ def test_plot_candidate_frame_check(candidate_with_maps):
 def test_plot_candidate_frame_check_needs_maps(candidate_endpoints):
     with pytest.raises(ValueError, match="compute_sky_map"):
         plot_candidate_frame_check(CandidateInvestigation("test", *candidate_endpoints))
+
+
+# Observed, model (constant along phi1, grey where no data), observed - model with symmetric limits
+def test_plot_width_fit_map():
+    phi1_edges, phi2_edges = np.linspace(-3.0, 3.0, 13), np.linspace(-3.0, 3.0, 31)
+    phi2 = (phi2_edges[:-1] + phi2_edges[1:]) / 2
+    density = np.tile(10.0 + 5.0 * np.exp(-0.5 * (phi2 / 0.3) ** 2), (12, 1))
+    density[0, 0] = np.nan  # a cell without area
+    width_map = {"phi1_edges": phi1_edges, "phi2_edges": phi2_edges, "density": density + 0.5}
+    fig, axes = plot_width_fit_map(width_map, FIT)
+    assert len(axes) == 3 and "constant" in axes[1].get_title()
+    model = axes[1].images[0].get_array()
+    assert model.mask[0, 0] and np.ptp(model[5, :]) == 0.0  # imshow of the transpose: row = phi2, constant along phi1
+    vmin, vmax = axes[2].images[0].get_clim()
+    assert vmin == -vmax and axes[2].images[0].get_array()[10, 6] == pytest.approx(0.5)
+    assert axes[0].get_xlim()[0] > axes[0].get_xlim()[1]  # phi1 increasing to the left
+    plt.close(fig)
