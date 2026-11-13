@@ -160,6 +160,37 @@ def test_prepare_as_mask(catalog, gc_frame):
         assert prepare_match_filter_catalog(catalog, **kwargs).index.equals(catalog.index[keep])
 
 
+# excluded_pixels: the stars in its True pixels dropped, the others kept as without it; in
+# either ordering, with or without a window, by chunks; stars without coordinates not
+# dropped; the coordinates read, not returned without a frame
+@pytest.mark.parametrize("nest", [False, True])
+def test_prepare_excluded_pixels(catalog, gc_frame, monkeypatch, nest):
+    catalog = catalog.copy()
+    catalog.loc[catalog.index[:3], "ra"] = np.nan
+    catalog.loc[catalog.index[:3], ["euclid_q1_VIS_err", "euclid_q1_H_err"]] = 0.01  # pass the cuts
+    nside = 16
+    excluded = np.zeros(hp.nside2npix(nside), dtype=bool)
+    excluded[hp.query_disc(nside, hp.ang2vec(50.0, -25.0, lonlat=True), np.radians(6.0), nest=nest)] = True
+    finite = np.isfinite(catalog["ra"]).to_numpy()
+    in_excluded = np.zeros(len(catalog), dtype=bool)
+    in_excluded[finite] = excluded[hp.ang2pix(nside, catalog["ra"][finite], catalog["dec"][finite], lonlat=True,
+                                              nest=nest)]
+    assert 0 < in_excluded.sum() < finite.sum()
+
+    for kwargs in ({}, {"stream_frame": gc_frame, "window": (-15.0, 15.0, -5.0, 5.0)}):
+        plain = prepare_match_filter_catalog(catalog, as_mask=True, **kwargs)
+        keep = prepare_match_filter_catalog(catalog, as_mask=True, excluded_pixels=excluded,
+                                            excluded_pixels_nest=nest, **kwargs)
+        np.testing.assert_array_equal(keep, plain & ~in_excluded)
+
+    expected = prepare_match_filter_catalog(catalog, as_mask=True) & ~in_excluded
+    assert expected[:3].any()  # without coordinates: kept by the cuts, not dropped
+    monkeypatch.setattr(catalog_preparation, "CHUNK_SIZE", 700)
+    stars = prepare_match_filter_catalog(catalog, excluded_pixels=excluded, excluded_pixels_nest=nest)
+    assert stars.index.equals(catalog.index[expected])
+    assert "ra" not in stars.columns
+
+
 # Errors: missing columns (all named), a window without frame
 def test_prepare_errors(catalog):
     with pytest.raises(KeyError, match="euclid_q1_Y_obs"):
@@ -170,6 +201,11 @@ def test_prepare_errors(catalog):
         prepare_match_filter_catalog(catalog.drop(columns=["ra", "dec"]), stream_frame=object())
     with pytest.raises(ValueError, match="stream_frame"):
         prepare_match_filter_catalog(catalog, window=(-5.0, 5.0, -2.0, 2.0))
+    with pytest.raises(ValueError, match="excluded_pixels_nest"):
+        prepare_match_filter_catalog(catalog, excluded_pixels=np.zeros(12, dtype=bool))
+    with pytest.raises(KeyError, match="dec"):
+        prepare_match_filter_catalog(catalog.drop(columns="dec"), excluded_pixels=np.zeros(12, dtype=bool),
+                                     excluded_pixels_nest=False)
 
 
 # ===================================================
