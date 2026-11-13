@@ -249,15 +249,13 @@ def test_stars_xgboost_classifier(catalog_dir):
 
     read = euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False)
     from_data = euclid_catalog.get_euclid_stars(catalog, data=read, cuts=cuts, verbose=False)
-    pd.testing.assert_frame_equal(stars, from_data)
+    pd.testing.assert_frame_equal(stars, from_data, check_like=True)  # columns in another order
 
 
-@pytest.mark.parametrize("star_selection", euclid_catalog.STAR_SELECTIONS)
-def test_stars_by_batches(catalog_dir, monkeypatch, star_selection):
-    """Reading by small batches gives the stars of a single batch, 64-bit ids included."""
+def test_stars_xgboost_by_batches(catalog_dir, monkeypatch):
+    """Classifier selection: small batches give the stars of a single batch, 64-bit ids included."""
     catalog, path, data = catalog_dir
-    cuts = (_median_xgboost_cuts(catalog, data) if star_selection == "xgboost_classifier"
-            else euclid_catalog.default_star_cuts(catalog))
+    cuts = _median_xgboost_cuts(catalog, data)
     columns = euclid_catalog.default_columns(catalog) + [euclid_catalog.euclid_column(catalog, "GAIA_ID")]
     kwargs = dict(cuts=cuts, columns=columns, data_path=path, verbose=False)
     one_batch = euclid_catalog.get_euclid_stars(catalog, **kwargs)
@@ -271,17 +269,17 @@ def test_stars_by_batches(catalog_dir, monkeypatch, star_selection):
 def test_stars_none_selected(catalog_dir, cut):
     """No star passes: an empty table with all the columns."""
     catalog, path, _ = catalog_dir
-    expected_columns = euclid_catalog.default_columns(catalog) + euclid_catalog.magnitude_columns(catalog)
+    read_columns = euclid_catalog.default_columns(catalog)
     if cut == "catalog column":  # nothing read
         cuts = {euclid_catalog.euclid_column(catalog, "OBJECT_ID"): -1}
     elif cut == "magnitude":  # rows read, none selected
         cuts = {f"{euclid_catalog.euclid_survey(catalog).namespace}_VIS_obs": (100.0, None)}
     else:  # rows read, none passing the classifier cut
         cuts = {XGBOOST_PROB: (2.0, None)}
-        expected_columns.append(XGBOOST_PROB)
+        read_columns = read_columns + [XGBOOST_PROB]  # added while reading
     stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
     assert len(stars) == 0
-    assert list(stars.columns) == expected_columns
+    assert list(stars.columns) == read_columns + euclid_catalog.magnitude_columns(catalog)
 
 
 def test_stars_unknown_cut_column(catalog_dir):

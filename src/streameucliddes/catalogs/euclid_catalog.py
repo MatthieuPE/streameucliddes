@@ -76,6 +76,9 @@ DES_BANDS = ("g", "r", "i", "z")
 # DES magnitudes outside this range are sentinels (-99, 37.5, -9.999e9).
 DES_VALID_MAG_RANGE = (0.0, 37.5)
 
+# Rows per batch when open_euclid_catalog reads by batches (batch_selection).
+READ_BATCH_SIZE = 1_000_000
+
 # Euclid fluxes and errors per band, in micro-Jansky. There is no FLUX_VIS_TEMPLFIT:
 # the template fitting measures the NISP bands with the VIS image as prior, VIS being
 # measured by PSF fitting.
@@ -132,9 +135,6 @@ MORPHOLOGY_STAR_CUTS = {
 # in the column added by add_xgboost_star_prob.
 XGBOOST_MIN_STAR_PROB = 0.9
 XGBOOST_STAR_PROB_COLUMN = "xgboost_star_prob"
-
-# Rows read at once by get_euclid_stars (pyarrow record batches).
-READ_BATCH_SIZE = 1_000_000
 
 # ===================================================
 # Catalog description
@@ -385,7 +385,7 @@ def available_columns(catalog, data_path=None):
 
 def open_euclid_catalog(
     catalog, columns=None, cuts=None, ra_range=None, dec_range=None, data_path=None,
-    verbose=True,
+    verbose=True, batch_selection=None,
 ):
     """
     Read a Euclid catalog.
@@ -409,6 +409,13 @@ def open_euclid_catalog(
         Folder containing the HATS catalog; default: the one of :data:`CATALOGS`.
     verbose : bool
         Print the number of rows read.
+    batch_selection : callable, optional
+        Read the catalog by batches of :data:`READ_BATCH_SIZE` rows and keep only
+        ``batch_selection(table)`` of each batch: ``table`` is a pyarrow Table, the
+        result a pd.DataFrame (e.g. converted with :func:`_to_pandas`). For a
+        selection that the cuts on catalog columns cannot do while reading, e.g.
+        the star classifier (:func:`get_euclid_stars`), without having all the
+        rows in memory. None: the whole selection is read at once.
 
     Returns
     -------
@@ -416,15 +423,6 @@ def open_euclid_catalog(
         64-bit integer columns with nulls (e.g. ``GAIA_ID``) are pandas ``Int64``:
         as float64 they would lose digits.
     """
-    scanner = _catalog_scanner(catalog, columns, cuts, ra_range, dec_range, data_path)
-    data = _to_pandas(scanner.to_table())
-    if verbose:
-        print(f"Read {len(data):,} rows x {len(data.columns)} columns of {catalog}")
-    return data
-
-
-def _catalog_scanner(catalog, columns, cuts, ra_range, dec_range, data_path, batch_size=None):
-    """pyarrow scanner of the catalog: the arguments of :func:`open_euclid_catalog`."""
     data_path = _catalog_info(catalog)["data_path"] if data_path is None else data_path
     dataset_dir = _catalog_dir(data_path) / "dataset"
     _check_partitions(dataset_dir)
@@ -446,8 +444,19 @@ def _catalog_scanner(catalog, columns, cuts, ra_range, dec_range, data_path, bat
     expression = None
     for cut in expressions:
         expression = cut if expression is None else expression & cut
-    batch_size = {} if batch_size is None else {"batch_size": batch_size}  # None: pyarrow's default
-    return dataset.scanner(columns=list(columns), filter=expression, **batch_size)
+
+    if batch_selection is None:
+        data = _to_pandas(dataset.to_table(columns=list(columns), filter=expression))
+    else:
+        scanner = dataset.scanner(columns=list(columns), filter=expression, batch_size=READ_BATCH_SIZE)
+        selected = [batch_selection(pa.Table.from_batches([b])) for b in scanner.to_batches() if b.num_rows]
+        selected = [s for s in selected if len(s)]  # pandas warns when concatenating empty tables
+        if not selected:  # nothing selected: an empty table with the right columns
+            selected = [batch_selection(scanner.projected_schema.empty_table())]
+        data = pd.concat(selected, ignore_index=True)
+    if verbose:
+        print(f"Read {len(data):,} rows x {len(data.columns)} columns of {catalog}")
+    return data
 
 
 def _to_pandas(table):
@@ -600,13 +609,23 @@ def _xgboost_star_prob(data, catalog):
     return star_classifier.star_probability({name: np.asarray(data[c]) for name, c in columns.items()})
 
 
-def _add_derived_columns(data, catalog, cuts):
-    """Add the magnitudes, and the classifier probability when a cut uses it, in place."""
-    if f"{euclid_survey(catalog).namespace}_VIS_obs" not in data.columns:
-        add_magnitudes(data, catalog)
-    if XGBOOST_STAR_PROB_COLUMN in cuts and XGBOOST_STAR_PROB_COLUMN not in data.columns:
-        add_xgboost_star_prob(data, catalog)
-    return data
+def _xgboost_batch_selection(catalog, spec):
+    """
+    ``batch_selection`` of :func:`open_euclid_catalog` for the classifier: keeps the
+    rows whose ``xgboost_star_prob`` passes the cut ``spec``, with that column.
+
+    The classifier runs on the pyarrow table: only the kept rows are converted to
+    pandas.
+    """
+    def select(table):
+        probability = _xgboost_star_prob(table, catalog)
+        column = XGBOOST_STAR_PROB_COLUMN
+        keep = get_cut_mask(pd.DataFrame({column: probability}), {column: spec})
+        data = _to_pandas(table.filter(pa.array(keep)))
+        data[XGBOOST_STAR_PROB_COLUMN] = probability[keep]
+        return data
+
+    return select
 
 
 # ===================================================
@@ -626,17 +645,13 @@ def get_euclid_stars(
     catalog : str
         Key of :data:`CATALOGS`.
     data : pd.DataFrame, optional
-        Catalog already read with :func:`open_euclid_catalog` (the derived columns
-        are added to it in place). If None, the catalog is read by batches of
-        :data:`READ_BATCH_SIZE` rows, the cuts on catalog columns applied while
-        reading and the other cuts on each batch: only the selected rows are kept.
+        Catalog already read with :func:`open_euclid_catalog`. If None, the catalog
+        is read, applying the cuts on catalog columns while reading.
     cuts : dict, optional
         Cuts to apply (format of
         :func:`~streameucliddes.catalogs.catalog_cuts.get_cut_mask`); they may use
         the columns added by :func:`add_magnitudes` and ``xgboost_star_prob``
-        (:func:`add_xgboost_star_prob`, added only when a cut uses it; on each
-        batch, the cut on it is applied first, so that only the sources passing
-        it are converted to pandas). None applies
+        (:func:`add_xgboost_star_prob`, added only when a cut uses it). None applies
         :func:`default_star_cuts`; ``{}`` applies no cut. Other star selections:
         e.g. ``cuts=default_star_cuts(catalog, "xgboost_classifier", min_xgboost_star_prob=0.95)``.
     columns : list of str, "all" or None
@@ -681,51 +696,39 @@ def get_euclid_stars(
             raise ValueError(f"Unknown subset {subset!r}: choose one of "
                              "'north', 'south', 'northwest', 'northeast', "
                              "'southwest', 'southeast'")
-    if data is not None:
-        _add_derived_columns(data, catalog, cuts)
-        stars = data[get_cut_mask(data, cuts)].reset_index(drop=True)
-        if verbose:
-            print(f"Selected {len(stars):,} stars out of {len(data):,}")
-        return stars
-
-    names = set(available_columns(catalog, data_path))
-    derived = magnitude_columns(catalog) + [XGBOOST_STAR_PROB_COLUMN]
-    unknown = [c for c in cuts if c not in names and c not in derived]
-    if unknown:
-        raise KeyError(
-            f"Cut column(s) neither in the catalog nor added by add_magnitudes or "
-            f"add_xgboost_star_prob: {unknown}"
+    if data is None:
+        names = set(available_columns(catalog, data_path))
+        derived = magnitude_columns(catalog) + [XGBOOST_STAR_PROB_COLUMN]
+        unknown = [c for c in cuts if c not in names and c not in derived]
+        if unknown:
+            raise KeyError(
+                f"Cut column(s) neither in the catalog nor added by add_magnitudes or "
+                f"add_xgboost_star_prob: {unknown}"
+            )
+        # Cuts on catalog columns while reading, the others (magnitudes) after.
+        read_cuts = {c: s for c, s in cuts.items() if c in names}
+        cuts = {c: s for c, s in cuts.items() if c not in names}
+        # Star classifier: its cut is applied while reading, batch by batch, since
+        # the rows passing only the cuts on catalog columns may not fit in memory.
+        batch_selection = None
+        if XGBOOST_STAR_PROB_COLUMN in cuts:
+            batch_selection = _xgboost_batch_selection(catalog, cuts[XGBOOST_STAR_PROB_COLUMN])
+        data = open_euclid_catalog(
+            catalog, columns=columns, cuts=read_cuts, ra_range=ra_range,
+            dec_range=dec_range, data_path=data_path, verbose=verbose,
+            batch_selection=batch_selection,
         )
-    # Cuts on catalog columns while reading; on each batch, the cut on the classifier
-    # probability (before the conversion to pandas), then the cuts on the magnitudes.
-    read_cuts = {c: s for c, s in cuts.items() if c in names}
-    classifier_cut = {c: s for c, s in cuts.items() if c == XGBOOST_STAR_PROB_COLUMN}
-    cuts = {c: s for c, s in cuts.items() if c not in names and c != XGBOOST_STAR_PROB_COLUMN}
-    scanner = _catalog_scanner(
-        catalog, columns, read_cuts, ra_range, dec_range, data_path, batch_size=READ_BATCH_SIZE
-    )
+        n_input = None
+    else:
+        n_input = len(data)
 
-    def select(table):
-        if classifier_cut:
-            probability = pd.DataFrame({XGBOOST_STAR_PROB_COLUMN: _xgboost_star_prob(table, catalog)})
-            keep = get_cut_mask(probability, classifier_cut)
-            table = table.filter(pa.array(keep))
-        batch = _add_derived_columns(_to_pandas(table), catalog, cuts)
-        if classifier_cut:  # after the magnitudes, as add_xgboost_star_prob
-            batch[XGBOOST_STAR_PROB_COLUMN] = probability[XGBOOST_STAR_PROB_COLUMN].to_numpy()[keep]
-        return batch.iloc[np.flatnonzero(get_cut_mask(batch, cuts))]
+    if f"{euclid_survey(catalog).namespace}_VIS_obs" not in data.columns:
+        add_magnitudes(data, catalog)
+    if XGBOOST_STAR_PROB_COLUMN in cuts and XGBOOST_STAR_PROB_COLUMN not in data.columns:
+        add_xgboost_star_prob(data, catalog)
 
-    n_read = 0
-    selected = []
-    for batch in scanner.to_batches():
-        n_read += batch.num_rows
-        stars = select(pa.Table.from_batches([batch])) if batch.num_rows else ()
-        if len(stars):
-            selected.append(stars)
-    if not selected:  # no star: empty table with the right columns
-        selected.append(select(scanner.projected_schema.empty_table()))
-    stars = pd.concat(selected, ignore_index=True)
+    stars = data[get_cut_mask(data, cuts)].reset_index(drop=True)
     if verbose:
-        print(f"Read {n_read:,} rows of {catalog} passing the cuts on catalog columns")
-        print(f"Selected {len(stars):,} stars")
+        origin = f" out of {n_input:,}" if n_input is not None else ""
+        print(f"Selected {len(stars):,} stars{origin}")
     return stars
