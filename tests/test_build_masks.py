@@ -10,6 +10,7 @@ from astropy.coordinates import SkyCoord
 from streameucliddes.analysis.build_masks import (
     DEFAULT_RADIUS_SCALES,
     OBJECT_TYPES,
+    excluded_healpix_mask,
     galaxies_healpix_mask,
     object_mask_nside,
     objects_healpix_mask,
@@ -190,24 +191,38 @@ def test_object_mask_nside(bin_size_deg):
     assert np.degrees(hp.nside2resol(nside)) <= bin_size_deg / 2 < np.degrees(hp.nside2resol(nside // 2))
 
 
-# Stubs of the candidate investigation (docs/dev/candidate_investigation_plan.md)
+# ===================================================
+# Test excluded_healpix_mask
+# ===================================================
 
 
-@pytest.mark.skip(reason="stub")
-def test_excluded_mask_upgrades_footprint():
-    """Footprint at a coarse nside: same excluded sky at the object nside, RING."""
+def _footprint(nside, nest):
+    """Footprint: True (outside) where dec < -30 deg."""
+    _, dec = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True, nest=nest)
+    return dec < -30.0
 
 
-@pytest.mark.skip(reason="stub")
-def test_excluded_mask_or_objects():
-    """Excluded = footprint OR objects."""
+# The footprint at a coarse nside, either ordering: the same sky excluded at the object nside, in RING;
+# OR the objects
+@pytest.mark.parametrize("nest", [False, True])
+def test_excluded_mask_upgrades_footprint_or_objects(nest):
+    coarse, fine = 16, 64
+    objects = np.zeros(hp.nside2npix(fine), dtype=bool)
+    objects[hp.query_disc(fine, hp.ang2vec(40.0, 10.0, lonlat=True), np.radians(5.0))] = True
+    mask, nside = excluded_healpix_mask(_footprint(coarse, nest), objects, nest=nest)
+    assert nside == fine and mask.size == objects.size
+    parent = hp.ang2pix(coarse, *hp.pix2ang(fine, np.arange(mask.size), lonlat=True), lonlat=True, nest=nest)
+    np.testing.assert_array_equal(mask, _footprint(coarse, nest)[parent] | objects)
 
 
-@pytest.mark.skip(reason="stub")
+# No object mask: the footprint alone, in RING at its own nside
 def test_excluded_mask_without_objects():
-    """No object mask: the footprint in RING at its nside."""
+    mask, nside = excluded_healpix_mask(_footprint(16, True), None, nest=True)
+    assert nside == 16
+    np.testing.assert_array_equal(mask, _footprint(16, False))
 
 
-@pytest.mark.skip(reason="stub")
+# Object mask coarser than the footprint: ValueError
 def test_excluded_mask_rejects_coarser_objects():
-    """Object mask coarser than the footprint: ValueError."""
+    with pytest.raises(ValueError, match="coarser"):
+        excluded_healpix_mask(_footprint(64, False), np.zeros(hp.nside2npix(16), dtype=bool), nest=False)

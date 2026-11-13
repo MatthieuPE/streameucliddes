@@ -13,7 +13,7 @@ from streameucliddes.plotting.plot_stream_frame_search import (
     DENSITY_PERCENTILES,
     TRACK_COLOR,
     _label_tracks,
-    _split_at_map_edge,
+    draw_stream_track_on_sky,
 )
 from streameucliddes.plotting.plot_sky_density import plot_2D_density_from_hp
 
@@ -196,10 +196,8 @@ def plot_generic_search_residual_map(
         cmap=cmap, vmin=vmin, vmax=vmax, label_fontsize=11, title_fontsize=12, tick_labelsize=9,
     )
     ax.gridlines.set_alpha(grid_alpha)  # skyproj's grid, a LineCollection
-    lon_0 = ax.projection.proj4_params["lon_0"]  # the map edge is at lon_0 + 180
     for _, ra, dec in tracks:
-        for ra_part, dec_part in _split_at_map_edge(np.asarray(ra, dtype=float), np.asarray(dec, dtype=float), lon_0):
-            ax.plot(ra_part, dec_part, **KNOWN_TRACK_STYLE)
+        draw_stream_track_on_sky(ax, ra, dec, **KNOWN_TRACK_STYLE)
     if label_tracks:
         _label_tracks(ax, tracks, footprint_mask, nest=result["nest"], alpha=KNOWN_TRACK_LABEL_ALPHA)
 

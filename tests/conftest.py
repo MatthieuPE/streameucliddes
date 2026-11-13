@@ -296,3 +296,47 @@ def sample_sky_catalog(sample_sky_positions, sample_uniform_magnitudes):
     return sample_sky_positions.join(
         sample_uniform_magnitudes(len(sample_sky_positions))
     )
+
+
+# ===================================================
+# A stream candidate (analysis.candidate_investigation)
+# ===================================================
+
+CANDIDATE_NSIDE = 64  # coarse maps: fast tests
+NO_OBJECT_MASKS = {"mask_lmc": False, "mask_smc": False, "mask_dwarfs": False, "mask_gc": False, "mask_galaxies": False}
+
+
+@pytest.fixture(scope="session")
+def candidate_endpoints():
+    """(ra, dec) of the endpoints of the Euclid DR1 candidate of the example notebook (deg)."""
+    return (77.0, -40.0), (70.0, -43.0)
+
+
+@pytest.fixture(scope="session")
+def no_object_masks():
+    """prepare_search / prepare_generic_search arguments masking no object."""
+    return dict(NO_OBJECT_MASKS)
+
+
+@pytest.fixture(scope="session")
+def candidate_catalog():
+    """Uniform stars in an (ra, dec) box around the candidate, with the columns of the default match filter."""
+    rng = np.random.default_rng(3)
+    n = 50_000
+    vis = rng.uniform(18.0, 26.0, n)
+    return pd.DataFrame({
+        "ra": rng.uniform(58.0, 90.0, n),
+        "dec": np.degrees(np.arcsin(rng.uniform(*np.sin(np.radians([-52.0, -30.0])), n))),
+        "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
+    })
+
+
+@pytest.fixture
+def candidate_with_maps(candidate_endpoints, candidate_catalog):
+    """A CandidateInvestigation with its sky map, prepared stars and zoom map, at dm 17 (no object masked)."""
+    from streameucliddes.analysis.candidate_investigation import CandidateInvestigation
+
+    cand = CandidateInvestigation("test", *candidate_endpoints, prepare_kwargs={"bin_size_deg": 0.2, **NO_OBJECT_MASKS})
+    cand.compute_sky_map(candidate_catalog, 17.0, nside=CANDIDATE_NSIDE, **NO_OBJECT_MASKS)
+    return cand.prepare().compute_zoom_map()

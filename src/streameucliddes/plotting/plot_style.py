@@ -58,3 +58,9 @@ plt_params = {
 
 
 plt.rcParams.update(plt_params)
+
+
+def escape_underscores(text: str) -> str:
+    """Text as displayed: the serif font (cmr10) has no underscore glyph, so each ``_`` is drawn by mathtext."""
+    return text.replace("_", r"$\_$")
+

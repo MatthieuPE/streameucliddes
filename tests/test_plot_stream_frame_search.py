@@ -13,6 +13,7 @@ import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
 import pytest
+import skyproj
 
 from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_along_track,
@@ -23,6 +24,9 @@ from streameucliddes.catalogs.galstreams_catalog import select_galstreams_in_foo
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
 from streameucliddes.plotting import plot_stream_frame_search
 from streameucliddes.plotting.plot_stream_frame_search import (
+    TRACK_STYLE,
+    draw_stream_track,
+    draw_stream_track_on_sky,
     plot_galstreams_selection,
     plot_stream_frame_search_single_dm,
 )
@@ -238,3 +242,31 @@ def test_central_ra():
     footprint_mask = ~((np.abs(ra_wrapped - (-10.0)) < 30.0) & (np.abs(dec) < 20.0))  # ra 320 to 20
     central_ra = plot_stream_frame_search._central_ra(footprint_mask, nest=False)
     assert (central_ra - 350.0 + 180.0) % 360.0 - 180.0 == pytest.approx(0.0, abs=0.5)
+
+
+# ===================================================
+# Test draw_stream_track and draw_stream_track_on_sky
+# ===================================================
+
+
+# One dashed line in TRACK_STYLE, shifted by phi2_offset_deg; a given style over it
+def test_draw_stream_track():
+    fig, ax = plt.subplots()
+    phi1, phi2 = np.linspace(-5.0, 5.0, 20), np.zeros(20)
+    (line,) = draw_stream_track(ax, phi1, phi2, label="track", phi2_offset_deg=0.5)
+    np.testing.assert_allclose(line.get_ydata(), 0.5)
+    assert line.get_linestyle() == "--" and line.get_alpha() == TRACK_STYLE["alpha"] and line.get_label() == "track"
+    (line,) = draw_stream_track(ax, phi1, phi2, color="k", lw=2.0)
+    assert line.get_color() == "k" and line.get_linewidth() == 2.0
+    plt.close(fig)
+
+
+# A track across the map edge (ra = lon_0 + 180): one line per side, labelled once
+def test_draw_stream_track_on_sky_split():
+    fig, ax = plt.subplots()
+    sky_ax = skyproj.McBrydeSkyproj(ax=ax, lon_0=0.0).ax
+    lines = draw_stream_track_on_sky(sky_ax, np.linspace(170.0, 190.0, 50), np.full(50, -20.0), label="edge")
+    assert len(lines) == 2 and [line.get_label() for line in lines][0] == "edge"
+    assert not lines[1].get_label() or lines[1].get_label().startswith("_")
+    assert len(draw_stream_track_on_sky(sky_ax, np.full(50, 10.0), np.linspace(-30.0, -10.0, 50))) == 1
+    plt.close(fig)

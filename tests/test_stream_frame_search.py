@@ -23,6 +23,7 @@ from streameucliddes.analysis.cmd_match_filter import (
     build_match_filter_polygon,
     select_stars_in_match_filter,
 )
+from streameucliddes.analysis import stream_frame_search as stream_frame_search_module
 from streameucliddes.analysis.stream_frame_search import (
     DEFAULT_DISTANCE_MODULI,
     PreparedSearch,
@@ -251,6 +252,11 @@ def test_prepare_search_object_masks(stream_catalog, gc_frame, monkeypatch):
     assert 0 < expected.sum() < expected.size / 4
     np.testing.assert_array_equal(masked.object_mask, expected)
     np.testing.assert_array_equal(masked.footprint_mask, expected)
+    # the HEALPix mask the stars are dropped with, kept (RING, object nside); none without masks
+    assert plain.object_healpix_mask is None
+    assert masked.object_healpix_mask.size == healpix.size and not (healpix & ~masked.object_healpix_mask).any()
+    np.testing.assert_array_equal(
+        survey_footprint_phi12_mask(masked.object_healpix_mask, gc_frame, WINDOW, BIN, nest=False), expected)
 
     on_object = healpix[hp.ang2pix(nside, plain.stars["ra"], plain.stars["dec"], lonlat=True)]
     assert on_object.sum() > 100
@@ -269,6 +275,28 @@ def test_prepare_search_object_masks(stream_catalog, gc_frame, monkeypatch):
                              mask_dwarfs=False)
     np.testing.assert_array_equal(only_gc.object_mask, survey_footprint_phi12_mask(
         objects_healpix_mask(objects["gc"], nside, nest=False), gc_frame, WINDOW, BIN, nest=False))
+
+
+# An object mask already built: used as it is, not built again (same stars and masked bins); it
+# needs a stream frame
+def test_prepare_search_given_object_mask(stream_catalog, gc_frame, monkeypatch):
+    nside = object_mask_nside(BIN)
+    objects = np.zeros(hp.nside2npix(nside), dtype=bool)
+    centre_ra, centre_dec = phi12_to_radec(0.0, 0.0, gc_frame)
+    objects[hp.query_disc(nside, hp.ang2vec(centre_ra, centre_dec, lonlat=True), np.radians(1.0))] = True
+
+    def not_again(*args, **kwargs):
+        raise AssertionError("the object mask is built again")
+
+    monkeypatch.setattr(stream_frame_search_module, "overlapped_objects_healpix_mask", not_again)
+    search = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN, object_healpix_mask=objects)
+    assert search.object_healpix_mask is objects
+    on_object = objects[hp.ang2pix(nside, search.stars["ra"], search.stars["dec"], lonlat=True)]
+    assert not on_object.any() and len(search.stars) < len(stream_catalog)
+    np.testing.assert_array_equal(search.object_mask,
+                                  survey_footprint_phi12_mask(objects, gc_frame, WINDOW, BIN, nest=False))
+    with pytest.raises(ValueError, match="needs a stream_frame"):
+        prepare_search(stars=search.stars, window=WINDOW, bin_size_deg=BIN, object_healpix_mask=objects)
 
 
 # ===================================================

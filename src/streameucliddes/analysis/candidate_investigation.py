@@ -58,8 +58,11 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from streameucliddes.analysis.build_masks import excluded_healpix_mask
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
+from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, DEFAULT_METALLICITIES
+from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 from streameucliddes.stream_frames import (
     DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
     DEFAULT_PADDING_PHI1_DEG,
@@ -87,6 +90,11 @@ DEFAULT_PHI2_BIN_DEG = 0.05  # bins of the phi2 profile
 DEFAULT_PHI1_BIN_DEG = 0.5  # bins of the phi1 profile
 DEFAULT_FOOTPRINT_NSIDE = 512  # footprint from the stars, when there is no sky map
 DEFAULT_TRACK_POINTS = 100
+CATALOG_EDGE_TOLERANCE_DEG = 0.1  # window outline beyond the outermost stars by less than this: still inside
+WINDOW_FIELDS = ("padding_phi1_deg", "padding_phi2_deg", "min_phi2_half_width_deg")
+# Results that depend on the frame: cleared by prepare and set_endpoints (not sky_map nor isochrone_track)
+FRAME_RESULTS = ("search", "excluded_healpix_mask", "zoom_map", "maps", "phi2_profile", "width_fit", "regions",
+                 "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
 
 
 # ===================================================
@@ -372,6 +380,9 @@ class CandidateInvestigation:
     catalog : pandas.DataFrame
         The stars given to ``prepare`` (a reference, not a copy), kept to
         prepare again after ``set_endpoints``.
+    footprint_mask, footprint_nest : numpy.ndarray of bool, bool
+        HEALPix footprint of the catalog (True outside) and its ordering, kept
+        for ``set_endpoints``.
     search : PreparedSearch
         From ``prepare_search``.
     excluded_healpix_mask : numpy.ndarray of bool
@@ -415,6 +426,8 @@ class CandidateInvestigation:
     window: tuple | None = None
     radec_box: tuple | None = None
     catalog: Any = None
+    footprint_mask: NDArray | None = None
+    footprint_nest: bool = False
     search: PreparedSearch | None = None
     excluded_healpix_mask: NDArray | None = None
     sky_map: dict | None = None
@@ -520,6 +533,8 @@ class CandidateInvestigation:
         self.sky_map = generic_search_single_dm(
             catalog, distance_modulus, self.isochrone, match_filter=self.match_filter, **generic_kwargs
         )
+        if catalog is not self.catalog:
+            self.footprint_mask = None  # that of another catalog
         self.catalog = catalog
         return self
 
@@ -532,15 +547,25 @@ class CandidateInvestigation:
     ) -> CandidateInvestigation:
         """Stars of the window and excluded mask (``prepare_search``, ``excluded_healpix_mask``).
 
+        ``prepare_search`` with the frame, window, isochrone, match filter and
+        ``distance_moduli`` of the object, and ``prepare_kwargs``; then the
+        excluded mask: the footprint OR the objects masked by
+        ``prepare_search`` (``build_masks.excluded_healpix_mask``, RING). The
+        results of the later steps are cleared.
+
+        The footprint is not that of ``sky_map``: the generic search adds the
+        masked objects to it at its own nside; here the objects come at the
+        finer nside of ``prepare_search``, the one the stars are dropped with.
+
         Parameters
         ----------
         catalog : pandas.DataFrame, optional
             Stars, kept in ``self.catalog`` (a reference). Default: the
             catalog of ``compute_sky_map`` or of a previous call.
         footprint_mask : numpy.ndarray of bool, optional
-            HEALPix footprint, True outside. Default:
-            ``sky_map["footprint_mask"]`` (with its ``nest``), else from the
-            stars at ``DEFAULT_FOOTPRINT_NSIDE``.
+            HEALPix footprint, True outside, kept in ``self.footprint_mask``.
+            Default: the one kept, else from the stars
+            (``survey_footprint_healpix_mask`` at ``DEFAULT_FOOTPRINT_NSIDE``).
         nest : bool, optional
             Ordering of a given ``footprint_mask``.
 
@@ -554,7 +579,22 @@ class CandidateInvestigation:
             No catalog given nor kept; or the window leaves the (ra, dec) range
             of the catalog.
         """
-        raise NotImplementedError
+        catalog = self.catalog if catalog is None else catalog
+        if catalog is None:
+            raise ValueError("prepare needs the stars: give a catalog, or call compute_sky_map first.")
+        self._check_window_in_catalog(catalog)
+        if catalog is not self.catalog:
+            self.footprint_mask = None  # that of another catalog
+        self.catalog = catalog
+        if footprint_mask is not None:
+            self.footprint_mask, self.footprint_nest = np.asarray(footprint_mask, dtype=bool), nest
+        elif self.footprint_mask is None:
+            self.footprint_mask = survey_footprint_healpix_mask(
+                catalog["ra"], catalog["dec"], DEFAULT_FOOTPRINT_NSIDE, nest=False
+            )
+            self.footprint_nest = False
+        self._prepare_stars()
+        return self
 
     def set_endpoints(
         self,
@@ -564,9 +604,11 @@ class CandidateInvestigation:
     ) -> CandidateInvestigation:
         """New endpoints: new frame, window and box; prepared again; later results cleared.
 
-        Fast: the sky map is kept; only ``prepare`` on the kept catalog is
-        done again. Then call ``compute_zoom_map`` and
-        ``plot_candidate_frame_check``.
+        Fast: the sky map, the footprint and the object mask (of the last
+        ``prepare``, which does not depend on the frame) are kept; only the
+        stars of the new window are prepared (when there is a catalog). Then
+        call ``compute_zoom_map`` and ``plot_candidate_frame_check``. After a
+        change of ``prepare_kwargs``, call ``prepare()`` instead.
 
         Parameters
         ----------
@@ -584,17 +626,41 @@ class CandidateInvestigation:
         ------
         ValueError
             The new window leaves the (ra, dec) range of the kept catalog:
-            load a larger box.
+            load a larger box. The object is then left unchanged.
+        TypeError
+            Another keyword than those of the window.
         """
-        raise NotImplementedError
+        unknown = set(window_kwargs) - set(WINDOW_FIELDS)
+        if unknown:
+            raise TypeError(f"Unexpected arguments {sorted(unknown)}; set_endpoints takes {WINDOW_FIELDS}.")
+        previous = {name: getattr(self, name) for name in ("endpoint_1", "endpoint_2", *WINDOW_FIELDS)}
+        self.endpoint_1, self.endpoint_2 = endpoint_1, endpoint_2
+        for name, value in window_kwargs.items():
+            setattr(self, name, value)
+        old_frame = (self.stream_frame, self.window, self.radec_box)
+        self._set_frame_and_window()
+        if self.catalog is not None:
+            try:
+                self._check_window_in_catalog(self.catalog)
+            except ValueError:  # leave the object as it was
+                for name, value in previous.items():
+                    setattr(self, name, value)
+                self.stream_frame, self.window, self.radec_box = old_frame
+                raise
+            self._prepare_stars(None if self.search is None else self.search.object_healpix_mask)
+        else:
+            self._clear_results(FRAME_RESULTS)
+        return self
 
-    def compute_zoom_map(self, distance_modulus: float | None = None) -> CandidateInvestigation:
+    def compute_zoom_map(self, distance_modulus: float | None = None, **map_kwargs: Any) -> CandidateInvestigation:
         """One matched-filter map in the frame (``stream_frame_search_single_dm``).
 
         Parameters
         ----------
         distance_modulus : float, optional
-            Default: that of ``sky_map``.
+            Default: that of ``sky_map``, else ``self.distance_modulus``.
+        **map_kwargs
+            Arguments of ``stream_frame_search_single_dm`` (``smoothing_deg``).
 
         Returns
         -------
@@ -605,7 +671,71 @@ class CandidateInvestigation:
         ValueError
             ``prepare`` not done, or no distance modulus.
         """
-        raise NotImplementedError
+        self._require("search", "prepare")
+        if distance_modulus is None:
+            distance_modulus = self.sky_map["distance_modulus"] if self.sky_map is not None else self.distance_modulus
+        if distance_modulus is None:
+            raise ValueError("compute_zoom_map needs a distance_modulus: give one, compute_sky_map, or set "
+                             "cand.distance_modulus.")
+        self.zoom_map = stream_frame_search_single_dm(
+            search=self.search, distance_modulus=distance_modulus, isochrone=self.isochrone, **map_kwargs
+        )
+        return self
+
+    # ===================================================
+    # Checks
+    # ===================================================
+
+    def _prepare_stars(self, object_healpix_mask: NDArray | None = None) -> None:
+        """``prepare_search`` on the kept catalog and footprint, and the excluded mask; later results cleared.
+
+        ``object_healpix_mask``: the object mask of a previous search, not built again.
+        """
+        self._clear_results(FRAME_RESULTS)
+        self.search = prepare_search(
+            self.catalog, self.stream_frame, self.window, match_filter=self.match_filter, isochrone=self.isochrone,
+            distance_moduli=self.distance_moduli, footprint_mask=self.footprint_mask, nest=self.footprint_nest,
+            object_healpix_mask=object_healpix_mask, **self.prepare_kwargs,
+        )
+        self.excluded_healpix_mask, _ = excluded_healpix_mask(
+            self.footprint_mask, self.search.object_healpix_mask, nest=self.footprint_nest
+        )
+
+    def _require(self, field_name: str, step: str) -> None:
+        """ValueError naming the missing step when ``field_name`` is not computed."""
+        if getattr(self, field_name) is None:
+            raise ValueError(f"No {field_name}: call {step}() first.")
+
+    def _clear_results(self, names: Sequence[str]) -> None:
+        """Set these results back to None."""
+        for name in names:
+            setattr(self, name, None)
+
+    def _check_window_in_catalog(self, catalog: pd.DataFrame) -> None:
+        """ValueError when the window leaves the (ra, dec) range of the catalog.
+
+        Range of the stars around the ra of the window centre (no jump at ra =
+        0/360); window outline from ``phi12_window_radec_box`` without margin.
+        A window containing a pole is not checked.
+        """
+        (ra_min, ra_max), (dec_min, dec_max) = phi12_window_radec_box(self.stream_frame, self.window, margin_deg=0.0)
+        if (ra_min, ra_max) == (0.0, 360.0):
+            return
+        centre_ra = (ra_min + ((ra_max - ra_min) % 360.0) / 2) % 360.0
+
+        def relative(ra: Any) -> Any:
+            return (np.asarray(ra) - centre_ra + 180.0) % 360.0 - 180.0
+
+        star_ra = relative(catalog["ra"].to_numpy())
+        star_dec = catalog["dec"].to_numpy()
+        tolerance = CATALOG_EDGE_TOLERANCE_DEG
+        if (relative(ra_min) < star_ra.min() - tolerance or relative(ra_max) > star_ra.max() + tolerance
+                or dec_min < star_dec.min() - tolerance or dec_max > star_dec.max() + tolerance):
+            raise ValueError(
+                f"The window (ra {ra_min:.1f} to {ra_max:.1f}, dec {dec_min:.1f} to {dec_max:.1f} deg) leaves the "
+                f"stars (ra {(star_ra.min() + centre_ra) % 360:.1f} to {(star_ra.max() + centre_ra) % 360:.1f}, dec "
+                f"{star_dec.min():.1f} to {star_dec.max():.1f} deg): load a larger box."
+            )
 
     def scan_distance_moduli(self, distance_moduli: Sequence[float] | None = None) -> CandidateInvestigation:
         """Maps in the frame over distance moduli (``stream_frame_search_dm_scan``), in ``maps``.

@@ -2,11 +2,11 @@
 
 Two kinds of functions:
 
-- tracks, regions and profiles (``analysis.candidate_investigation``): the ``draw_*``
-  functions draw on existing axes and return what they added; the
-  ``plot_*`` functions make or take axes and return ``(fig, ax)``. The track
-  functions take arrays, so they also draw galstreams tracks or the arc
-  between two endpoints, in one style for all tracks;
+- regions and profiles (``analysis.candidate_investigation``):
+  ``draw_stream_regions`` draws on existing axes and returns what it added;
+  the ``plot_*`` functions make or take axes and return ``(fig, ax)``. The
+  tracks are drawn by ``plot_stream_frame_search.draw_stream_track`` and
+  ``draw_stream_track_on_sky``, the same for every map;
 - thin wrappers, ``plot_candidate_*``: each takes a
   ``CandidateInvestigation`` and calls the plots of ``plot_generic_search``,
   ``plot_stream_frame_search``, ``plot_cmd`` and the functions above on its
@@ -17,8 +17,18 @@ from __future__ import annotations
 
 from typing import TYPE_CHECKING
 
+import matplotlib.pyplot as plt
+import numpy as np
+
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
-from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS
+from streameucliddes.plotting.plot_generic_search import plot_generic_search_residual_map
+from streameucliddes.plotting.plot_stream_frame_search import (
+    draw_stream_track,
+    draw_stream_track_on_sky,
+    plot_stream_frame_search_single_dm,
+)
+from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, escape_underscores
+from streameucliddes.stream_frames import phi12_to_radec, phi12_window_outline, radec_to_phi12
 
 if TYPE_CHECKING:
     from collections.abc import Mapping
@@ -31,7 +41,9 @@ if TYPE_CHECKING:
 
     from streameucliddes.analysis.candidate_investigation import CandidateInvestigation
 
-TRACK_STYLE = {"color": CATEGORICAL_COLORS[0], "lw": 1.0, "ls": "--", "alpha": 0.7}  # thin dashed: not to hide the stream
+WINDOW_STYLE = {"color": CATEGORICAL_COLORS[1], "lw": 1.0, "ls": "-", "alpha": 0.9}  # outline of the window
+ENDPOINT_STYLE = {"ls": "none", "marker": "o", "ms": 7, "mfc": "none", "mec": CATEGORICAL_COLORS[4], "mew": 1.5}
+FRAME_CHECK_FIGSIZE = (17.0, 6.5)
 ON_REGION_COLOR = CATEGORICAL_COLORS[1]
 OFF_REGION_COLOR = CATEGORICAL_COLORS[2]
 PROFILE_COLOR = CATEGORICAL_COLORS[3]
@@ -41,74 +53,6 @@ FIT_COLOR = CATEGORICAL_COLORS[4]
 # ===================================================
 # Tracks, regions and profiles
 # ===================================================
-
-
-def draw_stream_track(
-    ax: Axes,
-    phi1: ArrayLike,
-    phi2: ArrayLike,
-    *,
-    label: str | None = None,
-    phi2_offset_deg: float = 0.0,
-    **line_kwargs: Any,
-) -> list[Line2D]:
-    """Track on a phi1/phi2 map, e.g. from ``plot_stream_frame_search_single_dm``.
-
-    A thin dashed line (``TRACK_STYLE``), optionally shifted in phi2 not to
-    hide the stream.
-
-    Parameters
-    ----------
-    ax : matplotlib.axes.Axes
-        Axes of a phi1/phi2 map.
-    phi1, phi2 : array_like
-        Track (deg).
-    label : str, optional
-        Legend label.
-    phi2_offset_deg : float, optional
-        Shift of the line in phi2 (deg).
-    **line_kwargs
-        Arguments of ``ax.plot``, updating ``TRACK_STYLE``.
-
-    Returns
-    -------
-    lines : list of matplotlib.lines.Line2D
-    """
-    raise NotImplementedError
-
-
-def draw_stream_track_on_sky(
-    ax: Any,
-    ra: ArrayLike,
-    dec: ArrayLike,
-    *,
-    label: str | None = None,
-    **line_kwargs: Any,
-) -> list[Line2D]:
-    """Track on a skyproj sky map, split at the map edge.
-
-    Split with ``plot_stream_frame_search._split_at_map_edge`` (as the tracks
-    of ``plot_generic_search_residual_map``), so that no line crosses the
-    map.
-
-    Parameters
-    ----------
-    ax : skyproj.SkyAxes
-        Axes of a sky map, e.g. from ``plot_generic_search_residual_map``;
-        its ``plot`` takes (ra, dec) in degrees.
-    ra, dec : array_like
-        Track (deg).
-    label : str, optional
-        Legend label, on the first part only.
-    **line_kwargs
-        Arguments of ``ax.plot``, updating ``TRACK_STYLE``.
-
-    Returns
-    -------
-    lines : list of matplotlib.lines.Line2D
-        One per part of the track.
-    """
-    raise NotImplementedError
 
 
 def draw_stream_regions(
@@ -229,7 +173,37 @@ def plot_candidate_frame_check(
     ValueError
         ``sky_map`` or ``zoom_map`` not computed.
     """
-    raise NotImplementedError
+    for name, step in (("sky_map", "compute_sky_map"), ("zoom_map", "compute_zoom_map")):
+        if getattr(cand, name) is None:
+            raise ValueError(f"No {name}: call cand.{step}() first.")
+    fig, (sky_panel, zoom_panel) = plt.subplots(1, 2, figsize=FRAME_CHECK_FIGSIZE, width_ratios=(1.25, 1.0))
+    ends_ra = [cand.endpoint_1[0], cand.endpoint_2[0]]
+    ends_dec = [cand.endpoint_1[1], cand.endpoint_2[1]]
+
+    # Left: the sky map, the great circle, the window, the endpoints
+    sky_dm = cand.sky_map["distance_modulus"]
+    _, sky_ax = plot_generic_search_residual_map(
+        cand.sky_map, ax=sky_panel, title=f"Loaded box, dm {sky_dm:.2f}", **(sky_kwargs or {})
+    )
+    phi1_circle = np.linspace(-180.0, 180.0, 721)
+    draw_stream_track_on_sky(sky_ax, *phi12_to_radec(phi1_circle, np.zeros_like(phi1_circle), cand.stream_frame),
+                             label="great circle")
+    draw_stream_track_on_sky(sky_ax, *phi12_to_radec(*phi12_window_outline(cand.window), cand.stream_frame),
+                             label="window", **WINDOW_STYLE)
+    sky_ax.plot(ends_ra, ends_dec, label="endpoints", **ENDPOINT_STYLE)
+    sky_ax.legend(loc="upper right", fontsize="small", framealpha=0.8)
+
+    # Right: the map in the frame, phi2 = 0, the endpoints
+    zoom_dm = cand.zoom_map["distance_modulus"]
+    _, zoom_ax = plot_stream_frame_search_single_dm(
+        cand.zoom_map, ax=zoom_panel, title=f"In the frame, dm {zoom_dm:.2f}", **(zoom_kwargs or {})
+    )
+    draw_stream_track(zoom_ax, cand.window[:2], [0.0, 0.0], label=r"$\phi_2 = 0$")
+    zoom_ax.plot(*radec_to_phi12(ends_ra, ends_dec, cand.stream_frame), label="endpoints", **ENDPOINT_STYLE)
+    zoom_ax.legend(loc="upper right", fontsize="small", framealpha=0.8)
+
+    fig.suptitle(f"{escape_underscores(cand.name)}: endpoints ({ends_ra[0]:g}, {ends_dec[0]:g}) and ({ends_ra[1]:g}, {ends_dec[1]:g}) deg")
+    return fig, [sky_ax, zoom_ax]
 
 
 def plot_candidate_map(

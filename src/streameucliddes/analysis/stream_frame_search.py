@@ -125,6 +125,11 @@ class PreparedSearch:
     object_mask : numpy.ndarray of bool or None
         Masked objects (Magellanic Clouds, dwarf galaxies, globular clusters, bright galaxies) on the grid,
         True on them; None when none is masked.
+    object_healpix_mask : numpy.ndarray of bool or None
+        The same objects as a HEALPix mask (RING, at
+        ``build_masks.object_mask_nside(bin_size_deg)``), the one the stars are
+        dropped with; None when none is masked. For areas outside the masks
+        (``build_masks.excluded_healpix_mask``).
     """
 
     stars: Any
@@ -142,6 +147,7 @@ class PreparedSearch:
     dm_min: float = np.nan
     dm_max: float = np.nan
     object_mask: Any = None
+    object_healpix_mask: Any = None
 
 
 def prepare_search(
@@ -168,6 +174,7 @@ def prepare_search(
     mask_gc: bool = True,
     mask_galaxies: bool = True,
     mask_radius_scale: float | Mapping[str, float] = DEFAULT_RADIUS_SCALES,
+    object_healpix_mask: NDArray[np.bool_] | None = None,
     **selection_kwargs: Any,
 ) -> PreparedSearch:
     """Prepare a search in a stream frame: its values, its stars, its footprint.
@@ -264,6 +271,13 @@ def prepare_search(
         6.5 for the LMC, 21 deg; 11 for the SMC, 11 deg; 4 for the dwarfs
         and clusters; 5 for the galaxies; see
         ``analysis.build_masks.overlapped_objects_healpix_mask``).
+    object_healpix_mask : numpy.ndarray of bool, optional
+        The object mask already built (HEALPix, RING, True on the objects),
+        e.g. ``object_healpix_mask`` of a previous search with the same
+        ``bin_size_deg`` and ``mask_*`` arguments: used as it is, instead of
+        building it again (the slow part of a preparation, independent of
+        the frame); the ``mask_*`` arguments are then not used. Needs a
+        stream frame.
     **selection_kwargs
         Arguments of ``select_galstreams_in_footprint`` (``SELECTION_ARGUMENTS``:
         ``dm_range``, ``min_length_deg``, ``add_ibata2024``), only when given.
@@ -315,9 +329,12 @@ def prepare_search(
     match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
 
     # Masked objects, stars and footprint, once
-    object_healpix_mask = None
     any_mask = mask_lmc or mask_smc or mask_dwarfs or mask_gc or mask_galaxies
-    if stream_frame is not None and any_mask:
+    if object_healpix_mask is not None:
+        if stream_frame is None:
+            raise ValueError("An object_healpix_mask needs a stream_frame.")
+        object_healpix_mask = np.asarray(object_healpix_mask, dtype=bool)
+    elif stream_frame is not None and any_mask:
         object_healpix_mask = overlapped_objects_healpix_mask(
             object_mask_nside(bin_size_deg), nest=False, mask_lmc=mask_lmc, mask_smc=mask_smc,
             mask_dwarfs=mask_dwarfs, mask_gc=mask_gc, mask_galaxies=mask_galaxies, radius_scale=mask_radius_scale,
@@ -348,7 +365,7 @@ def prepare_search(
         phi1_centres=phi1_centres, phi2_centres=phi2_centres, footprint_mask=footprint_mask,
         match_filter=match_filter, isochrones=list(isochrones), distance_moduli=[float(dm) for dm in distance_moduli],
         track=track, track_name=None if track is None else track.track_name, dm_min=dm_min, dm_max=dm_max,
-        object_mask=object_mask,
+        object_mask=object_mask, object_healpix_mask=object_healpix_mask,
     )
 
 

@@ -31,6 +31,7 @@ import numpy as np
 from astropy.coordinates import angular_separation, position_angle
 
 from streameucliddes.catalogs import overlapped_objects
+from streameucliddes.catalogs.survey_footprint import convert_footprint_healpix_mask
 
 if TYPE_CHECKING:
     import pandas as pd
@@ -286,7 +287,8 @@ def excluded_healpix_mask(
 
     One mask for the stars, the maps and the areas of a search in a stream
     frame. The footprint is brought to the nside of the object mask and to
-    RING (``healpy.ud_grade``, exact when going up), then OR the objects.
+    RING (``catalogs.survey_footprint.convert_footprint_healpix_mask``: each
+    sub-pixel takes the value of its pixel, exact), then OR the objects.
 
     Parameters
     ----------
@@ -314,4 +316,13 @@ def excluded_healpix_mask(
         The object mask is coarser than the footprint (going down would
         lose excluded pixels).
     """
-    raise NotImplementedError
+    footprint_mask = np.asarray(footprint_mask, dtype=bool)
+    footprint_nside = hp.npix2nside(footprint_mask.size)
+    if object_healpix_mask is None:
+        return convert_footprint_healpix_mask(footprint_mask, footprint_nside, nest=nest, nest_out=False), footprint_nside
+    object_healpix_mask = np.asarray(object_healpix_mask, dtype=bool)
+    nside = hp.npix2nside(object_healpix_mask.size)
+    if nside < footprint_nside:
+        raise ValueError(f"Object mask at nside {nside}, coarser than the footprint ({footprint_nside}).")
+    footprint = convert_footprint_healpix_mask(footprint_mask, nside, nest=nest, nest_out=False)
+    return footprint | object_healpix_mask, nside

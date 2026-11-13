@@ -257,6 +257,25 @@ Done:
   that panel and the title on the panel. Notebook: stars read in the window
   box + `LOAD_MARGIN_DEG = 5` (ra 55.6–91.7, dec −55.2 to −27.6: 5.6 M
   stars, 31 s with the map), `SKY_MAP_DM` an input.
+- S3 (2026-11-13): `PreparedSearch.object_healpix_mask` (the mask
+  `prepare_search` already built); `build_masks.excluded_healpix_mask`
+  (reuses `convert_footprint_healpix_mask`); `prepare` (footprint from the
+  stars at nside 512, **not** `sky_map["footprint_mask"]`: the generic
+  search adds the objects to it at its nside, coarser than the object
+  nside; kept in `footprint_mask`, `footprint_nest`), `compute_zoom_map`
+  (default dm: the sky map's), `set_endpoints` (keeps the sky map and the
+  footprint, leaves the object unchanged if the window leaves the stars).
+  `draw_stream_track`, `draw_stream_track_on_sky` are in
+  `plot_stream_frame_search.py` (not the candidate module: the existing
+  map plot and `plot_generic_search_residual_map` now draw their tracks
+  with them, and the candidate module imports that module: no cycle).
+  `plot_style.escape_underscores` (moved from `plot_injected_stream_snr`):
+  cmr10 has no underscore. `plot_candidate_frame_check`. The off-band check
+  moves to `define_regions` (needs σ). Speed: building the object mask
+  (nside 2048) took 5.3 of the 7 s of `set_endpoints`; `prepare_search`
+  now takes an optional `object_healpix_mask` (used as it is; default path
+  unchanged, user 2026-11-13), and `set_endpoints` passes that of the last
+  `prepare`: the notebook cell takes 2.7 s with the figure (8.4 s before).
 
 ## 4. New functions, by module
 
