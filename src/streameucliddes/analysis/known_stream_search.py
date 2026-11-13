@@ -8,7 +8,7 @@ Euclid x DES magnitudes are already dereddened.
 Every search starts with ``prepare_search``, done once: the values not given
 taken from galstreams and the population table, the catalog prepared
 (``catalog_preparation.prepare_match_filter_catalog``), the footprint put on
-the grid, the Magellanic Clouds, the dwarf galaxies and the globular clusters masked
+the grid, the Magellanic Clouds, the dwarf galaxies, the globular clusters and the bright galaxies masked
 (``analysis.build_masks``). Then each map is ``cmd_match_filter.select_stars_in_match_filter``
 and ``star_density_maps.star_density_phi12`` on the prepared stars:
 
@@ -35,7 +35,11 @@ from typing import TYPE_CHECKING
 import healpy as hp
 import numpy as np
 
-from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, overlapped_objects_healpix_mask
+from streameucliddes.analysis.build_masks import (
+    DEFAULT_RADIUS_SCALES,
+    object_mask_nside,
+    overlapped_objects_healpix_mask,
+)
 from streameucliddes.analysis.catalog_preparation import prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, select_stars_in_match_filter
 from streameucliddes.analysis.star_density_maps import star_density_phi12
@@ -116,7 +120,7 @@ class PreparedSearch:
         Distance moduli of the track in the footprint
         (``select_galstreams_in_footprint``); NaN without a track distance.
     object_mask : numpy.ndarray of bool or None
-        Masked objects (Magellanic Clouds, dwarf galaxies, globular clusters) on the grid,
+        Masked objects (Magellanic Clouds, dwarf galaxies, globular clusters, bright galaxies) on the grid,
         True on them; None when none is masked.
     """
 
@@ -159,6 +163,7 @@ def prepare_search(
     mask_smc: bool = True,
     mask_dwarfs: bool = True,
     mask_gc: bool = True,
+    mask_galaxies: bool = True,
     mask_radius_scale: float | Mapping[str, float] = DEFAULT_RADIUS_SCALES,
     **selection_kwargs: Any,
 ) -> PreparedSearch:
@@ -185,7 +190,7 @@ def prepare_search(
     (``catalog_preparation.prepare_match_filter_catalog``) and the footprint
     put on the grid (``catalogs.survey_footprint.survey_footprint_phi12_mask``).
 
-    The Magellanic Clouds, the dwarf galaxies and the globular clusters are masked by
+    The Magellanic Clouds, the dwarf galaxies, the globular clusters and the bright galaxies are masked by
     default (``analysis.build_masks.overlapped_objects_healpix_mask``, at
     ``object_mask_nside(bin_size_deg)``): their stars are dropped from the
     prepared stars (``excluded_pixels`` of ``prepare_match_filter_catalog``),
@@ -243,16 +248,18 @@ def prepare_search(
         ``nest``); or a mask on the grid, shape (n_phi1, n_phi2).
     nest : bool, optional
         HEALPix ordering of a HEALPix ``footprint_mask``.
-    mask_lmc, mask_smc, mask_dwarfs, mask_gc : bool, optional
+    mask_lmc, mask_smc, mask_dwarfs, mask_gc, mask_galaxies : bool, optional
         Mask the LMC, the SMC, the dwarf galaxies (but the Clouds), the
-        globular clusters: their half-light ellipses scaled by
-        ``mask_radius_scale`` (LVDB, ``catalogs.overlapped_objects``;
-        downloaded at the first use). False: not masked.
+        globular clusters (LVDB: half-light ellipses), the bright galaxies
+        (Siena Galaxy Atlas: circles of D26 / 2), scaled by
+        ``mask_radius_scale`` (``catalogs.overlapped_objects``; downloaded
+        at the first use). False: not masked.
     mask_radius_scale : float or mapping, optional
-        Semi-major axis of the ellipses, in half-light radii: the same for
-        every type, or per type, ``{"lmc": ..., "smc": ..., "dwarfs": ...,
-        "gc": ...}`` (default: 6.5 for the LMC, 21 deg; 11 for the SMC,
-        11 deg; 4 for the others; see
+        Semi-major axis of the ellipses, in units of the reference radius of
+        the objects: the same for every type, or per type, ``{"lmc": ...,
+        "smc": ..., "dwarfs": ..., "gc": ..., "galaxies": ...}`` (default:
+        6.5 for the LMC, 21 deg; 11 for the SMC, 11 deg; 4 for the dwarfs
+        and clusters; 5 for the galaxies; see
         ``analysis.build_masks.overlapped_objects_healpix_mask``).
     **selection_kwargs
         Arguments of ``select_galstreams_in_footprint`` (``SELECTION_ARGUMENTS``:
@@ -306,11 +313,11 @@ def prepare_search(
 
     # Masked objects, stars and footprint, once
     object_healpix_mask = None
-    any_mask = mask_lmc or mask_smc or mask_dwarfs or mask_gc
+    any_mask = mask_lmc or mask_smc or mask_dwarfs or mask_gc or mask_galaxies
     if stream_frame is not None and any_mask:
         object_healpix_mask = overlapped_objects_healpix_mask(
             object_mask_nside(bin_size_deg), nest=False, mask_lmc=mask_lmc, mask_smc=mask_smc,
-            mask_dwarfs=mask_dwarfs, mask_gc=mask_gc, radius_scale=mask_radius_scale,
+            mask_dwarfs=mask_dwarfs, mask_gc=mask_gc, mask_galaxies=mask_galaxies, radius_scale=mask_radius_scale,
         )
     elif any_mask:
         LOGGER.info("No stream frame: no object masked.")
@@ -340,30 +347,6 @@ def prepare_search(
         track=track, track_name=None if track is None else track.track_name, dm_min=dm_min, dm_max=dm_max,
         object_mask=object_mask,
     )
-
-
-def object_mask_nside(bin_size_deg: float) -> int:
-    """HEALPix resolution of the object masks of a grid: pixels at most half a bin.
-
-    The stars are dropped by pixel, the bins masked by their centre: at the
-    edge of a mask, a bin not masked loses at most the stars of the pixels
-    it overlaps, less than half a bin wide.
-
-    Parameters
-    ----------
-    bin_size_deg : float
-        Bin size of the grid (deg).
-
-    Returns
-    -------
-    nside : int
-        The smallest power of 2 whose pixels (``healpy.nside2resol``) are at
-        most ``bin_size_deg / 2``; e.g. 2048 (0.03 deg) for 0.1 deg bins.
-    """
-    nside = 1
-    while np.degrees(hp.nside2resol(nside)) > bin_size_deg / 2:
-        nside *= 2
-    return nside
 
 
 # ===================================================

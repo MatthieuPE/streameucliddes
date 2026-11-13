@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 from streamobs.match_filter import is_in_match_filter
 
-from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, objects_healpix_mask
+from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, object_mask_nside, objects_healpix_mask
 from streameucliddes.analysis.catalog_preparation import prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_MATCH_FILTER,
@@ -29,7 +29,6 @@ from streameucliddes.analysis.known_stream_search import (
     known_stream_search_dm_along_track,
     known_stream_search_dm_scan,
     known_stream_search_single_dm,
-    object_mask_nside,
     prepare_search,
 )
 from streameucliddes.analysis.star_density_maps import star_density_phi12
@@ -222,10 +221,10 @@ def test_single_dm_footprint(stream_catalog, gc_frame):
         known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, footprint_mask=healpix_mask)
 
 
-def _objects(frame, phi1, phi2, rhalf_arcmin):
+def _objects(frame, phi1, phi2, radius_arcmin):
     """One object at (phi1, phi2) of frame, with the columns of catalogs.overlapped_objects."""
     ra, dec = phi12_to_radec(np.atleast_1d(phi1), np.atleast_1d(phi2), frame)
-    return pd.DataFrame({"key": ["mock"], "name": ["Mock"], "ra": ra, "dec": dec, "rhalf_arcmin": [rhalf_arcmin],
+    return pd.DataFrame({"key": ["mock"], "name": ["Mock"], "ra": ra, "dec": dec, "radius_arcmin": [radius_arcmin],
                          "ellipticity": [0.4], "position_angle": [30.0], "distance_kpc": [30.0]})
 
 
@@ -239,7 +238,7 @@ def test_prepare_search_object_masks(stream_catalog, gc_frame, monkeypatch):
     monkeypatch.setattr(overlapped_objects, "get_smc", lambda: objects["smc"])
     monkeypatch.setattr(overlapped_objects, "get_dwarf_galaxies", lambda: objects["dwarfs"])
     monkeypatch.setattr(overlapped_objects, "get_globular_clusters", lambda: objects["gc"])
-    no_masks = {"mask_lmc": False, "mask_smc": False, "mask_dwarfs": False, "mask_gc": False}
+    no_masks = {"mask_lmc": False, "mask_smc": False, "mask_dwarfs": False, "mask_gc": False, "mask_galaxies": False}
     plain = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN, **no_masks)
     masked = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN)
     assert plain.object_mask is None and plain.footprint_mask is None
@@ -270,13 +269,6 @@ def test_prepare_search_object_masks(stream_catalog, gc_frame, monkeypatch):
                              mask_dwarfs=False)
     np.testing.assert_array_equal(only_gc.object_mask, survey_footprint_phi12_mask(
         objects_healpix_mask(objects["gc"], nside, nest=False), gc_frame, WINDOW, BIN, nest=False))
-
-
-# The object masks: pixels at most half a bin, the coarsest such nside
-@pytest.mark.parametrize("bin_size_deg", [0.05, 0.1, 0.2, 1.0])
-def test_object_mask_nside(bin_size_deg):
-    nside = object_mask_nside(bin_size_deg)
-    assert np.degrees(hp.nside2resol(nside)) <= bin_size_deg / 2 < np.degrees(hp.nside2resol(nside // 2))
 
 
 # ===================================================

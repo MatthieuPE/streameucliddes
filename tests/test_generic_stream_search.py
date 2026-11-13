@@ -179,7 +179,7 @@ def _with_cluster(rng, catalog, n=20_000, dm=17.0, sigma_deg=0.3):
 def _mock_objects(monkeypatch):
     """One object per type instead of the LVDB: the Clouds and a dwarf outside the patch, the cluster in it."""
     objects = {
-        name: pd.DataFrame({"key": [name], "name": [name], "ra": [ra], "dec": [dec], "rhalf_arcmin": [rhalf],
+        name: pd.DataFrame({"key": [name], "name": [name], "ra": [ra], "dec": [dec], "radius_arcmin": [rhalf],
                             "ellipticity": [np.nan], "position_angle": [np.nan], "distance_kpc": [50.0]})
         for name, ra, dec, rhalf in [("lmc", 80.0, -69.0, 190.0), ("smc", 16.0, -72.0, 60.0),
                                      ("dwarfs", 40.0, -34.0, 20.0), ("gc", CLUSTER_RA, CLUSTER_DEC, CLUSTER_RHALF_ARCMIN)]
@@ -197,7 +197,7 @@ def _mock_objects(monkeypatch):
 def test_prepare_object_mask(catalog, monkeypatch):
     objects = _mock_objects(monkeypatch)
     stars = _with_cluster(np.random.default_rng(5), catalog)
-    no_masks = {"mask_lmc": False, "mask_smc": False, "mask_dwarfs": False, "mask_gc": False}
+    no_masks = {"mask_lmc": False, "mask_smc": False, "mask_dwarfs": False, "mask_gc": False, "mask_galaxies": False}
     plain = prepare_generic_search(stars, nside=NSIDE, **no_masks)
     masked = prepare_generic_search(stars, nside=NSIDE)
 

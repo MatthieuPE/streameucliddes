@@ -1,20 +1,26 @@
-"""Tests of catalogs/overlapped_objects.py, on small mock LVDB tables (no download)."""
+"""Tests of catalogs/overlapped_objects.py, on small mock LVDB tables and a mock Siena Galaxy Atlas
+(no download)."""
 
 import io
 
 import numpy as np
 import pandas as pd
 import pytest
+from astropy.io import fits
 
 from streameucliddes.catalogs import overlapped_objects
 from streameucliddes.catalogs.overlapped_objects import (
     GLOBULAR_CLUSTER_TABLES,
     OBJECT_COLUMNS,
+    SGA_COLUMNS,
+    extract_sga_bright_galaxies,
     get_dwarf_galaxies,
+    get_galaxies,
     get_globular_clusters,
     get_lmc,
     get_smc,
     load_lvdb_table,
+    load_sga_bright_galaxies,
 )
 
 pytestmark = pytest.mark.overlapped_objects
@@ -91,7 +97,7 @@ def test_magellanic_clouds_and_dwarfs(lvdb_dir):
     for get_cloud, key, rhalf in ((get_lmc, "lmc", 192.9), (get_smc, "smc", 59.4)):
         cloud = get_cloud()
         assert list(cloud.columns) == OBJECT_COLUMNS
-        assert list(cloud["key"]) == [key] and list(cloud["rhalf_arcmin"]) == [rhalf]
+        assert list(cloud["key"]) == [key] and list(cloud["radius_arcmin"]) == [rhalf]
     dwarfs = get_dwarf_galaxies()
     assert list(dwarfs.columns) == OBJECT_COLUMNS
     assert list(dwarfs["key"]) == ["fornax_1"]
@@ -105,6 +111,91 @@ def test_globular_clusters(lvdb_dir):
     assert list(clusters["key"]) == expected
     source = _table(["x", "y"], [1, 1])
     np.testing.assert_array_equal(
-        clusters[["ra", "dec", "rhalf_arcmin", "ellipticity", "position_angle", "distance_kpc"]].to_numpy()[:2],
+        clusters[["ra", "dec", "radius_arcmin", "ellipticity", "position_angle", "distance_kpc"]].to_numpy()[:2],
         source[["ra", "dec", "rhalf", "ellipticity", "position_angle", "distance"]].to_numpy(),
     )
+
+
+# ===================================================
+# Test the Siena Galaxy Atlas: extract_sga_bright_galaxies, load_sga_bright_galaxies, get_galaxies
+# ===================================================
+
+# Mock atlas: MAG_LEDA on both sides of the limit (exactly at it: left out)
+SGA_MAGNITUDES = [8.0, 16.4, overlapped_objects.SGA_MAG_LEDA_LIMIT, 18.0]
+
+
+def _write_sga_fits(path):
+    """A mock SGA-2020.fits: an ELLIPSE table with the kept columns (big-endian, padded names) and one more."""
+    n = len(SGA_MAGNITUDES)
+    columns = [
+        fits.Column(name="SGA_ID", format="K", array=np.arange(n) + 10),
+        fits.Column(name="GALAXY", format="20A", array=np.array([f"NGC{i:04d}" for i in range(n)])),
+        fits.Column(name="RA", format="D", array=np.linspace(10.0, 40.0, n)),
+        fits.Column(name="DEC", format="D", array=np.linspace(-30.0, 60.0, n)),
+        fits.Column(name="D26", format="E", array=np.linspace(1.0, 30.0, n)),
+        fits.Column(name="PA", format="E", array=np.linspace(0.0, 150.0, n)),
+        fits.Column(name="BA", format="E", array=np.linspace(0.2, 0.9, n)),
+        fits.Column(name="MAG_LEDA", format="E", array=np.array(SGA_MAGNITUDES)),
+        fits.Column(name="Z_LEDA", format="E", array=np.zeros(n)),
+    ]
+    table = fits.BinTableHDU.from_columns(columns, name="ELLIPSE")
+    fits.HDUList([fits.PrimaryHDU(), table]).writeto(path)
+
+
+@pytest.fixture
+def sga_dir(tmp_path, monkeypatch):
+    """An empty SGA_DIR: no file of bright galaxies yet."""
+    monkeypatch.setattr(overlapped_objects, "SGA_DIR", tmp_path / "sga")
+    return tmp_path / "sga"
+
+
+# The bright galaxies (MAG_LEDA below the limit), the columns SGA_COLUMNS, names without padding
+def test_extract_sga_bright_galaxies(tmp_path):
+    _write_sga_fits(tmp_path / "SGA-2020.fits")
+    extract_sga_bright_galaxies(tmp_path / "SGA-2020.fits", tmp_path / "bright.csv")
+    bright = pd.read_csv(tmp_path / "bright.csv")
+    assert list(bright.columns) == SGA_COLUMNS
+    assert list(bright["SGA_ID"]) == [10, 11] and list(bright["GALAXY"]) == ["NGC0000", "NGC0001"]
+    np.testing.assert_allclose(bright["MAG_LEDA"], [8.0, 16.4], rtol=1e-6)
+
+
+# From an atlas already downloaded: the file of bright galaxies made, the atlas kept; then read
+# from that file
+def test_load_from_fits_path(tmp_path, sga_dir, monkeypatch):
+    _write_sga_fits(tmp_path / "SGA-2020.fits")
+    first = load_sga_bright_galaxies(fits_path=tmp_path / "SGA-2020.fits")
+    assert (tmp_path / "SGA-2020.fits").exists()
+    assert (sga_dir / overlapped_objects.SGA_BRIGHT_FILE).exists()
+    monkeypatch.setattr(overlapped_objects, "extract_sga_bright_galaxies", _no_download)
+    pd.testing.assert_frame_equal(load_sga_bright_galaxies(), first)
+
+
+# Without it: the atlas downloaded once (SGA_URL), its bright galaxies kept, the atlas deleted
+def test_load_downloads_and_deletes(tmp_path, sga_dir, monkeypatch):
+    _write_sga_fits(tmp_path / "SGA-2020.fits")
+    content = (tmp_path / "SGA-2020.fits").read_bytes()
+    urls = []
+
+    def fake_urlopen(url, timeout):
+        urls.append(url)
+        return io.BytesIO(content)
+
+    monkeypatch.setattr(overlapped_objects.urllib.request, "urlopen", fake_urlopen)
+    bright = load_sga_bright_galaxies()
+    load_sga_bright_galaxies()
+    assert urls == [overlapped_objects.SGA_URL]
+    assert len(bright) == 2
+    assert sorted(path.name for path in sga_dir.iterdir()) == [overlapped_objects.SGA_BRIGHT_FILE]
+
+
+# The galaxies as objects: the D26 isophote (radius D26 / 2, ellipticity 1 - BA, PA), no distance
+def test_get_galaxies(tmp_path, sga_dir):
+    _write_sga_fits(tmp_path / "SGA-2020.fits")
+    sga = load_sga_bright_galaxies(fits_path=tmp_path / "SGA-2020.fits")
+    galaxies = get_galaxies()
+    assert list(galaxies.columns) == OBJECT_COLUMNS
+    assert list(galaxies["key"]) == ["sga_10", "sga_11"] and list(galaxies["name"]) == list(sga["GALAXY"])
+    np.testing.assert_allclose(galaxies["radius_arcmin"], sga["D26"] / 2)
+    np.testing.assert_allclose(galaxies["ellipticity"], 1 - sga["BA"])
+    np.testing.assert_allclose(galaxies["position_angle"], sga["PA"])
+    assert galaxies["distance_kpc"].isna().all()

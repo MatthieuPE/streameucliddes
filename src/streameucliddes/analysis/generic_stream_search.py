@@ -91,8 +91,8 @@ class PreparedGenericSearch:
         object (``object_mask``): the pixels left out of the maps.
     object_mask : numpy.ndarray of bool
         HEALPix mask (RING) of the masked objects (LMC, SMC, dwarf
-        galaxies, globular clusters; ``analysis.build_masks``); all False
-        when none.
+        galaxies, globular clusters, bright galaxies; ``analysis.build_masks``);
+        all False when none.
     footprint_centre_lon : float
         Mean longitude of the footprint (deg): the background polynomial is
         fitted on the longitude around it, so that ra = 0 does not cut the
@@ -131,6 +131,7 @@ def prepare_generic_search(
     mask_smc: bool = True,
     mask_dwarfs: bool = True,
     mask_gc: bool = True,
+    mask_galaxies: bool = True,
     mask_radius_scale: float | Mapping[str, float] = DEFAULT_RADIUS_SCALES,
     ra_col: str = "ra",
     dec_col: str = "dec",
@@ -145,7 +146,7 @@ def prepare_generic_search(
     finite coordinates are not kept.
 
     Objects that overlap the footprint (the LMC, the SMC, the dwarf
-    galaxies, the globular clusters) are masked by default
+    galaxies, the globular clusters, the bright galaxies) are masked by default
     (``analysis.build_masks.overlapped_objects_healpix_mask``): their pixels
     are added to the footprint mask, and their stars are not kept
     (``prepare_match_filter_catalog`` with ``excluded_pixels``). No star
@@ -186,16 +187,18 @@ def prepare_generic_search(
         (``survey_footprint_healpix_mask``, by chunks).
     nest : bool, optional
         HEALPix ordering of ``footprint_mask``.
-    mask_lmc, mask_smc, mask_dwarfs, mask_gc : bool, optional
+    mask_lmc, mask_smc, mask_dwarfs, mask_gc, mask_galaxies : bool, optional
         Mask the LMC, the SMC, the dwarf galaxies (but the Clouds), the
-        globular clusters: their half-light ellipses scaled by
-        ``mask_radius_scale`` (LVDB, ``catalogs.overlapped_objects``;
-        downloaded at the first use). False: not masked.
+        globular clusters (LVDB: half-light ellipses), the bright galaxies
+        (Siena Galaxy Atlas: circles of D26 / 2), scaled by
+        ``mask_radius_scale`` (``catalogs.overlapped_objects``; downloaded
+        at the first use). False: not masked.
     mask_radius_scale : float or mapping, optional
-        Semi-major axis of the ellipses, in half-light radii: the same for
-        every type, or per type, ``{"lmc": ..., "smc": ..., "dwarfs": ...,
-        "gc": ...}`` (default: 6.5 for the LMC, 21 deg; 11 for the SMC,
-        11 deg; 4 for the others; see
+        Semi-major axis of the ellipses, in units of the reference radius of
+        the objects: the same for every type, or per type, ``{"lmc": ...,
+        "smc": ..., "dwarfs": ..., "gc": ..., "galaxies": ...}`` (default:
+        6.5 for the LMC, 21 deg; 11 for the SMC, 11 deg; 4 for the dwarfs
+        and clusters; 5 for the galaxies; see
         ``analysis.build_masks.overlapped_objects_healpix_mask``).
     ra_col, dec_col : str, optional
         Coordinate columns (deg).
@@ -215,7 +218,7 @@ def prepare_generic_search(
     match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
     object_mask = overlapped_objects_healpix_mask(
         nside, nest=False, mask_lmc=mask_lmc, mask_smc=mask_smc, mask_dwarfs=mask_dwarfs, mask_gc=mask_gc,
-        radius_scale=mask_radius_scale,
+        mask_galaxies=mask_galaxies, radius_scale=mask_radius_scale,
     )
     keep = prepare_match_filter_catalog(  # 1 byte per star; not the stars on the masked objects
         catalog, match_filter, cuts=cuts, excluded_pixels=object_mask, excluded_pixels_nest=False,
@@ -240,7 +243,9 @@ def prepare_generic_search(
     centre_lon = np.degrees(np.arctan2(np.sin(np.radians(inside_lon)).mean(), np.cos(np.radians(inside_lon)).mean()))
     footprint_mask = footprint_mask | object_mask  # the pixels left out of the maps
     if footprint_mask.all():
-        raise ValueError("Footprint all masked by the objects (mask_lmc, mask_smc, mask_dwarfs, mask_gc).")
+        raise ValueError(
+            "Footprint all masked by the objects (mask_lmc, mask_smc, mask_dwarfs, mask_gc, mask_galaxies)."
+        )
 
     if isochrone is not None:
         isochrones = [dict(isochrone)]

@@ -20,11 +20,12 @@ search: known_stream
 # default_grid:                # isochrones for the age and Z not known
 #   - {age: 13.0, metallicity: 0.0002}
 #
-# mask_lmc: true               # mask the LMC, the SMC, the dwarf galaxies, the globular clusters (LVDB);
-# mask_smc: true               # false: not masked
+# mask_lmc: true               # mask the LMC, the SMC, the dwarf galaxies, the globular clusters (LVDB),
+# mask_smc: true               # the bright galaxies (SGA); false: not masked
 # mask_dwarfs: true
 # mask_gc: true
-# mask_radius_scale: {lmc: 6.5, smc: 11.0, dwarfs: 4.0, gc: 4.0}   # ellipse semi-major axis in half-light radii (or one value)
+# mask_galaxies: true
+# mask_radius_scale: {lmc: 6.5, smc: 11.0, dwarfs: 4.0, gc: 4.0, galaxies: 5.0}   # in reference radii (or one value)
 #
 # track_names: [AAU-ATLAS-L21] # default: one track per stream crossing the footprint
 # add_ibata2024: true          # also the Ibata et al. 2024 tracks (no distances)

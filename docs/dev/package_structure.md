@@ -76,6 +76,8 @@ src/streameucliddes/
     stream_populations.csv       [NEW] age, [Fe/H], Z, references
     overlapped_objects.py        [NEW] load_lvdb_table (LVDB v1.1.2, cached in data/lvdb/)
                                  [NEW] get_lmc, get_smc, get_dwarf_galaxies, get_globular_clusters
+                                 [NEW] load_sga_bright_galaxies, extract_sga_bright_galaxies,
+                                       get_galaxies (SGA-2020, MAG_LEDA < 16.5, data/sga/)
 
   analysis/
     cmd_match_filter.py          build_match_filter_polygon
@@ -93,11 +95,12 @@ src/streameucliddes/
                                  (old: get_healpy_data_from_table, one copy,
                                   + compute part of plotting.get_hp_map)
                                  [NEW] star_density_phi12
-    build_masks.py               [NEW] objects_healpix_mask (half-light ellipses x k)
+    build_masks.py               [NEW] objects_healpix_mask (reference ellipses x k)
+                                 [NEW] object_mask_nside (known-stream grids)
                                  [NEW] lmc_healpix_mask, smc_healpix_mask, dwarf_galaxies_healpix_mask,
-                                       globular_clusters_healpix_mask
+                                       globular_clusters_healpix_mask, galaxies_healpix_mask
                                  [NEW] overlapped_objects_healpix_mask (union; mask_lmc,
-                                       mask_smc, mask_dwarfs, mask_gc, True by default, of
+                                       mask_smc, mask_dwarfs, mask_gc, mask_galaxies, True by default, of
                                        prepare_generic_search and prepare_search)
     background_polynomial_fit.py fit_background_model, polyfit2d,
                                  fit_background_model_polyfit2d, process_data,

@@ -1,16 +1,18 @@
 """HEALPix masks of the objects that overlap the stream searches.
 
 One mask per type of object: the LMC, the SMC, the dwarf galaxies, the
-globular clusters (positions, sizes and shapes from
-``catalogs.overlapped_objects``, LVDB). Each object is masked over its
-half-light ellipse (LVDB ``rhalf``, ``ellipticity``, ``position_angle``)
-scaled by ``radius_scale``: semi-major axis ``radius_scale * rhalf``, same
-ellipticity and position angle; a circle when the ellipticity is unknown.
-As the footprint masks (``catalogs.survey_footprint``), a mask is True where
-masked.
+globular clusters (LVDB) and the bright galaxies (Siena Galaxy Atlas);
+positions, sizes and shapes from ``catalogs.overlapped_objects``. Each object
+is masked over its reference ellipse (``radius_arcmin``, ``ellipticity``,
+``position_angle``: the half-light ellipse of the LVDB, the 26 mag/arcsec^2
+isophote of the atlas) scaled by ``radius_scale``: semi-major axis
+``radius_scale * radius_arcmin``, same ellipticity and position angle; a
+circle when the ellipticity is unknown. The bright galaxies are masked as
+circles. As the footprint masks (``catalogs.survey_footprint``), a mask is
+True where masked.
 
-Both searches mask the four types by default (``mask_lmc``, ``mask_smc``,
-``mask_dwarfs``, ``mask_gc`` of ``analysis.generic_stream_search.prepare_generic_search`` and
+Both searches mask the five types by default (``mask_lmc``, ``mask_smc``,
+``mask_dwarfs``, ``mask_gc``, ``mask_galaxies`` of ``analysis.generic_stream_search.prepare_generic_search`` and
 ``analysis.known_stream_search.prepare_search``): the stars on them are
 dropped (``catalog_preparation.prepare_match_filter_catalog`` with
 ``excluded_pixels``), and their pixels or bins added to the footprint mask,
@@ -44,11 +46,16 @@ DEFAULT_RADIUS_SCALE = 4.0
 # - SMC: about 11 deg from its centre: 11 half-light radii (1.0 deg; a circle, no LVDB ellipticity).
 LMC_RADIUS_SCALE = 6.5
 SMC_RADIUS_SCALE = 11.0
+# Bright galaxies: circles of 5 times D26/2. In Euclid DR1 northeast (match filter at distance moduli 15
+# to 17), the point-like sources of M81 and M82 are at the background beyond 4 to 5 times D26/2, along
+# their major axis; along their minor axis about half as far, rounder than the isophote (M82, b/a 0.25)
+GALAXY_RADIUS_SCALE = 5.0
 # Types of objects of overlapped_objects_healpix_mask, as the keys of a radius_scale mapping
-OBJECT_TYPES = ("lmc", "smc", "dwarfs", "gc")
-DEFAULT_RADIUS_SCALES = types.MappingProxyType(
-    {"lmc": LMC_RADIUS_SCALE, "smc": SMC_RADIUS_SCALE, "dwarfs": DEFAULT_RADIUS_SCALE, "gc": DEFAULT_RADIUS_SCALE}
-)
+OBJECT_TYPES = ("lmc", "smc", "dwarfs", "gc", "galaxies")
+DEFAULT_RADIUS_SCALES = types.MappingProxyType({
+    "lmc": LMC_RADIUS_SCALE, "smc": SMC_RADIUS_SCALE, "dwarfs": DEFAULT_RADIUS_SCALE, "gc": DEFAULT_RADIUS_SCALE,
+    "galaxies": GALAXY_RADIUS_SCALE,
+})
 
 
 def objects_healpix_mask(
@@ -57,16 +64,17 @@ def objects_healpix_mask(
     *,
     nest: bool,
     radius_scale: float = DEFAULT_RADIUS_SCALE,
+    mask_centre_pixel: bool = True,
 ) -> NDArray[np.bool_]:
     """HEALPix mask of ellipses around objects.
 
     Each object is masked over an ellipse of semi-major axis
-    ``radius_scale * rhalf_arcmin``, semi-minor axis ``(1 - ellipticity)``
+    ``radius_scale * radius_arcmin``, semi-minor axis ``(1 - ellipticity)``
     times it, major axis at ``position_angle`` (north to east); a circle
     when the ellipticity is unknown. A pixel is masked when its centre is in
-    an ellipse; the pixel of the centre of an object is always masked (an
-    object smaller than a pixel masks its pixel). Objects without a
-    half-light radius are left out (logged).
+    an ellipse; with ``mask_centre_pixel``, the pixel of the centre of an
+    object is masked too (an object smaller than a pixel masks its pixel).
+    Objects without a radius are left out (logged).
 
     The ellipse is drawn in the coordinates (separation, position angle)
     around the centre of the object (``astropy.coordinates.angular_separation``
@@ -75,7 +83,7 @@ def objects_healpix_mask(
     Parameters
     ----------
     objects : pandas.DataFrame
-        Columns ``ra``, ``dec`` (deg), ``rhalf_arcmin``, ``ellipticity`` and
+        Columns ``ra``, ``dec`` (deg), ``radius_arcmin``, ``ellipticity`` and
         ``position_angle`` (deg), e.g.
         ``catalogs.overlapped_objects.get_globular_clusters()``.
     nside : int
@@ -83,7 +91,11 @@ def objects_healpix_mask(
     nest : bool
         HEALPix ordering of the mask. No default: always explicit.
     radius_scale : float, optional
-        Semi-major axis of the ellipses, in half-light radii.
+        Semi-major axis of the ellipses, in units of ``radius_arcmin``.
+    mask_centre_pixel : bool, optional
+        Mask the pixel of the centre of each object, whatever its size: for
+        compact objects (a cluster smaller than a pixel still has its stars
+        in it).
 
     Returns
     -------
@@ -96,15 +108,16 @@ def objects_healpix_mask(
     (circles there).
     """
     mask = np.zeros(hp.nside2npix(nside), dtype=bool)
-    semi_major_deg = radius_scale * objects["rhalf_arcmin"].to_numpy(dtype=float) / 60.0
+    semi_major_deg = radius_scale * objects["radius_arcmin"].to_numpy(dtype=float) / 60.0
     known = np.isfinite(semi_major_deg)
     if (~known).any():
-        LOGGER.info("%d objects without a half-light radius: not masked.", int((~known).sum()))
+        LOGGER.info("%d objects without a radius: not masked.", int((~known).sum()))
     ellipticity = np.nan_to_num(objects["ellipticity"].to_numpy(dtype=float), nan=0.0)  # unknown: a circle
     major_angle = np.nan_to_num(objects["position_angle"].to_numpy(dtype=float), nan=0.0)
     ra, dec = objects["ra"].to_numpy(dtype=float), objects["dec"].to_numpy(dtype=float)
     for i in np.flatnonzero(known):
-        mask[hp.ang2pix(nside, ra[i], dec[i], lonlat=True, nest=nest)] = True
+        if mask_centre_pixel:
+            mask[hp.ang2pix(nside, ra[i], dec[i], lonlat=True, nest=nest)] = True
         vector = hp.ang2vec(ra[i], dec[i], lonlat=True)
         candidates = hp.query_disc(nside, vector, np.radians(semi_major_deg[i]), nest=nest)  # centres in the circle
         lon, lat = np.radians(hp.pix2ang(nside, candidates, nest=nest, lonlat=True))
@@ -116,6 +129,31 @@ def objects_healpix_mask(
         inside = (along_major / semi_major_deg[i]) ** 2 + (along_minor / semi_minor_deg) ** 2 <= 1.0
         mask[candidates[inside]] = True
     return mask
+
+
+def object_mask_nside(bin_size_deg: float) -> int:
+    """HEALPix resolution of the object masks of a phi1/phi2 grid: pixels at most half a bin.
+
+    Used by ``analysis.known_stream_search.prepare_search``: the stars are
+    dropped by pixel, the bins masked by their centre; at the edge of a
+    mask, a bin not masked loses at most the stars of the pixels it
+    overlaps, less than half a bin wide.
+
+    Parameters
+    ----------
+    bin_size_deg : float
+        Bin size of the grid (deg).
+
+    Returns
+    -------
+    nside : int
+        The smallest power of 2 whose pixels (``healpy.nside2resol``) are at
+        most ``bin_size_deg / 2``; e.g. 2048 (0.03 deg) for 0.1 deg bins.
+    """
+    nside = 1
+    while np.degrees(hp.nside2resol(nside)) > bin_size_deg / 2:
+        nside *= 2
+    return nside
 
 
 def lmc_healpix_mask(nside: int, *, nest: bool, radius_scale: float = LMC_RADIUS_SCALE) -> NDArray[np.bool_]:
@@ -159,6 +197,20 @@ def globular_clusters_healpix_mask(
     )
 
 
+def galaxies_healpix_mask(nside: int, *, nest: bool, radius_scale: float = GALAXY_RADIUS_SCALE) -> NDArray[np.bool_]:
+    """HEALPix mask of the bright galaxies (``catalogs.overlapped_objects.get_galaxies``).
+
+    Circles of ``radius_scale`` times ``D26 / 2`` (their point-like sources
+    spread rounder than their isophote), without the pixel of their centre
+    forced: a galaxy smaller than a pixel has few point-like sources, and
+    forcing the pixels of the 82 000 galaxies would mask about 1000 deg2 of
+    the sky at nside 512. E.g. M81: 1.1 deg, M82: 0.6 deg. Parameters and
+    returns: see ``objects_healpix_mask``.
+    """
+    galaxies = overlapped_objects.get_galaxies().assign(ellipticity=np.nan)  # circles
+    return objects_healpix_mask(galaxies, nside, nest=nest, radius_scale=radius_scale, mask_centre_pixel=False)
+
+
 def overlapped_objects_healpix_mask(
     nside: int,
     *,
@@ -167,6 +219,7 @@ def overlapped_objects_healpix_mask(
     mask_smc: bool = False,
     mask_dwarfs: bool = False,
     mask_gc: bool = False,
+    mask_galaxies: bool = False,
     radius_scale: float | Mapping[str, float] = DEFAULT_RADIUS_SCALES,
 ) -> NDArray[np.bool_]:
     """HEALPix mask of the objects of the chosen types: the union of their masks.
@@ -185,12 +238,15 @@ def overlapped_objects_healpix_mask(
         Mask the dwarf galaxies, but the LMC and SMC (``dwarf_galaxies_healpix_mask``).
     mask_gc : bool, optional
         Mask the globular clusters (``globular_clusters_healpix_mask``).
+    mask_galaxies : bool, optional
+        Mask the bright galaxies (``galaxies_healpix_mask``).
     radius_scale : float or mapping, optional
-        Semi-major axis of the ellipses, in half-light radii: the same for
-        every type, or per type, ``{"lmc": ..., "smc": ..., "dwarfs": ...,
-        "gc": ...}`` (``OBJECT_TYPES``; a type left out has its default,
-        ``DEFAULT_RADIUS_SCALES``: 6.5 for the LMC, 11 for the SMC, 4 for
-        the others).
+        Semi-major axis of the ellipses, in units of the reference radius of
+        the objects (``radius_arcmin``): the same for every type, or per
+        type, ``{"lmc": ..., "smc": ..., "dwarfs": ..., "gc": ...,
+        "galaxies": ...}`` (``OBJECT_TYPES``; a type left out has its
+        default, ``DEFAULT_RADIUS_SCALES``: 6.5 for the LMC, 11 for the SMC,
+        4 for the dwarfs and clusters, 5 for the galaxies).
 
     Returns
     -------
@@ -211,8 +267,8 @@ def overlapped_objects_healpix_mask(
         scales = dict.fromkeys(OBJECT_TYPES, radius_scale)
 
     masks = {"lmc": lmc_healpix_mask, "smc": smc_healpix_mask, "dwarfs": dwarf_galaxies_healpix_mask,
-             "gc": globular_clusters_healpix_mask}
-    chosen = {"lmc": mask_lmc, "smc": mask_smc, "dwarfs": mask_dwarfs, "gc": mask_gc}
+             "gc": globular_clusters_healpix_mask, "galaxies": galaxies_healpix_mask}
+    chosen = {"lmc": mask_lmc, "smc": mask_smc, "dwarfs": mask_dwarfs, "gc": mask_gc, "galaxies": mask_galaxies}
     mask = np.zeros(hp.nside2npix(nside), dtype=bool)
     for object_type in OBJECT_TYPES:
         if chosen[object_type]:

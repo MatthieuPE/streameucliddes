@@ -54,12 +54,13 @@ KNOWN_STREAM_SEARCH_CONFIG = {
     "distance_moduli": None,
     "bin_size_deg": DEFAULT_BIN_SIZE_DEG,
     "smoothing_deg": DEFAULT_SMOOTHING_DEG,
-    # Objects masked (analysis.build_masks; LVDB): LMC, SMC, dwarf galaxies, globular clusters
+    # Objects masked (analysis.build_masks): LMC, SMC, dwarf galaxies, globular clusters (LVDB), bright galaxies (SGA)
     "mask_lmc": True,
     "mask_smc": True,
     "mask_dwarfs": True,
     "mask_gc": True,
-    # Semi-major axis of their ellipses, in half-light radii: one value, or {"lmc", "smc", "dwarfs", "gc": ...}
+    "mask_galaxies": True,
+    # Semi-major axis of their ellipses, in reference radii: one value, or {"lmc", "smc", "dwarfs", "gc", "galaxies": ...}
     "mask_radius_scale": dict(build_masks.DEFAULT_RADIUS_SCALES),
     # Default footprint: from the star counts of the catalog
     "footprint_nside": DEFAULT_FOOTPRINT_NSIDE,
@@ -83,12 +84,13 @@ GENERIC_SEARCH_CONFIG = {
     # None: 15 to 22 every 0.1 (known_stream_search.DEFAULT_DISTANCE_MODULI)
     "distance_moduli": None,
     "nside": generic_stream_search.DEFAULT_NSIDE,
-    # Objects masked (analysis.build_masks; LVDB): LMC, SMC, dwarf galaxies, globular clusters
+    # Objects masked (analysis.build_masks): LMC, SMC, dwarf galaxies, globular clusters (LVDB), bright galaxies (SGA)
     "mask_lmc": True,
     "mask_smc": True,
     "mask_dwarfs": True,
     "mask_gc": True,
-    # Semi-major axis of their ellipses, in half-light radii: one value, or {"lmc", "smc", "dwarfs", "gc": ...}
+    "mask_galaxies": True,
+    # Semi-major axis of their ellipses, in reference radii: one value, or {"lmc", "smc", "dwarfs", "gc", "galaxies": ...}
     "mask_radius_scale": dict(build_masks.DEFAULT_RADIUS_SCALES),
     "smoothing_deg": generic_stream_search.DEFAULT_SMOOTHING_DEG,
     "polynomial_degree": generic_stream_search.DEFAULT_POLYNOMIAL_DEGREE,
