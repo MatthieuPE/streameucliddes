@@ -157,3 +157,26 @@ def test_select_stars_distance_modulus(stars):
     far = cmd_match_filter.select_stars_in_match_filter(stars, 18.0, ISOCHRONE, DES_GR)
     assert g[far].min() - g[near].min() == pytest.approx(2.0, abs=0.1)
     assert (near != far).sum() > 0.5 * near.sum()
+
+
+# Stubs of the candidate investigation (docs/dev/candidate_investigation_plan.md)
+
+
+@pytest.mark.skip(reason="stub")
+def test_isochrone_track_shifts_with_distance_modulus():
+    """dm = 20 track = dm = 15 track + 5 mag in magnitude, same colour."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_isochrone_track_feh_gives_z():
+    """feh = -1.9 gives Z ~ 0.0002."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_isochrone_track_metallicity_or_feh():
+    """Neither or both of metallicity and feh: ValueError."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_isochrone_track_inside_polygon():
+    """Main-sequence turn-off part of the track inside the match-filter polygon at the same dm."""

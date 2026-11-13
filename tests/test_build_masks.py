@@ -188,3 +188,26 @@ def test_radius_scale(mock_objects):
 def test_object_mask_nside(bin_size_deg):
     nside = object_mask_nside(bin_size_deg)
     assert np.degrees(hp.nside2resol(nside)) <= bin_size_deg / 2 < np.degrees(hp.nside2resol(nside // 2))
+
+
+# Stubs of the candidate investigation (docs/dev/candidate_investigation_plan.md)
+
+
+@pytest.mark.skip(reason="stub")
+def test_excluded_mask_upgrades_footprint():
+    """Footprint at a coarse nside: same excluded sky at the object nside, RING."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_excluded_mask_or_objects():
+    """Excluded = footprint OR objects."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_excluded_mask_without_objects():
+    """No object mask: the footprint in RING at its nside."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_excluded_mask_rejects_coarser_objects():
+    """Object mask coarser than the footprint: ValueError."""

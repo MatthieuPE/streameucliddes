@@ -274,3 +274,44 @@ def overlapped_objects_healpix_mask(
         if chosen[object_type]:
             mask |= masks[object_type](nside, nest=nest, radius_scale=scales[object_type])
     return mask
+
+
+def excluded_healpix_mask(
+    footprint_mask: NDArray[np.bool_],
+    object_healpix_mask: NDArray[np.bool_] | None,
+    *,
+    nest: bool,
+) -> tuple[NDArray[np.bool_], int]:
+    """HEALPix mask of the excluded sky: outside the footprint, or on a masked object.
+
+    One mask for the stars, the maps and the areas of a search in a stream
+    frame. The footprint is brought to the nside of the object mask and to
+    RING (``healpy.ud_grade``, exact when going up), then OR the objects.
+
+    Parameters
+    ----------
+    footprint_mask : numpy.ndarray of bool
+        True outside the footprint
+        (``catalogs.survey_footprint.survey_footprint_healpix_mask``).
+    object_healpix_mask : numpy.ndarray of bool or None
+        True on the masked objects, RING, e.g. ``object_healpix_mask`` of
+        ``analysis.stream_frame_search.PreparedSearch``
+        (``overlapped_objects_healpix_mask`` at ``object_mask_nside``). None:
+        the footprint alone, in RING at its own nside.
+    nest : bool
+        HEALPix ordering of ``footprint_mask``.
+
+    Returns
+    -------
+    mask : numpy.ndarray of bool
+        True where excluded, RING.
+    nside : int
+        Its resolution: that of ``object_healpix_mask``, or of the footprint.
+
+    Raises
+    ------
+    ValueError
+        The object mask is coarser than the footprint (going down would
+        lose excluded pixels).
+    """
+    raise NotImplementedError

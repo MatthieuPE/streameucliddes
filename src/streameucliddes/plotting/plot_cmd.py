@@ -27,10 +27,16 @@ if TYPE_CHECKING:
 
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
+    from matplotlib.lines import Line2D
 
 MATCH_FILTER_COLOR = CATEGORICAL_COLORS[0]
 # Default limits of a match-filter plot: the extent of the polygon plus this margin (mag)
 MATCH_FILTER_MARGIN_MAG = 0.5
+HESS_CMAP = "gray_r"  # on and off Hess diagrams
+HESS_DIFFERENCE_CMAP = "RdBu_r"  # on - off: diverging, symmetric limits (celestial_currents hess.py)
+HESS_DIFFERENCE_PERCENTILE = 98.0  # default limit of the difference: this percentile of |density|
+HESS_COLORBAR_LABEL = "stars / deg² / bin"
+ISOCHRONE_COLOR = "k"
 
 def plot_CMD(
     data,
@@ -247,6 +253,152 @@ def plot_match_filter(
     else:
         fig.suptitle(title)
     return fig, axes
+
+
+def plot_hess(
+    hess: Mapping[str, Any],
+    *,
+    ax: Axes | None = None,
+    difference: bool = False,
+    cmap: str | None = None,
+    vlim: float | None = None,
+    smoothing_bins: float = 0.0,
+    colorbar: bool = True,
+    title: str | None = None,
+) -> tuple[Figure, Axes]:
+    """One Hess diagram: on, off or on - off, in stars / deg² / bin.
+
+    Colour on x, magnitude on y, inverted. With ``difference``, a diverging
+    colour map and symmetric limits ``±vlim``, so that 0 is white.
+
+    Parameters
+    ----------
+    hess : mapping
+        From ``analysis.hess_diagrams.hess_diagram`` or ``difference_hess``.
+    ax : matplotlib.axes.Axes, optional
+        Axes to draw on. Default: a new figure.
+    difference : bool, optional
+        Draw an on - off diagram.
+    cmap : str, optional
+        Default: ``HESS_DIFFERENCE_CMAP`` with ``difference``, else ``HESS_CMAP``.
+    vlim : float, optional
+        Limit of the colour scale. Default: with ``difference``, the
+        ``HESS_DIFFERENCE_PERCENTILE`` percentile of ``|density|``; else the
+        maximum density.
+    smoothing_bins : float, optional
+        Gaussian sigma of a smoothing of the drawn density, in bins
+        (``scipy.ndimage.gaussian_filter``); 0: none. Only the figure is
+        smoothed.
+    colorbar : bool, optional
+        Add a colour bar, ``HESS_COLORBAR_LABEL``.
+    title : str, optional
+        Default: the number of stars and the area.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax : matplotlib.axes.Axes
+
+    Notes
+    -----
+    Style of celestial_currents ``hess.py::plot_difference_cmd``.
+    """
+    raise NotImplementedError
+
+
+def plot_on_off_difference_hess(
+    on_hess: Mapping[str, Any],
+    off_hess: Mapping[str, Any],
+    diff_hess: Mapping[str, Any],
+    *,
+    axes: Sequence[Axes] | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, list[Axes]]:
+    """On, off and on - off Hess diagrams side by side, same axes limits.
+
+    ``plot_hess`` three times, the last with ``difference=True``.
+
+    Parameters
+    ----------
+    on_hess, off_hess, diff_hess : mapping
+        From ``analysis.hess_diagrams``.
+    axes : sequence of three matplotlib.axes.Axes, optional
+        Default: a new figure.
+    **kwargs
+        Arguments of ``plot_hess`` (``smoothing_bins``, ``colorbar``...).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : list of matplotlib.axes.Axes
+    """
+    raise NotImplementedError
+
+
+def plot_isochrone(
+    ax: Axes,
+    isochrone_track: Mapping[str, Any],
+    *,
+    color: str = ISOCHRONE_COLOR,
+    lw: float = 1.0,
+    label: str | None = None,
+) -> Line2D:
+    """Isochrone track on a CMD or Hess diagram.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes of the CMD (colour on x, magnitude on y).
+    isochrone_track : mapping
+        From ``analysis.cmd_match_filter.isochrone_cmd_track``.
+    color : str, optional
+        Line colour.
+    lw : float, optional
+        Line width.
+    label : str, optional
+        Default: age, Z ([Fe/H] when given) and distance modulus.
+
+    Returns
+    -------
+    line : matplotlib.lines.Line2D
+    """
+    raise NotImplementedError
+
+
+def plot_match_filter_polygon(
+    ax: Axes,
+    distance_modulus: float,
+    isochrone: Mapping[str, float] | None = None,
+    match_filter: Mapping[str, Any] | None = None,
+    *,
+    color_index: int = 0,
+    **line_kwargs: Any,
+) -> Line2D:
+    """Outline of a match-filter polygon on a CMD or Hess diagram.
+
+    Factored out of ``plot_match_filter``, which then calls it.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes of the CMD.
+    distance_modulus : float
+        Distance modulus of the filter.
+    isochrone : mapping, optional
+        ``{"age", "metallicity"}`` (see ``match_filter_polygons``).
+    match_filter : mapping, optional
+        Default: ``DEFAULT_MATCH_FILTER``.
+    color_index : int, optional
+        Colour band: ``match_filter["color_bands"][color_index]``.
+    **line_kwargs
+        Arguments of ``ax.plot``. Default colour ``MATCH_FILTER_COLOR``.
+
+    Returns
+    -------
+    line : matplotlib.lines.Line2D
+        The closed outline.
+    """
+    raise NotImplementedError
 
 
 def _any_in_ranges(

@@ -42,6 +42,8 @@ DES_GR_MATCH_FILTER = {
     "reference_band": ("des_yr6", "g"),
     "color_bands": [("des_yr6", "r")],
 }
+# ugali isochrone model of the polygons (default of build_match_filter): Marigo et al. 2017 (PARSEC)
+ISOCHRONE_MODEL = "Marigo2017"
 
 
 @functools.lru_cache(maxsize=1024)
@@ -184,3 +186,59 @@ def select_stars_in_match_filter(
             reference_mag[idx], catalog[color_column].to_numpy()[idx], polygon_vertices=polygon
         )
     return selected
+
+
+def isochrone_cmd_track(
+    distance_modulus: float,
+    age: float,
+    metallicity: float | None = None,
+    *,
+    feh: float | None = None,
+    match_filter: Mapping[str, Any] | None = None,
+    color_index: int = 0,
+) -> dict[str, Any]:
+    """Colour and magnitude of an isochrone in the bands of a match filter.
+
+    The isochrone locus of ``streamobs.match_filter._isochrone_locus``, the
+    one ``build_match_filter`` uses (ugali, model ``ISOCHRONE_MODEL``), with
+    the surveys and bands of the polygons (``match_filter_polygons``): colour
+    ``reference_band - color_bands[color_index]``, magnitude
+    ``reference_band`` plus ``distance_modulus``. The track and the polygon
+    then come from the same model. ``_isochrone_locus`` is private in
+    streamobs: check it when streamobs changes.
+
+    Parameters
+    ----------
+    distance_modulus : float
+        Distance modulus (mag).
+    age : float
+        Age (Gyr).
+    metallicity : float, optional
+        Z, on the Marigo et al. 2017 scale. Exactly one of ``metallicity``
+        and ``feh``.
+    feh : float, optional
+        [Fe/H], converted to Z with ``unit_conversions.convert_FeH_to_z``
+        (Bressan et al. 2012).
+    match_filter : mapping, optional
+        See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
+    color_index : int, optional
+        Colour band: ``match_filter["color_bands"][color_index]``.
+
+    Returns
+    -------
+    track : dict
+        ``{"color", "mag", "age", "metallicity", "feh", "distance_modulus"}``:
+        ``color`` and ``mag`` arrays (mag) along the isochrone;
+        ``metallicity`` the Z used, ``feh`` the [Fe/H] given (None when Z was
+        given).
+
+    Raises
+    ------
+    ValueError
+        Neither or both of ``metallicity`` and ``feh``.
+
+    References
+    ----------
+    Marigo et al. 2017, ApJ 835, 77; Bressan et al. 2012, MNRAS 427, 127.
+    """
+    raise NotImplementedError

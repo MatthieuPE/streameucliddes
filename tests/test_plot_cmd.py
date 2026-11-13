@@ -188,3 +188,31 @@ def test_plot_match_filter_errors(catalog):
     with pytest.raises(ValueError, match="1 axes for 2 colour bands"):
         plot_match_filter(DM, match_filter=VIS_H_J_MATCH_FILTER, axes=ax)
     plt.close("all")
+
+
+# Stubs of the candidate investigation (docs/dev/candidate_investigation_plan.md)
+
+
+@pytest.mark.skip(reason="stub")
+def test_plot_hess_runs():
+    """plot_hess on a synthetic Hess diagram; magnitude axis inverted."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_plot_hess_difference_symmetric_limits():
+    """difference=True: colour limits -vlim, +vlim."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_plot_on_off_difference_hess_three_panels():
+    """Three panels with the same axes limits."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_plot_isochrone_adds_line():
+    """One line, default label with age, Z and dm."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_plot_match_filter_polygon_closed():
+    """Closed outline: last point = first."""

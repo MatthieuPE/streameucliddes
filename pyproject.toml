@@ -69,4 +69,8 @@ markers = [
     "run_config: workflows/run_config.py (YAML run configurations)",
     "run_known_stream_search: workflows/run_known_stream_search.py (known-stream search runs)",
     "run_generic_search: workflows/run_generic_search.py (generic search runs and maps files)",
+    "stream_regions: analysis/stream_regions.py (width, track and on/off regions of a stream candidate)",
+    "hess_diagrams: analysis/hess_diagrams.py (Hess diagrams, on - off)",
+    "candidate_investigation: analysis/candidate_investigation.py (investigation of one stream candidate)",
+    "plot_candidate_investigation: plotting/plot_candidate_investigation.py (figures of a candidate investigation: tracks, regions, profiles)",
 ]

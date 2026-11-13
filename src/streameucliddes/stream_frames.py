@@ -7,6 +7,12 @@ The transformations are those of astropy and gala; the functions below only
 take and return numpy arrays in degrees, as in the catalogs.
 
 Maps in a stream frame use the phi1/phi2 grid of ``phi12_bin_centres``.
+
+A stream candidate gets its frame from two (ra, dec) points along it
+(``stream_frame_from_endpoints``), then a phi1/phi2 window around the arc
+between them (``endpoints_phi12_window``), the (ra, dec) box of the stars to
+read (``phi12_window_radec_box``), and lines to draw on sky maps
+(``great_circle_radec``, ``window_outline_radec``).
 """
 
 from __future__ import annotations
@@ -19,6 +25,9 @@ import numpy as np
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike, NDArray
+
+DEFAULT_PHI2_HALFWIDTH_DEG = 3.0  # off bands up to 4.5 sigma for sigma ~0.5 deg, plus a margin; a practical choice
+DEFAULT_PADDING_PHI1_DEG = 5.0  # as padding_phi1_deg of catalogs.galstreams_catalog.galstreams_phi12_window
 
 
 def radec_to_phi12(
@@ -112,3 +121,158 @@ def phi12_bin_centres(
     if phi1_centres.size == 0 or phi2_centres.size == 0:
         raise ValueError(f"Window {window} narrower than half a bin of {bin_size_deg} deg.")
     return phi1_centres, phi2_centres
+
+
+# ===================================================
+# Frame of a stream candidate, from two endpoints
+# ===================================================
+
+
+def stream_frame_from_endpoints(
+    endpoint_1: tuple[float, float], endpoint_2: tuple[float, float]
+) -> coord.BaseCoordinateFrame:
+    """Great-circle frame through two (ra, dec) points, phi1 along the arc.
+
+    gala ``GreatCircleICRSFrame.from_endpoints``, with its default origin: the
+    midpoint of the arc is at (phi1, phi2) = (0, 0), ``endpoint_1`` at
+    negative phi1 and ``endpoint_2`` at positive phi1 (checked with gala
+    1.10.1), both at phi2 = 0.
+
+    Parameters
+    ----------
+    endpoint_1, endpoint_2 : tuple of float
+        (ra, dec) of two points along the stream (deg).
+
+    Returns
+    -------
+    stream_frame : gala.coordinates.GreatCircleICRSFrame
+
+    Notes
+    -----
+    celestial_currents ``frame_utils.stream_frame_from_endpoints`` is not
+    used: it builds a ``SkyOffsetFrame`` with ``rotation=0``, which ignores
+    the pole, so its phi1 is not along the stream.
+
+    References
+    ----------
+    Price-Whelan 2017, JOSS 2, 388 (gala).
+    """
+    raise NotImplementedError
+
+
+def endpoints_phi12_window(
+    stream_frame: coord.BaseCoordinateFrame,
+    endpoint_1: tuple[float, float],
+    endpoint_2: tuple[float, float],
+    *,
+    phi2_halfwidth_deg: float = DEFAULT_PHI2_HALFWIDTH_DEG,
+    padding_phi1_deg: float = DEFAULT_PADDING_PHI1_DEG,
+) -> tuple[float, float, float, float]:
+    """phi1/phi2 window around the arc between two endpoints.
+
+    phi1 from the smaller to the larger phi1 of the endpoints, plus
+    ``padding_phi1_deg`` on each side (as ``galstreams_phi12_window``); phi2
+    from ``-phi2_halfwidth_deg`` to ``+phi2_halfwidth_deg``.
+
+    Parameters
+    ----------
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Frame of the endpoints, e.g. from ``stream_frame_from_endpoints``.
+    endpoint_1, endpoint_2 : tuple of float
+        (ra, dec) of the endpoints (deg).
+    phi2_halfwidth_deg : float, optional
+        Half-width of the window in phi2 (deg). Wide enough for the off-stream
+        bands (``analysis.stream_regions``).
+    padding_phi1_deg : float, optional
+        Margin beyond the endpoints in phi1 (deg).
+
+    Returns
+    -------
+    window : tuple of float
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg).
+    """
+    raise NotImplementedError
+
+
+def phi12_window_radec_box(
+    stream_frame: coord.BaseCoordinateFrame,
+    window: tuple[float, float, float, float],
+    *,
+    margin_deg: float = 0.5,
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """(ra, dec) box containing a phi1/phi2 window, to read its stars.
+
+    The edges of the window are sampled and converted with
+    ``phi12_to_radec``; the box is their min/max plus ``margin_deg``. A box
+    crossing ra = 0/360 is returned with ``ra_min > ra_max`` and a warning.
+
+    Parameters
+    ----------
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Frame of the window.
+    window : tuple of float
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg).
+    margin_deg : float, optional
+        Margin added on each side of the box (deg).
+
+    Returns
+    -------
+    ra_range, dec_range : tuple of float
+        ``(ra_min, ra_max)``, ``(dec_min, dec_max)`` (deg), e.g. for
+        ``catalogs.euclid_catalog.get_euclid_stars``.
+
+    Notes
+    -----
+    Idea of celestial_currents ``frame_utils.phi12_bounds_to_radec_bounds``.
+    """
+    raise NotImplementedError
+
+
+def great_circle_radec(
+    stream_frame: coord.BaseCoordinateFrame,
+    *,
+    phi1_range: tuple[float, float] = (-180.0, 180.0),
+    n_points: int = 721,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """(ra, dec) of the great circle phi2 = 0 of a frame, for sky maps.
+
+    Parameters
+    ----------
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        The frame.
+    phi1_range : tuple of float, optional
+        Part of the circle (deg). Default: all of it.
+    n_points : int, optional
+        Number of points along phi1.
+
+    Returns
+    -------
+    ra, dec : numpy.ndarray
+        (deg), shape (n_points,).
+    """
+    raise NotImplementedError
+
+
+def window_outline_radec(
+    stream_frame: coord.BaseCoordinateFrame,
+    window: tuple[float, float, float, float],
+    *,
+    n_points_per_edge: int = 50,
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """(ra, dec) of the outline of a phi1/phi2 window, for sky maps.
+
+    Parameters
+    ----------
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Frame of the window.
+    window : tuple of float
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg).
+    n_points_per_edge : int, optional
+        Points along each of the four edges.
+
+    Returns
+    -------
+    ra, dec : numpy.ndarray
+        (deg), a closed line: the last point is the first.
+    """
+    raise NotImplementedError

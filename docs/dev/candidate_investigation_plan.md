@@ -171,6 +171,31 @@ Moves and renames only, no logic change. Use `git mv`.
 
 ### Phase B: empty stubs (branch `candidate-investigation`)
 
+Done 2026-11-13. Changes from Section 4, made while writing the stubs:
+
+- `isochrone_cmd_track` is in `analysis/cmd_match_filter.py` (next to the
+  polygons, constant `ISOCHRONE_MODEL`), not in `catalogs/isochrone_parameters.py`:
+  it needs the match filter, and `catalogs/` must not import `analysis/`.
+- One plotting module, `plotting/plot_candidate_investigation.py` (user,
+  2026-11-13): the tracks, regions and profiles, and the `plot_candidate_*`
+  wrappers. No `plot_stream_regions.py`.
+- `draw_stream_track`, `draw_stream_track_on_sky`, `draw_stream_regions`
+  return the lines they add (the regions test counts 3); `plot_isochrone`
+  and `plot_match_filter_polygon` return their line; `plot_*` return
+  `(fig, ax)`. `draw_stream_track` has `phi2_offset_deg`.
+- `phi1_density_profile` has a `phi1_range` for its bins (default:
+  `regions["phi1_range"]`), so that the profile can extend over the window
+  and show where the stream stops.
+- Default Hess ranges: `DEFAULT_COLOR_RANGE = (-1.0, 1.5)`,
+  `DEFAULT_MAG_RANGE = (17.0, 27.0)` (VIS − H, VIS), those of the CMDs of
+  the known-stream notebook.
+- `run` renamed `run_all_steps` (user, 2026-11-13, a more explicit name):
+  `run_all_steps(catalog, *, footprint_mask=None, nest=False)`: every other input comes
+  from the fields.
+- `PreparedSearch.object_healpix_mask` (Masks, Sect. 1) is not added yet: it
+  changes `prepare_search`, so it comes with S3. `excluded_healpix_mask` is a
+  stub in `build_masks.py`.
+
 Create every `[NEW]` function of Section 4 with its full signature and
 numpy docstring, and a body `raise NotImplementedError`. Create the test
 files with the test names and `pytest.mark.skip(reason="stub")`. Create the
@@ -207,7 +232,7 @@ Then:
 | S6 | 7 Regions | C3: `stream_regions`, `on_stream_mask`, `off_stream_mask`, `phi1_density_profile`, `region_area_deg2` | `define_regions` | `draw_stream_regions`, `plot_phi1_profile`; regions in `plot_candidate_map` |
 | S7 | 8 CMDs | C4: `hess_diagram`, `difference_hess` | `compute_hess` | `plot_hess`, `plot_on_off_difference_hess`, `plot_candidate_hess` |
 | S8 | 9 Isochrone | C5: `isochrone_cmd_track` | `compute_isochrone` | `plot_isochrone`, `plot_match_filter_polygon`; isochrone in `plot_candidate_hess` |
-| S9 | 10–11 Summary, all at once | — | `summary`, `run` | `plot_candidate_overview` |
+| S9 | 10–11 Summary, all at once | — | `summary`, `run_all_steps` | `plot_candidate_overview` |
 
 Sections C1–C7 below describe the functions; the table says when each is filled.
 
@@ -373,7 +398,7 @@ def isochrone_cmd_track(distance_modulus, age, metallicity=None, *, feh=None,
   step); the track lies inside the MF polygon at the same dm (most points
   of the main sequence turn-off region).
 
-### C6. Plots — `plotting/plot_cmd.py` and `plotting/plot_stream_regions.py` [NEW module]
+### C6. Plots — `plotting/plot_cmd.py` and `plotting/plot_candidate_investigation.py` [NEW module]
 
 In `plot_cmd.py`:
 
@@ -398,7 +423,7 @@ def plot_match_filter_polygon(ax, distance_modulus, isochrone=None, match_filter
     (factored out of plot_match_filter, which then calls it)."""
 ```
 
-In `plotting/plot_stream_regions.py`:
+In `plotting/plot_candidate_investigation.py`:
 
 ```python
 def draw_stream_track(ax, phi1, phi2, *, label=None, **line_kwargs):
@@ -483,7 +508,7 @@ class CandidateInvestigation:
     def define_regions(self, phi1_range=None, phi2_centre=None, sigma=None): ...  # regions, areas, phi1_profile
     def compute_hess(self, *, color_bins=None, mag_bins=None): ...      # on, off, diff
     def compute_isochrone(self, *, age=None, metallicity=None, feh=None, distance_modulus=None): ...
-    def run(self, catalog, **kwargs): ...   # every step in order
+    def run_all_steps(self, catalog, **kwargs): ...   # every step in order
     def track_phi12(self): ...              # stream_track_phi12(regions), or the endpoints arc before regions
     def track_radec(self): ...
     def summary(self): ...                  # dict of the key numbers
@@ -509,7 +534,7 @@ class CandidateInvestigation:
 - `plot_generic_search_residual_map` makes its own figure. Add an optional
   `ax` argument (skyproj axes made from it) so that the frame check is one
   figure with two panels. Small change, keep the old behaviour by default.
-- Plots accept the class (thin wrappers in `plotting/plot_stream_regions.py`):
+- Plots accept the class (thin wrappers in `plotting/plot_candidate_investigation.py`):
 
 ```python
 def plot_candidate_frame_check(cand, *, sky_kwargs=None, zoom_kwargs=None):
@@ -528,7 +553,7 @@ def plot_candidate_overview(cand):
 ```
 
 - Tests: a synthetic catalog (uniform + Gaussian stream along the endpoints
-  arc) through `run`; σ and phi2_centre recovered; calling
+  arc) through `run_all_steps`; σ and phi2_centre recovered; calling
   `compute_hess` before `define_regions` raises; `summary` keys.
 
 ## 5. Example notebook — `notebooks/candidate_investigation_example.ipynb`
@@ -542,7 +567,7 @@ The notebook uses the class step by step (one method per cell), so each
 result can be looked at and tuned before the next step. Where a step needs
 tuning beyond the class arguments, the cell shows the direct function call
 and puts the result back in the class (e.g. `cand.regions = stream_regions(...)`).
-A last cell shows `cand.run(...)` doing everything at once.
+A last cell shows `cand.run_all_steps(...)` doing everything at once.
 
 Sections (one markdown title each, a few code cells):
 
@@ -575,7 +600,7 @@ Sections (one markdown title each, a few code cells):
    Hess; optional `plot_match_filter_polygon`. Try 2–3 (age, [Fe/H], dm).
 10. **Summary.** `cand.summary()`; `plot_candidate_overview(cand)`.
 11. **All at once.** A new `CandidateInvestigation` with the chosen dm and
-    `cand.run(catalog)`, to check it gives the same results.
+    `cand.run_all_steps(catalog)`, to check it gives the same results.
 
 Notebooks are committed without outputs (git filter in `.gitconfig`).
 

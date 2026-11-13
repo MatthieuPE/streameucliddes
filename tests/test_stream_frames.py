@@ -138,3 +138,41 @@ def test_phi12_bin_centres_number_of_bins(window, n_phi1, n_phi2):
 def test_phi12_bin_centres_narrow_window():
     with pytest.raises(ValueError, match="narrower than half a bin"):
         phi12_bin_centres((0.0, 0.04, 0.0, 1.0), 0.1)
+
+
+# Stubs of the candidate investigation (docs/dev/candidate_investigation_plan.md)
+
+
+@pytest.mark.skip(reason="stub")
+def test_endpoints_on_phi2_zero():
+    """stream_frame_from_endpoints: both endpoints at phi2 = 0 (1e-8 deg)."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_endpoints_phi1_symmetric():
+    """Endpoints at phi1 symmetric around 0, endpoint_1 negative."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_endpoints_window_contains_endpoints():
+    """endpoints_phi12_window contains the endpoints plus the padding."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_radec_box_contains_window():
+    """phi12_window_radec_box contains the window edges (round trip with phi12_to_radec)."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_radec_box_ra_wrap_warns():
+    """A window across ra = 0: ra_min > ra_max and a warning."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_great_circle_on_phi2_zero():
+    """great_circle_radec back to the frame: phi2 = 0."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_window_outline_closed():
+    """window_outline_radec: closed, on the window edges."""
