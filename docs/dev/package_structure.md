@@ -74,6 +74,8 @@ src/streameucliddes/
                                  [NEW] known_stream_isochrone_parameters
                                  [NEW] load_stream_population_table
     stream_populations.csv       [NEW] age, [Fe/H], Z, references
+    overlapped_objects.py        [NEW] load_lvdb_table (LVDB v1.1.2, cached in data/lvdb/)
+                                 [NEW] get_lmc, get_smc, get_dwarf_galaxies, get_globular_clusters
 
   analysis/
     cmd_match_filter.py          build_match_filter_polygon
@@ -84,12 +86,19 @@ src/streameucliddes/
                                  default_error_cuts; resolve_mag_columns and
                                  ensure_dust_corrected (moved from generic_stream_search)
                                  (as_mask: the rows kept, no copy, for the generic search)
+                                 (excluded_pixels: stars on masked objects dropped)
                                  [NEW] star_healpix_pixels (pixel per star, by chunks;
                                        generic-search preparation)
     star_density_maps.py         star_density_healpix
                                  (old: get_healpy_data_from_table, one copy,
                                   + compute part of plotting.get_hp_map)
                                  [NEW] star_density_phi12
+    build_masks.py               [NEW] objects_healpix_mask (half-light ellipses x k)
+                                 [NEW] lmc_healpix_mask, smc_healpix_mask, dwarf_galaxies_healpix_mask,
+                                       globular_clusters_healpix_mask
+                                 [NEW] overlapped_objects_healpix_mask (union; mask_lmc,
+                                       mask_smc, mask_dwarfs, mask_gc, True by default, of
+                                       prepare_generic_search and prepare_search)
     background_polynomial_fit.py fit_background_model, polyfit2d,
                                  fit_background_model_polyfit2d, process_data,
                                  process_data_polyfit2d, polynomial_formula

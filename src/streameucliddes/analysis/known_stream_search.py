@@ -8,7 +8,8 @@ Euclid x DES magnitudes are already dereddened.
 Every search starts with ``prepare_search``, done once: the values not given
 taken from galstreams and the population table, the catalog prepared
 (``catalog_preparation.prepare_match_filter_catalog``), the footprint put on
-the grid. Then each map is ``cmd_match_filter.select_stars_in_match_filter``
+the grid, the Magellanic Clouds, the dwarf galaxies and the globular clusters masked
+(``analysis.build_masks``). Then each map is ``cmd_match_filter.select_stars_in_match_filter``
 and ``star_density_maps.star_density_phi12`` on the prepared stars:
 
 - ``known_stream_search_single_dm``: one map;
@@ -26,6 +27,7 @@ from __future__ import annotations
 
 import functools
 import inspect
+import logging
 from concurrent.futures import ProcessPoolExecutor
 from dataclasses import dataclass
 from typing import TYPE_CHECKING
@@ -33,6 +35,7 @@ from typing import TYPE_CHECKING
 import healpy as hp
 import numpy as np
 
+from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, overlapped_objects_healpix_mask
 from streameucliddes.analysis.catalog_preparation import prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, select_stars_in_match_filter
 from streameucliddes.analysis.star_density_maps import star_density_phi12
@@ -58,6 +61,8 @@ if TYPE_CHECKING:
     import galstreams
     import pandas as pd
     from numpy.typing import NDArray
+
+LOGGER = logging.getLogger(__name__)
 
 DEFAULT_BIN_SIZE_DEG = 0.1  # about a HEALPix pixel at nside 512
 DEFAULT_SMOOTHING_DEG = 0.3  # as the default of star_density_healpix
@@ -95,7 +100,8 @@ class PreparedSearch:
     phi1_centres, phi2_centres : numpy.ndarray
         Bins of the grid (``stream_frames.phi12_bin_centres``).
     footprint_mask : numpy.ndarray of bool or None
-        Footprint on the grid, True outside.
+        Footprint on the grid, True outside or on a masked object
+        (``object_mask``): the bins left out of the maps.
     match_filter : dict
         See ``cmd_match_filter``.
     isochrones : list of dict
@@ -109,6 +115,9 @@ class PreparedSearch:
     dm_min, dm_max : float
         Distance moduli of the track in the footprint
         (``select_galstreams_in_footprint``); NaN without a track distance.
+    object_mask : numpy.ndarray of bool or None
+        Masked objects (Magellanic Clouds, dwarf galaxies, globular clusters) on the grid,
+        True on them; None when none is masked.
     """
 
     stars: Any
@@ -125,6 +134,7 @@ class PreparedSearch:
     track_name: str | None = None
     dm_min: float = np.nan
     dm_max: float = np.nan
+    object_mask: Any = None
 
 
 def prepare_search(
@@ -145,6 +155,11 @@ def prepare_search(
     bin_size_deg: float = DEFAULT_BIN_SIZE_DEG,
     footprint_mask: NDArray[np.bool_] | None = None,
     nest: bool | None = None,
+    mask_lmc: bool = True,
+    mask_smc: bool = True,
+    mask_dwarfs: bool = True,
+    mask_gc: bool = True,
+    mask_radius_scale: float | Mapping[str, float] = DEFAULT_RADIUS_SCALES,
     **selection_kwargs: Any,
 ) -> PreparedSearch:
     """Prepare a known-stream search: its values, its stars, its footprint.
@@ -169,6 +184,17 @@ def prepare_search(
     ``catalogs.isochrone_parameters.default_isochrone_grid``). Then the catalog is prepared once
     (``catalog_preparation.prepare_match_filter_catalog``) and the footprint
     put on the grid (``catalogs.survey_footprint.survey_footprint_phi12_mask``).
+
+    The Magellanic Clouds, the dwarf galaxies and the globular clusters are masked by
+    default (``analysis.build_masks.overlapped_objects_healpix_mask``, at
+    ``object_mask_nside(bin_size_deg)``): their stars are dropped from the
+    prepared stars (``excluded_pixels`` of ``prepare_match_filter_catalog``),
+    and the bins whose centre is on them are added to the footprint mask,
+    so that no star is counted there and the smoothed counts are corrected
+    at their edges. The stream's own progenitor, when it is one of them, is
+    masked too. With ``stars`` already prepared, they are used as they
+    are: only the bins are masked. Without a stream frame, nothing is
+    masked.
 
     Parameters
     ----------
@@ -217,6 +243,17 @@ def prepare_search(
         ``nest``); or a mask on the grid, shape (n_phi1, n_phi2).
     nest : bool, optional
         HEALPix ordering of a HEALPix ``footprint_mask``.
+    mask_lmc, mask_smc, mask_dwarfs, mask_gc : bool, optional
+        Mask the LMC, the SMC, the dwarf galaxies (but the Clouds), the
+        globular clusters: their half-light ellipses scaled by
+        ``mask_radius_scale`` (LVDB, ``catalogs.overlapped_objects``;
+        downloaded at the first use). False: not masked.
+    mask_radius_scale : float or mapping, optional
+        Semi-major axis of the ellipses, in half-light radii: the same for
+        every type, or per type, ``{"lmc": ..., "smc": ..., "dwarfs": ...,
+        "gc": ...}`` (default: 6.5 for the LMC, 21 deg; 11 for the SMC,
+        11 deg; 4 for the others; see
+        ``analysis.build_masks.overlapped_objects_healpix_mask``).
     **selection_kwargs
         Arguments of ``select_galstreams_in_footprint`` (``SELECTION_ARGUMENTS``:
         ``dm_range``, ``min_length_deg``, ``add_ibata2024``), only when given.
@@ -267,17 +304,33 @@ def prepare_search(
         isochrones = default_isochrone_grid() if default_grid is None else [dict(item) for item in default_grid]
     match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
 
-    # Stars and footprint, once
+    # Masked objects, stars and footprint, once
+    object_healpix_mask = None
+    any_mask = mask_lmc or mask_smc or mask_dwarfs or mask_gc
+    if stream_frame is not None and any_mask:
+        object_healpix_mask = overlapped_objects_healpix_mask(
+            object_mask_nside(bin_size_deg), nest=False, mask_lmc=mask_lmc, mask_smc=mask_smc,
+            mask_dwarfs=mask_dwarfs, mask_gc=mask_gc, radius_scale=mask_radius_scale,
+        )
+    elif any_mask:
+        LOGGER.info("No stream frame: no object masked.")
     if stars is None:
         if catalog is None:
             raise ValueError("Give a catalog or the prepared stars.")
         if stream_frame is None:
             raise ValueError("A catalog needs a stream_frame (or a galstreams stream_name), for phi1/phi2.")
-        stars = prepare_match_filter_catalog(catalog, match_filter, cuts=cuts, stream_frame=stream_frame, window=window)
+        stars = prepare_match_filter_catalog(
+            catalog, match_filter, cuts=cuts, stream_frame=stream_frame, window=window,
+            excluded_pixels=object_healpix_mask, excluded_pixels_nest=False,
+        )
     if footprint_mask is not None and np.ndim(footprint_mask) == 1:  # HEALPix: put on the grid
         if nest is None or stream_frame is None:
             raise ValueError("A HEALPix footprint_mask needs nest and a stream_frame.")
         footprint_mask = survey_footprint_phi12_mask(footprint_mask, stream_frame, window, bin_size_deg, nest=nest)
+    object_mask = None
+    if object_healpix_mask is not None:  # on the grid, added to the footprint
+        object_mask = survey_footprint_phi12_mask(object_healpix_mask, stream_frame, window, bin_size_deg, nest=False)
+        footprint_mask = object_mask if footprint_mask is None else np.asarray(footprint_mask, dtype=bool) | object_mask
     phi1_centres, phi2_centres = phi12_bin_centres(window, bin_size_deg)
 
     return PreparedSearch(
@@ -285,7 +338,32 @@ def prepare_search(
         phi1_centres=phi1_centres, phi2_centres=phi2_centres, footprint_mask=footprint_mask,
         match_filter=match_filter, isochrones=list(isochrones), distance_moduli=[float(dm) for dm in distance_moduli],
         track=track, track_name=None if track is None else track.track_name, dm_min=dm_min, dm_max=dm_max,
+        object_mask=object_mask,
     )
+
+
+def object_mask_nside(bin_size_deg: float) -> int:
+    """HEALPix resolution of the object masks of a grid: pixels at most half a bin.
+
+    The stars are dropped by pixel, the bins masked by their centre: at the
+    edge of a mask, a bin not masked loses at most the stars of the pixels
+    it overlaps, less than half a bin wide.
+
+    Parameters
+    ----------
+    bin_size_deg : float
+        Bin size of the grid (deg).
+
+    Returns
+    -------
+    nside : int
+        The smallest power of 2 whose pixels (``healpy.nside2resol``) are at
+        most ``bin_size_deg / 2``; e.g. 2048 (0.03 deg) for 0.1 deg bins.
+    """
+    nside = 1
+    while np.degrees(hp.nside2resol(nside)) > bin_size_deg / 2:
+        nside *= 2
+    return nside
 
 
 # ===================================================

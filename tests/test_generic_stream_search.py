@@ -13,6 +13,8 @@ import pytest
 from streamobs.match_filter import is_in_match_filter
 
 from streameucliddes.analysis import catalog_preparation, generic_stream_search
+from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, objects_healpix_mask
+from streameucliddes.catalogs import overlapped_objects
 from streameucliddes.catalogs import survey_footprint
 from streameucliddes.analysis.catalog_preparation import default_error_cuts
 from streameucliddes.analysis.cmd_match_filter import build_match_filter_polygon, select_stars_in_match_filter
@@ -100,6 +102,7 @@ def test_prepare(catalog, monkeypatch):
         catalog["ra"][finite].to_numpy(), catalog["dec"][finite].to_numpy(), NSIDE, nest=False,
     ))
     assert search.catalog is catalog
+    assert not search.object_mask.any()  # no object in the (empty) mock LVDB
     assert search.match_filter == generic_stream_search.DEFAULT_MATCH_FILTER
     assert search.isochrones == default_isochrone_grid()
     assert search.distance_moduli == list(generic_stream_search.DEFAULT_DISTANCE_MODULI)
@@ -157,6 +160,73 @@ def test_prepare_magnitude_cuts(catalog):
         for limit, search in searches.items()
     }
     assert 0 < selected[22.0] < selected[24.0]
+
+
+# A mock globular cluster of stars in the match filter, at (5, -20)
+CLUSTER_RA, CLUSTER_DEC, CLUSTER_RHALF_ARCMIN = 5.0, -20.0, 30.0
+
+
+def _with_cluster(rng, catalog, n=20_000, dm=17.0, sigma_deg=0.3):
+    """The catalog and a cluster of n stars in the match filter at dm, Gaussian of sigma_deg."""
+    dec = CLUSTER_DEC + rng.normal(0.0, sigma_deg, n)
+    ra = (CLUSTER_RA + rng.normal(0.0, sigma_deg, n) / np.cos(np.radians(dec))) % 360.0
+    cluster = _catalog(rng, 0, ra, dec)
+    cluster[VIS], cluster[H] = _in_filter(n, rng, dm)
+    cluster[["euclid_q1_VIS_err", "euclid_q1_H_err"]] = 0.02
+    return pd.concat([catalog, cluster], ignore_index=True)
+
+
+def _mock_objects(monkeypatch):
+    """One object per type instead of the LVDB: the Clouds and a dwarf outside the patch, the cluster in it."""
+    objects = {
+        name: pd.DataFrame({"key": [name], "name": [name], "ra": [ra], "dec": [dec], "rhalf_arcmin": [rhalf],
+                            "ellipticity": [np.nan], "position_angle": [np.nan], "distance_kpc": [50.0]})
+        for name, ra, dec, rhalf in [("lmc", 80.0, -69.0, 190.0), ("smc", 16.0, -72.0, 60.0),
+                                     ("dwarfs", 40.0, -34.0, 20.0), ("gc", CLUSTER_RA, CLUSTER_DEC, CLUSTER_RHALF_ARCMIN)]
+    }
+    monkeypatch.setattr(overlapped_objects, "get_lmc", lambda: objects["lmc"])
+    monkeypatch.setattr(overlapped_objects, "get_smc", lambda: objects["smc"])
+    monkeypatch.setattr(overlapped_objects, "get_dwarf_galaxies", lambda: objects["dwarfs"])
+    monkeypatch.setattr(overlapped_objects, "get_globular_clusters", lambda: objects["gc"])
+    return objects
+
+
+# By default the LMC, the SMC, the dwarfs and the clusters are masked: their disks added to the footprint
+# mask, their stars not kept, the others as without masks; the background fitted without the
+# cluster (it pulls it up otherwise). A footprint all masked is refused
+def test_prepare_object_mask(catalog, monkeypatch):
+    objects = _mock_objects(monkeypatch)
+    stars = _with_cluster(np.random.default_rng(5), catalog)
+    no_masks = {"mask_lmc": False, "mask_smc": False, "mask_dwarfs": False, "mask_gc": False}
+    plain = prepare_generic_search(stars, nside=NSIDE, **no_masks)
+    masked = prepare_generic_search(stars, nside=NSIDE)
+
+    disks = np.zeros(hp.nside2npix(NSIDE), dtype=bool)
+    for object_type, object_table in objects.items():
+        disks |= objects_healpix_mask(object_table, NSIDE, nest=False, radius_scale=DEFAULT_RADIUS_SCALES[object_type])
+    np.testing.assert_array_equal(masked.object_mask, disks)
+    assert not plain.object_mask.any()
+    np.testing.assert_array_equal(masked.footprint_mask, plain.footprint_mask | disks)
+    on_disk = np.zeros(len(stars), dtype=bool)
+    on_disk[plain.pixels >= 0] = disks[plain.pixels[plain.pixels >= 0]]
+    assert on_disk.sum() > 10_000  # the cluster
+    np.testing.assert_array_equal(masked.keep, plain.keep & ~on_disk)
+
+    reference = prepare_generic_search(catalog, nside=NSIDE, footprint_mask=masked.footprint_mask, nest=False,
+                                       **no_masks)
+    backgrounds = {
+        name: generic_search_single_dm(distance_modulus=17.0, search=search, smoothing_deg=SMOOTHING)["background"]
+        for name, search in {"plain": plain, "masked": masked, "reference": reference}.items()
+    }
+    inside = ~masked.footprint_mask
+    error = {name: np.abs(backgrounds[name][inside] / backgrounds["reference"][inside] - 1.0).mean()
+             for name in ("plain", "masked")}
+    assert error["masked"] < 0.01 < error["plain"]
+
+    larger = prepare_generic_search(stars, nside=NSIDE, mask_radius_scale={"gc": 8.0})
+    assert larger.object_mask.sum() > masked.object_mask.sum()
+    with pytest.raises(ValueError, match="all masked"):
+        prepare_generic_search(stars, nside=NSIDE, mask_radius_scale={"gc": 200.0})
 
 
 # ===================================================

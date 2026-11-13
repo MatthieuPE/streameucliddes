@@ -35,6 +35,7 @@ import numpy as np
 import pandas as pd
 
 from streameucliddes.analysis.background_polynomial_fit import fit_background_model
+from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, overlapped_objects_healpix_mask
 from streameucliddes.analysis.catalog_preparation import (
     CHUNK_SIZE,
     prepare_match_filter_catalog,
@@ -86,7 +87,12 @@ class PreparedGenericSearch:
         HEALPix pixel (RING, ``nside``) of each star; -1 without coordinates.
     nside : int
     footprint_mask : numpy.ndarray of bool
-        HEALPix mask (RING), True outside the footprint.
+        HEALPix mask (RING), True outside the footprint or on a masked
+        object (``object_mask``): the pixels left out of the maps.
+    object_mask : numpy.ndarray of bool
+        HEALPix mask (RING) of the masked objects (LMC, SMC, dwarf
+        galaxies, globular clusters; ``analysis.build_masks``); all False
+        when none.
     footprint_centre_lon : float
         Mean longitude of the footprint (deg): the background polynomial is
         fitted on the longitude around it, so that ra = 0 does not cut the
@@ -101,6 +107,7 @@ class PreparedGenericSearch:
     pixels: Any
     nside: int
     footprint_mask: Any
+    object_mask: Any
     footprint_centre_lon: float
     match_filter: dict
     isochrones: list
@@ -120,6 +127,11 @@ def prepare_generic_search(
     nside: int = DEFAULT_NSIDE,
     footprint_mask: NDArray[np.bool_] | None = None,
     nest: bool | None = None,
+    mask_lmc: bool = True,
+    mask_smc: bool = True,
+    mask_dwarfs: bool = True,
+    mask_gc: bool = True,
+    mask_radius_scale: float | Mapping[str, float] = DEFAULT_RADIUS_SCALES,
     ra_col: str = "ra",
     dec_col: str = "dec",
 ) -> PreparedGenericSearch:
@@ -131,6 +143,15 @@ def prepare_generic_search(
     with ``as_mask``), and its HEALPix pixel (4 bytes:
     ``analysis.catalog_preparation.star_healpix_pixels``). The stars without
     finite coordinates are not kept.
+
+    Objects that overlap the footprint (the LMC, the SMC, the dwarf
+    galaxies, the globular clusters) are masked by default
+    (``analysis.build_masks.overlapped_objects_healpix_mask``): their pixels
+    are added to the footprint mask, and their stars are not kept
+    (``prepare_match_filter_catalog`` with ``excluded_pixels``). No star
+    is counted there, the smoothed counts are corrected at the edges of the
+    masks as at those of the footprint, and the background is fitted on
+    the other pixels.
 
     Parameters
     ----------
@@ -165,6 +186,17 @@ def prepare_generic_search(
         (``survey_footprint_healpix_mask``, by chunks).
     nest : bool, optional
         HEALPix ordering of ``footprint_mask``.
+    mask_lmc, mask_smc, mask_dwarfs, mask_gc : bool, optional
+        Mask the LMC, the SMC, the dwarf galaxies (but the Clouds), the
+        globular clusters: their half-light ellipses scaled by
+        ``mask_radius_scale`` (LVDB, ``catalogs.overlapped_objects``;
+        downloaded at the first use). False: not masked.
+    mask_radius_scale : float or mapping, optional
+        Semi-major axis of the ellipses, in half-light radii: the same for
+        every type, or per type, ``{"lmc": ..., "smc": ..., "dwarfs": ...,
+        "gc": ...}`` (default: 6.5 for the LMC, 21 deg; 11 for the SMC,
+        11 deg; 4 for the others; see
+        ``analysis.build_masks.overlapped_objects_healpix_mask``).
     ra_col, dec_col : str, optional
         Coordinate columns (deg).
 
@@ -177,10 +209,18 @@ def prepare_generic_search(
     KeyError
         Columns missing from the catalog (all of them listed).
     ValueError
-        ``footprint_mask`` without ``nest``, or an empty footprint.
+        ``footprint_mask`` without ``nest``, an empty footprint, or a
+        footprint all masked by the objects.
     """
     match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
-    keep = prepare_match_filter_catalog(catalog, match_filter, cuts=cuts, as_mask=True)  # 1 byte per star
+    object_mask = overlapped_objects_healpix_mask(
+        nside, nest=False, mask_lmc=mask_lmc, mask_smc=mask_smc, mask_dwarfs=mask_dwarfs, mask_gc=mask_gc,
+        radius_scale=mask_radius_scale,
+    )
+    keep = prepare_match_filter_catalog(  # 1 byte per star; not the stars on the masked objects
+        catalog, match_filter, cuts=cuts, excluded_pixels=object_mask, excluded_pixels_nest=False,
+        ra_col=ra_col, dec_col=dec_col, as_mask=True,
+    )
     pixels = star_healpix_pixels(catalog, nside, nest=False, ra_col=ra_col, dec_col=dec_col)  # 4 bytes per star
     for start in range(0, len(catalog), CHUNK_SIZE):  # finite coordinates; temporaries of a chunk only
         keep[start:start + CHUNK_SIZE] &= pixels[start:start + CHUNK_SIZE] >= 0
@@ -198,6 +238,9 @@ def prepare_generic_search(
         raise ValueError("Empty footprint: no pixel inside.")
     inside_lon, _ = hp.pix2ang(nside, np.flatnonzero(~footprint_mask), lonlat=True)
     centre_lon = np.degrees(np.arctan2(np.sin(np.radians(inside_lon)).mean(), np.cos(np.radians(inside_lon)).mean()))
+    footprint_mask = footprint_mask | object_mask  # the pixels left out of the maps
+    if footprint_mask.all():
+        raise ValueError("Footprint all masked by the objects (mask_lmc, mask_smc, mask_dwarfs, mask_gc).")
 
     if isochrone is not None:
         isochrones = [dict(isochrone)]
@@ -206,7 +249,8 @@ def prepare_generic_search(
     distance_moduli = DEFAULT_DISTANCE_MODULI if distance_moduli is None else distance_moduli
     return PreparedGenericSearch(
         catalog=catalog, keep=keep, pixels=pixels, nside=nside, footprint_mask=footprint_mask,
-        footprint_centre_lon=float(centre_lon % 360.0), match_filter=match_filter, isochrones=list(isochrones),
+        object_mask=object_mask, footprint_centre_lon=float(centre_lon % 360.0), match_filter=match_filter,
+        isochrones=list(isochrones),
         distance_moduli=[float(dm) for dm in distance_moduli],
     )
 

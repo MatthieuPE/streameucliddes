@@ -21,6 +21,11 @@ search: generic
 #   - {age: 13.0, metallicity: 0.0002}
 #
 # nside: 512
+# mask_lmc: true               # mask the LMC, the SMC, the dwarf galaxies, the globular clusters (LVDB);
+# mask_smc: true               # false: not masked
+# mask_dwarfs: true
+# mask_gc: true
+# mask_radius_scale: {lmc: 6.5, smc: 11.0, dwarfs: 4.0, gc: 4.0}   # ellipse semi-major axis in half-light radii (or one value)
 # smoothing_deg: 0.3
 # polynomial_degree: 5         # fixed for now
 # map_key: residual            # map of the Parquet file: residual, density or background
