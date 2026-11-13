@@ -20,7 +20,7 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 
-from streameucliddes.analysis.candidate_investigation import stream_width_model
+from streameucliddes.analysis.candidate_investigation import region_windows, stream_width_model
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
 from streameucliddes.plotting.plot_generic_search import plot_generic_search_residual_map
 from streameucliddes.plotting.plot_stream_frame_search import (
@@ -88,7 +88,12 @@ def draw_stream_regions(
     lines : list of matplotlib.lines.Line2D
         Three closed outlines: on, off below, off above.
     """
-    raise NotImplementedError
+    windows = region_windows(regions)
+    lines = draw_stream_track(ax, *phi12_window_outline(windows["on"]), label="on", color=on_color, ls="-", alpha=0.9)
+    for index, window in enumerate(windows["off"]):
+        lines += draw_stream_track(ax, *phi12_window_outline(window), label="off" if index == 0 else None,
+                                   color=off_color, ls="-", alpha=0.9)
+    return lines
 
 
 def plot_phi2_profile(
@@ -228,7 +233,16 @@ def plot_phi1_profile(
     fig : matplotlib.figure.Figure
     ax : matplotlib.axes.Axes
     """
-    raise NotImplementedError
+    fig, ax = (ax.figure, ax) if ax is not None else plt.subplots(figsize=PROFILE_FIGSIZE)
+    if regions is not None:
+        ax.axvspan(*regions["phi1_range"], color=ON_REGION_COLOR, alpha=0.1, lw=0, label=r"regions $\phi_1$ range")
+    ax.axhline(0.0, color="0.5", lw=0.8)
+    ax.errorbar(profile["centres"], profile["difference"], yerr=profile["error"], fmt="o", ms=3, color=PROFILE_COLOR,
+                elinewidth=0.8, label="on $-$ off")
+    ax.set(xlim=(profile["edges"][-1], profile["edges"][0]),  # phi1 increasing to the left, as the maps
+           xlabel=r"$\phi_1$ [deg]", ylabel=r"On $-$ off density [stars deg$^{-2}$]")
+    ax.legend(loc="upper right", fontsize="small", framealpha=0.8)
+    return fig, ax
 
 # ===================================================
 # Figures of a CandidateInvestigation

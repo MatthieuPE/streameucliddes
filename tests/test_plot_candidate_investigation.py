@@ -6,9 +6,12 @@ import numpy as np
 import pytest
 
 from streameucliddes.analysis.candidate_investigation import CandidateInvestigation
+from streameucliddes.analysis.candidate_investigation import region_windows
 from streameucliddes.plotting.plot_candidate_investigation import (
+    draw_stream_regions,
     plot_candidate_frame_check,
     plot_candidate_map,
+    plot_phi1_profile,
     plot_phi2_profile,
     plot_width_fit_map,
 )
@@ -16,9 +19,18 @@ from streameucliddes.plotting.plot_candidate_investigation import (
 pytestmark = pytest.mark.plot_candidate_investigation
 
 
-@pytest.mark.skip(reason="stub")
+# Three closed outlines on the window edges: on, off below, off above; labelled once each
 def test_draw_stream_regions_three_outlines():
-    """Three closed outlines: on and the two off bands."""
+    fig, ax = plt.subplots()
+    regions = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)}
+    lines = draw_stream_regions(ax, regions)
+    assert len(lines) == 3
+    for line, window in zip(lines, [region_windows(regions)["on"], *region_windows(regions)["off"]]):
+        x, y = line.get_xdata(), line.get_ydata()
+        assert (x[0], y[0]) == (x[-1], y[-1])
+        assert (x.min(), x.max(), y.min(), y.max()) == pytest.approx(window)
+    assert [line.get_label() for line in lines][:2] == ["on", "off"] and lines[2].get_label().startswith("_")
+    plt.close(fig)
 
 
 FIT = {"amplitude": 5.0, "phi2_centre": 0.0, "sigma": 0.3, "background": 10.0, "background_coefficients": (10.0,),
@@ -45,9 +57,14 @@ def test_plot_phi2_profile(candidate_endpoints):
     plt.close(fig)
 
 
-@pytest.mark.skip(reason="stub")
+# On - off with error bars, the zero line, the regions' phi1 range shaded, phi1 increasing to the left
 def test_plot_phi1_profile():
-    """Difference drawn, phi1_range shaded; returns (fig, ax)."""
+    centres = np.linspace(-4.75, 4.75, 20)
+    profile = {"centres": centres, "edges": np.linspace(-5.0, 5.0, 21),
+               "difference": np.where(np.abs(centres) < 2, 30.0, 0.0), "error": np.full(20, 5.0)}
+    fig, ax = plot_phi1_profile(profile, {"phi1_range": (-2.0, 2.0)})
+    assert len(ax.containers) == 1 and len(ax.patches) == 1 and ax.get_xlim()[0] > ax.get_xlim()[1]
+    plt.close(fig)
 
 
 # The map of the scan closest to the distance modulus (given, else that of the object), else the zoom
@@ -69,6 +86,14 @@ def test_plot_candidate_map(candidate_with_maps):
     cand.distance_modulus = 16.2
     fig, ax = plot_candidate_map(cand)
     assert "dm 16.0" in ax.get_title()
+    plt.close(fig)
+    cand.regions = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5,
+                    "off_n_sigma": (2.5, 4.0)}
+    fig, ax = plot_candidate_map(cand)  # with regions: the track and three outlines
+    assert {"track", "on", "off"} <= {line.get_label() for line in ax.lines}
+    plt.close(fig)
+    fig, ax = plot_candidate_map(cand, show_regions=False)
+    assert "on" not in {line.get_label() for line in ax.lines}
     plt.close(fig)
 
 

@@ -150,9 +150,22 @@ def stream_regions(
     ------
     ValueError
         ``off_n_sigma[0] < on_n_sigma`` (the regions overlap), or
-        ``off_n_sigma[1] <= off_n_sigma[0]``, or ``sigma <= 0``.
+        ``off_n_sigma[1] <= off_n_sigma[0]``, or ``sigma <= 0``, or
+        ``phi1_range`` not increasing.
     """
-    raise NotImplementedError
+    if sigma <= 0:
+        raise ValueError(f"sigma must be > 0, not {sigma}.")
+    if not off_n_sigma[0] >= on_n_sigma:
+        raise ValueError(f"The off bands ({off_n_sigma} sigma) overlap the on region ({on_n_sigma} sigma).")
+    if not off_n_sigma[1] > off_n_sigma[0]:
+        raise ValueError(f"off_n_sigma must be increasing, not {off_n_sigma}.")
+    if not phi1_range[1] > phi1_range[0]:
+        raise ValueError(f"phi1_range must be increasing, not {phi1_range}.")
+    return {
+        "phi1_range": (float(phi1_range[0]), float(phi1_range[1])), "phi2_centre": float(phi2_centre),
+        "sigma": float(sigma), "on_n_sigma": float(on_n_sigma),
+        "off_n_sigma": (float(off_n_sigma[0]), float(off_n_sigma[1])),
+    }
 
 
 def region_windows(regions: dict[str, Any]) -> dict[str, Any]:
@@ -174,7 +187,15 @@ def region_windows(regions: dict[str, Any]) -> dict[str, Any]:
         ``stream_frames.in_phi12_window``; outlines:
         ``stream_frames.phi12_window_outline``.
     """
-    raise NotImplementedError
+    phi1_min, phi1_max = regions["phi1_range"]
+    centre, sigma = regions["phi2_centre"], regions["sigma"]
+    on_half = regions["on_n_sigma"] * sigma
+    off_inner, off_outer = (n_sigma * sigma for n_sigma in regions["off_n_sigma"])
+    return {
+        "on": (phi1_min, phi1_max, centre - on_half, centre + on_half),
+        "off": ((phi1_min, phi1_max, centre - off_outer, centre - off_inner),
+                (phi1_min, phi1_max, centre + off_inner, centre + off_outer)),
+    }
 
 
 def region_area_deg2(
@@ -201,7 +222,11 @@ def region_area_deg2(
     areas : dict
         ``{"on", "off"}`` (deg²); ``"off"`` is the sum of the two bands.
     """
-    raise NotImplementedError
+    windows = region_windows(regions)
+    on = unmasked_area_deg2(stream_frame, windows["on"][:2], windows["on"][2:], excluded_healpix_mask)[0, 0]
+    off = sum(unmasked_area_deg2(stream_frame, window[:2], window[2:], excluded_healpix_mask)[0, 0]
+              for window in windows["off"])
+    return {"on": float(on), "off": float(off)}
 
 
 # ===================================================
@@ -524,11 +549,23 @@ def on_off_phi1_profile(
     Returns
     -------
     profile : dict
-        ``{"centres", "on", "off", "difference", "error", "bin_deg"}``:
-        densities in stars/deg²; ``error`` that of the difference (Poisson,
-        in quadrature).
+        ``{"centres", "edges", "on", "off", "difference", "error",
+        "on_error", "off_error", "bin_deg", "regions"}``: densities in
+        stars/deg²; ``error`` that of the difference (Poisson, in
+        quadrature). Bins with no area in the on region or the off bands
+        have NaN.
     """
-    raise NotImplementedError
+    if phi1_range is None:
+        phi1_range = regions["phi1_range"]
+    windows = region_windows({**regions, "phi1_range": tuple(phi1_range)})
+    kwargs = {"axis": "phi1", "bin_deg": bin_deg, "axis_range": tuple(phi1_range)}
+    on = phi12_density_profile(phi1, phi2, [windows["on"]], stream_frame, excluded_healpix_mask, **kwargs)
+    off = phi12_density_profile(phi1, phi2, list(windows["off"]), stream_frame, excluded_healpix_mask, **kwargs)
+    return {
+        "centres": on["centres"], "edges": on["edges"], "on": on["density"], "off": off["density"],
+        "difference": on["density"] - off["density"], "error": np.hypot(on["error"], off["error"]),
+        "on_error": on["error"], "off_error": off["error"], "bin_deg": on["bin_deg"], "regions": dict(regions),
+    }
 
 
 # ===================================================
@@ -1058,11 +1095,17 @@ class CandidateInvestigation:
         phi1_range: tuple[float, float] | None = None,
         phi2_centre: float | None = None,
         sigma: float | None = None,
+        *,
+        bin_deg: float = DEFAULT_PHI1_BIN_DEG,
     ) -> CandidateInvestigation:
         """On and off regions, their areas and the phi1 profile.
 
-        ``stream_regions``, ``region_area_deg2`` and ``on_off_phi1_profile``
-        (stars in the match filter, bins over the window).
+        ``stream_regions`` (with ``on_n_sigma`` and ``off_n_sigma`` of the
+        object), ``region_area_deg2`` (outside ``excluded_healpix_mask``) and
+        ``on_off_phi1_profile`` of the stars in the match filter at
+        ``distance_modulus``, its bins over the whole window: where the stream
+        starts and stops, to choose ``phi1_range``. The Hess diagrams of
+        earlier regions are cleared.
 
         Parameters
         ----------
@@ -1070,6 +1113,8 @@ class CandidateInvestigation:
             Default: the phi1 of the endpoints.
         phi2_centre, sigma : float, optional
             Default: from ``width_fit``.
+        bin_deg : float, optional
+            Bins of the phi1 profile (deg).
 
         Returns
         -------
@@ -1078,10 +1123,33 @@ class CandidateInvestigation:
         Raises
         ------
         ValueError
-            ``phi2_centre`` or ``sigma`` not given and ``fit_width`` not done;
-            or the off bands leave the window.
+            ``prepare`` not done; ``phi2_centre`` or ``sigma`` not given and
+            ``fit_width`` not done; ``distance_modulus`` not set; or the off
+            bands leave the window (make it wider: ``min_phi2_half_width_deg``).
         """
-        raise NotImplementedError
+        self._require("search", "prepare")
+        if (phi2_centre is None or sigma is None) and self.width_fit is None:
+            raise ValueError("No width_fit: call fit_width() first, or give phi2_centre and sigma.")
+        phi2_centre = self.width_fit["phi2_centre"] if phi2_centre is None else phi2_centre
+        sigma = self.width_fit["sigma"] if sigma is None else sigma
+        phi1_range = self._endpoints_phi1_range() if phi1_range is None else tuple(phi1_range)
+        regions = stream_regions(phi1_range, phi2_centre, sigma, on_n_sigma=self.on_n_sigma,
+                                 off_n_sigma=self.off_n_sigma)
+        below, above = region_windows(regions)["off"]
+        if below[2] < self.window[2] or above[3] > self.window[3] or phi1_range[0] < self.window[0] \
+                or phi1_range[1] > self.window[1]:
+            raise ValueError(f"The regions (phi1 {phi1_range}, phi2 {below[2]:.2f} to {above[3]:.2f} deg) leave the "
+                             f"window {tuple(round(value, 2) for value in self.window)}: make it larger.")
+        selected = self._stars_in_match_filter()
+        stars = self.search.stars
+        self._clear_results(("on_hess", "off_hess", "diff_hess"))
+        self.regions = regions
+        self.areas = region_area_deg2(regions, self.stream_frame, self.excluded_healpix_mask)
+        self.phi1_profile = on_off_phi1_profile(
+            stars["phi1"].to_numpy()[selected], stars["phi2"].to_numpy()[selected], regions, self.stream_frame,
+            self.excluded_healpix_mask, phi1_range=self.window[:2], bin_deg=bin_deg,
+        )
+        return self
 
     def compute_hess(self, *, color_bins: Any = None, mag_bins: Any = None) -> CandidateInvestigation:
         """On, off and on - off Hess diagrams (``hess_diagram``, ``difference_hess``).

@@ -12,8 +12,12 @@ from streameucliddes.analysis.candidate_investigation import (
     DEFAULT_FOOTPRINT_NSIDE,
     CandidateInvestigation,
     fit_stream_width,
+    on_off_phi1_profile,
     phi12_density_map,
     phi12_density_profile,
+    region_area_deg2,
+    region_windows,
+    stream_regions,
     stream_width_model,
 )
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
@@ -38,24 +42,42 @@ BIN = 0.2  # bins of the maps in the frame (deg)
 # ===================================================
 
 
-@pytest.mark.skip(reason="stub")
+# The plain dict of the inputs, as floats
 def test_stream_regions_keys():
-    """stream_regions returns the plain dict of its inputs."""
+    regions = stream_regions((-3, 2), 0.2, 0.3, on_n_sigma=1.5, off_n_sigma=(2.5, 4.0))
+    assert regions == {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)}
 
 
-@pytest.mark.skip(reason="stub")
-def test_stream_regions_rejects_overlap():
-    """off_n_sigma[0] < on_n_sigma, or off_n_sigma not increasing, or sigma <= 0: ValueError."""
+# Off bands overlapping the on region, off_n_sigma not increasing, sigma <= 0, phi1_range not increasing
+@pytest.mark.parametrize("kwargs", [{"on_n_sigma": 2.6}, {"off_n_sigma": (3.0, 2.5)}, {"sigma": 0.0},
+                                    {"phi1_range": (2.0, -3.0)}])
+def test_stream_regions_rejects_overlap(kwargs):
+    arguments = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.0, "sigma": 0.3, **kwargs}
+    with pytest.raises(ValueError):
+        stream_regions(**arguments)
 
 
-@pytest.mark.skip(reason="stub")
+# On window |phi2 - c| <= on_n_sigma sigma, off windows on each side; none overlap
 def test_region_windows():
-    """On window |phi2 - c| <= on_n_sigma sigma; off windows on each side; none overlap."""
+    windows = region_windows({"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)})
+    assert windows["on"] == pytest.approx((-3.0, 2.0, 0.2 - 0.45, 0.2 + 0.45))
+    below, above = windows["off"]
+    assert below == pytest.approx((-3.0, 2.0, 0.2 - 1.2, 0.2 - 0.75))
+    assert above == pytest.approx((-3.0, 2.0, 0.2 + 0.75, 0.2 + 1.2))
+    assert below[3] <= windows["on"][2] and windows["on"][3] <= above[2]
 
 
-@pytest.mark.skip(reason="stub")
-def test_region_area_matches_analytic():
-    """No mask: on and off areas within 1 % of the analytic ones."""
+# No mask: on and off areas of the band formula; half of the phi1 range masked: half the areas
+def test_region_area_matches_analytic(candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    regions = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)}
+    windows = region_windows(regions)
+    areas = region_area_deg2(regions, frame, None)
+    band = lambda window: unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0]  # noqa: E731
+    assert areas["on"] == pytest.approx(band(windows["on"]))
+    assert areas["off"] == pytest.approx(band(windows["off"][0]) + band(windows["off"][1]))
+    half = region_area_deg2(regions, frame, _mask_phi1_below(frame, 512, -0.5))
+    assert half["on"] == pytest.approx(areas["on"] / 2, rel=0.03) and half["off"] == pytest.approx(areas["off"] / 2, rel=0.03)
 
 
 def _uniform_in_window(rng, window, n):
@@ -193,14 +215,26 @@ def test_fit_rejects_phi1_profile(rng, candidate_endpoints):
         fit_stream_width(profile)
 
 
-@pytest.mark.skip(reason="stub")
-def test_on_off_phi1_profile_zero_without_stream():
-    """Uniform stars: on - off consistent with 0 in every phi1 bin."""
+# Uniform stars: on - off consistent with 0 in every phi1 bin
+def test_on_off_phi1_profile_zero_without_stream(rng, candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    phi1, phi2 = _uniform_in_window(rng, (-5.0, 5.0, -3.0, 3.0), 100_000)
+    profile = on_off_phi1_profile(phi1, phi2, {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)}, frame, None, phi1_range=(-5.0, 5.0), bin_deg=0.5)
+    assert profile["centres"].size == 20
+    pulls = profile["difference"] / profile["error"]
+    assert abs(pulls.mean()) < 3 / np.sqrt(pulls.size) and 0.5 < pulls.std() < 1.5
 
 
-@pytest.mark.skip(reason="stub")
-def test_on_off_phi1_profile_shows_stream_extent():
-    """Stream over part of phi1: positive difference there only."""
+# A stream over phi1 from -3 to 2: positive difference there, consistent with 0 beyond
+def test_on_off_phi1_profile_shows_stream_extent(rng, candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    phi1, phi2 = _uniform_in_window(rng, (-5.0, 5.0, -3.0, 3.0), 50_000)
+    phi1 = np.append(phi1, rng.uniform(-3.0, 2.0, 3000))
+    phi2 = np.append(phi2, rng.normal(0.2, 0.3, 3000))
+    profile = on_off_phi1_profile(phi1, phi2, {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)}, frame, None, phi1_range=(-5.0, 5.0), bin_deg=0.5)
+    pulls = profile["difference"] / profile["error"]
+    inside = (profile["centres"] > -3.0) & (profile["centres"] < 2.0)
+    assert np.all(pulls[inside] > 3.0) and np.all(np.abs(pulls[~inside]) < 4.0)
 
 
 # Before the regions: the arc between the endpoints, at phi2 = 0, from endpoint_1 to endpoint_2 (also
@@ -384,6 +418,34 @@ def test_set_endpoints_without_catalog(candidate_endpoints):
     cand = CandidateInvestigation("test", *candidate_endpoints)
     cand.set_endpoints((76.0, -41.0), (69.0, -44.0))
     assert cand.search is None and cand.window != CandidateInvestigation("test", *candidate_endpoints).window
+
+
+# define_regions: the regions of the width fit (or the values given) over the phi1 of the endpoints, their
+# areas, the phi1 profile over the window; earlier Hess diagrams cleared; errors: steps not done, off bands
+# beyond the window
+def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, on_n_sigma=1.5, off_n_sigma=(2.5, 4.0),
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    with pytest.raises(ValueError, match="prepare"):
+        cand.define_regions()
+    cand.prepare(candidate_stream_catalog)
+    with pytest.raises(ValueError, match="fit_width"):
+        cand.define_regions()
+    cand.distance_modulus = candidate_stream["distance_modulus"]
+    cand.fit_width()
+    cand.on_hess = {"stale": True}
+    assert cand.define_regions() is cand
+    fit, regions = cand.width_fit, cand.regions
+    assert regions == stream_regions(cand._endpoints_phi1_range(), fit["phi2_centre"], fit["sigma"], on_n_sigma=1.5,
+                                     off_n_sigma=(2.5, 4.0))
+    assert cand.areas == region_area_deg2(regions, cand.stream_frame, cand.excluded_healpix_mask)
+    assert cand.phi1_profile["edges"][[0, -1]] == pytest.approx(cand.window[:2]) and cand.on_hess is None
+    inside = np.abs(cand.phi1_profile["centres"]) < 2.5
+    assert np.all(cand.phi1_profile["difference"][inside] > 0)
+    cand.define_regions(phi1_range=(-1.0, 1.0), phi2_centre=0.0, sigma=0.4)
+    assert cand.regions["phi1_range"] == (-1.0, 1.0) and cand.regions["sigma"] == 0.4
+    with pytest.raises(ValueError, match="leave the window"):
+        cand.define_regions(sigma=2.0)  # off bands to 8 deg
 
 
 # ===================================================

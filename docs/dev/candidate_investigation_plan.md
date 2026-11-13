@@ -301,6 +301,14 @@ Done:
   Open: the footprint from the stars counts sparsely covered pixels as
   inside (`min_count=1`); a shallow strip at φ1 ≈ 2.5–4 deg shows as
   empty cells (to settle before the off areas, S6).
+- S6 (2026-11-13): `stream_regions` (checks), `region_windows`,
+  `region_area_deg2`, `on_off_phi1_profile` (over the whole window);
+  `define_regions` (default from the width fit; raises if the off bands
+  leave the window; clears earlier Hess diagrams); `draw_stream_regions`,
+  `plot_phi1_profile`, regions in `plot_candidate_map`. DR1: on 4.50,
+  off 6.54 deg²; on − off +10 to +60 stars/deg² over the regions; the
+  unmasked compact object at φ1 ≈ −4.5 (+460) and the shallow strip at
+  φ1 ≈ 4–5 (negative) show up.
 
 ## 4. New functions, by module
 
@@ -539,6 +547,18 @@ Sections (one markdown title each, a few code cells):
 Notebooks are committed without outputs (git filter in `.gitconfig`).
 
 ## 6. Out of scope for now
+
+Later improvements agreed with the user (2026-11-13), after a first
+version down to the Hess diagrams:
+
+- Width and linear density (stars per deg along phi1) fitted together: a
+  2D fit of the counts per phi1/phi2 cell with a Poisson likelihood
+  (stream along the track + background), replacing the phi2 profile fit
+  and defining the on/off track area from it.
+- Coverage threshold for the footprint from the stars (`min_count` of
+  `survey_footprint_healpix_mask`, e.g. a fraction of the median stars per
+  pixel): the sparsely covered strip of DR1 near the candidate counts as
+  inside with `min_count=1` and biases the densities there.
 
 - phi2(phi1) polynomial track; significance of the on − off excess;
   isochrone fit to the difference Hess; saving candidates to files;
