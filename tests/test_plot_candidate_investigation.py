@@ -10,6 +10,7 @@ from streameucliddes.analysis.candidate_investigation import region_windows
 from streameucliddes.plotting.plot_candidate_investigation import (
     draw_stream_regions,
     plot_candidate_frame_check,
+    plot_candidate_hess,
     plot_candidate_map,
     plot_phi1_profile,
     plot_phi2_profile,
@@ -97,9 +98,37 @@ def test_plot_candidate_map(candidate_with_maps):
     plt.close(fig)
 
 
-@pytest.mark.skip(reason="stub")
-def test_plot_candidate_hess():
-    """Each of on, off, difference, with the isochrone."""
+# Each of on, off, difference; the difference with symmetric limits; an unknown diagram or no Hess: ValueError
+def test_plot_candidate_hess(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    cand.prepare(candidate_stream_catalog)
+    with pytest.raises(ValueError, match="compute_hess"):
+        plot_candidate_hess(cand)
+    cand.fit_width().define_regions().compute_hess()
+    for which in ("on", "off", "difference"):
+        fig, ax = plot_candidate_hess(cand, which)
+        assert which in ax.get_title()
+        plt.close(fig)
+    fig, ax = plot_candidate_hess(cand)
+    vmin, vmax = ax.images[0].get_clim()
+    assert vmin == -vmax and not ax.lines  # no isochrone computed yet
+    assert "smoothed" in ax.get_title()
+    assert not np.array_equal(ax.images[0].get_array(), cand.diff_hess["density"].T)  # smoothed by default
+    plt.close(fig)
+    fig, ax = plot_candidate_hess(cand, smooth=False)
+    np.testing.assert_array_equal(ax.images[0].get_array(), cand.diff_hess["density"].T)
+    plt.close(fig)
+    cand.compute_isochrone()
+    fig, ax = plot_candidate_hess(cand, match_filter=True)  # the isochrone and the match filter
+    labels = [line.get_label() for line in ax.lines]
+    assert len(labels) == 2 and "Match filter" in labels and ax.get_legend() is not None
+    plt.close(fig)
+    fig, ax = plot_candidate_hess(cand, isochrone=False)
+    assert not ax.lines
+    plt.close(fig)
+    with pytest.raises(ValueError, match="which"):
+        plot_candidate_hess(cand, "both")
 
 
 @pytest.mark.skip(reason="stub")

@@ -44,7 +44,8 @@ often. So:
 - Width: Gaussian sigma in phi2, fitted with a constant background
   (Shipp et al. 2018, ApJ 862, 114).
 - On region: |phi2 − phi2_centre| ≤ 1.4σ (`on_n_sigma`), over `phi1_range` (user choice).
-- Off region: two bands, one on each side, at 2.5σ to 4.5σ from
+- Off region: two bands, one on each side, at 3.5σ to 6σ (2.5σ to 4.5σ
+  until the user changed it, 2026-11-13) from
   `phi2_centre`, over the same `phi1_range`.
 - One class holding all quantities, so the user can run the steps without
   calling each function by hand, and pass it to the plots (user, 2026-11-13).
@@ -309,6 +310,25 @@ Done:
   off 6.54 deg²; on − off +10 to +60 stars/deg² over the regions; the
   unmasked compact object at φ1 ≈ −4.5 (+460) and the shallow strip at
   φ1 ≈ 4–5 (negative) show up.
+- S7 (2026-11-13): `hess_diagram(stars, mag_cols, *, mask, area_deg2,
+  ...)` (counts without area), `difference_hess` (counts and `n_stars`:
+  the excess of the on region, off scaled by the area ratio) in
+  `cmd_match_filter`; `plot_hess` the only CMD drawing, `plot_CMD` now
+  `hess_diagram` + `plot_hess` (same signature and figure);
+  `plot_on_off_difference_hess` with the smoothed difference as a 4th
+  panel (`smoothed_difference=True`, 1 bin; user 2026-11-13) and an
+  optional isochrone on every panel; `compute_hess` (every prepared star of
+  the regions, not only the match filter); `plot_candidate_hess`
+  (`smooth=True` for the difference). Notebook: bins 0.1 × 0.25 mag (the
+  defaults, 0.04 × 1/6, leave ~1 star per bin here). DR1: 1040 excess stars
+  in 4.50 deg²; an excess along the isochrone at VIS 23–25, and a larger
+  one of red faint stars (VIS − H 0.7–1.5), where the field is densest.
+- S8 (2026-11-13): `isochrone_cmd_track` (streamobs `_isochrone_locus`,
+  97 % of the main sequence inside the polygon), `compute_isochrone`
+  (values given only for the track), `plot_isochrone`,
+  `plot_match_filter_polygon` (`plot_match_filter` calls it); isochrone
+  and polygon in `plot_candidate_hess`. Notebook section 9: four panels
+  with the isochrone, three trial (age, [Fe/H], dm).
 
 ## 4. New functions, by module
 
@@ -571,4 +591,4 @@ version down to the Hess diagrams:
 - Isochrones: Marigo et al. 2017, ApJ 835, 77; Bressan et al. 2012, MNRAS 427, 127.
 - Stream frames: Price-Whelan 2017, JOSS 2, 388 (gala).
 - Normalized convolution (existing maps): Knutsson & Westin 1993.
-- Off band 2.5σ–4.5σ and on band 1.4σ: user choices, no reference.
+- Off band 3.5σ–6σ and on band 1.4σ: user choices, no reference.

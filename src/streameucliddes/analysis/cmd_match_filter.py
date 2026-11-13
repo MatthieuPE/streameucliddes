@@ -26,15 +26,16 @@ import functools
 from typing import TYPE_CHECKING
 
 import numpy as np
-from streamobs.match_filter import build_match_filter, is_in_match_filter
+import pandas as pd
+from streamobs.match_filter import _isochrone_locus, build_match_filter, is_in_match_filter
 
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.unit_conversions import convert_FeH_to_z
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from typing import Any
 
-    import pandas as pd
     from numpy.typing import ArrayLike, NDArray
 
 # Euclid VIS vs VIS - H
@@ -138,8 +139,8 @@ def match_filter_polygons(
             float(isochrone["metallicity"]),
             band_1,
             band_2,
-            namespace_1.split("_")[0],  # isochrone survey: "des_yr6" -> "des"
-            namespace_2.split("_")[0],
+            _isochrone_survey(namespace_1),
+            _isochrone_survey(namespace_2),
             color_cut=match_filter.get("color_cut", True),
             red_cap_value=match_filter.get("red_cap_value", None),
         )
@@ -255,7 +256,25 @@ def isochrone_cmd_track(
     ----------
     Marigo et al. 2017, ApJ 835, 77; Bressan et al. 2012, MNRAS 427, 127.
     """
-    raise NotImplementedError
+    if (metallicity is None) == (feh is None):
+        raise ValueError("Give exactly one of metallicity (Z) and feh.")
+    z = float(convert_FeH_to_z(feh)) if feh is not None else float(metallicity)
+    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    namespace_1, band_1 = match_filter["reference_band"]
+    namespace_2, band_2 = match_filter["color_bands"][color_index]
+    color, absolute_mag = _isochrone_locus(
+        ISOCHRONE_MODEL, float(age), z, band_1, _isochrone_survey(namespace_1), band_2, _isochrone_survey(namespace_2)
+    )
+    return {
+        "color": np.asarray(color, dtype=float), "mag": np.asarray(absolute_mag, dtype=float) + distance_modulus,
+        "age": float(age), "metallicity": z, "feh": None if feh is None else float(feh),
+        "distance_modulus": float(distance_modulus),
+    }
+
+
+def _isochrone_survey(namespace: str) -> str:
+    """ugali survey of a column namespace: "des_yr6" -> "des", "euclid_dr1" -> "euclid"."""
+    return namespace.split("_")[0]
 
 
 def hess_diagram(
@@ -310,7 +329,28 @@ def hess_diagram(
     ----------
     Shipp et al. 2018, ApJ 862, 114, Sect. 5.
     """
-    raise NotImplementedError
+    if area_deg2 is not None and area_deg2 <= 0:
+        raise ValueError(f"area_deg2 must be > 0, not {area_deg2}.")
+    mag_column, color_column = mag_cols
+    if color_bins is None:
+        color_bins = np.arange(DEFAULT_COLOR_RANGE[0], DEFAULT_COLOR_RANGE[1] + DEFAULT_COLOR_BIN / 2, DEFAULT_COLOR_BIN)
+    if mag_bins is None:
+        mag_bins = np.arange(DEFAULT_MAG_RANGE[0], DEFAULT_MAG_RANGE[1] + DEFAULT_MAG_BIN / 2, DEFAULT_MAG_BIN)
+    magnitude = pd.to_numeric(stars[mag_column], errors="coerce").to_numpy(dtype=float)
+    other = pd.to_numeric(stars[color_column], errors="coerce").to_numpy(dtype=float)
+    keep = np.isfinite(magnitude) & np.isfinite(other)
+    if mask is not None:
+        keep &= np.asarray(mask, dtype=bool)
+    counts, color_edges, mag_edges = np.histogram2d(
+        magnitude[keep] - other[keep], magnitude[keep], bins=[np.asarray(color_bins), np.asarray(mag_bins)]
+    )
+    scale = 1.0 if area_deg2 is None else float(area_deg2)
+    return {
+        "density": counts / scale, "counts": counts, "error": np.sqrt(counts) / scale,
+        "color_edges": color_edges, "mag_edges": mag_edges, "area_deg2": None if area_deg2 is None else scale,
+        "n_stars": int(counts.sum()),
+        "color_label": f"{_band_name(mag_column)} - {_band_name(color_column)}", "mag_label": _band_name(mag_column),
+    }
 
 
 def difference_hess(on_hess: Mapping[str, Any], off_hess: Mapping[str, Any]) -> dict[str, Any]:
@@ -325,12 +365,29 @@ def difference_hess(on_hess: Mapping[str, Any], off_hess: Mapping[str, Any]) -> 
     -------
     hess : dict
         The keys of ``hess_diagram``: ``density`` on - off, ``error`` the two
-        errors in quadrature, ``counts`` and ``n_stars`` on - off,
-        ``area_deg2`` that of the on region.
+        errors in quadrature, ``area_deg2`` that of the on region; ``counts``
+        the excess stars of the on region per bin, ``density * area_deg2``
+        (on counts minus off counts scaled by the ratio of the areas), and
+        ``n_stars`` their sum: the excess stars of the on region (float).
 
     Raises
     ------
     ValueError
         The bin edges differ, or a diagram has no area.
     """
-    raise NotImplementedError
+    if on_hess["area_deg2"] is None or off_hess["area_deg2"] is None:
+        raise ValueError("Both Hess diagrams need an area_deg2 (densities per deg²).")
+    for name in ("color_edges", "mag_edges"):
+        if not np.array_equal(on_hess[name], off_hess[name]):
+            raise ValueError(f"The on and off Hess diagrams have different {name}.")
+    excess = on_hess["counts"] - off_hess["counts"] * on_hess["area_deg2"] / off_hess["area_deg2"]
+    return {
+        **{key: on_hess[key] for key in ("color_edges", "mag_edges", "area_deg2", "color_label", "mag_label")},
+        "density": on_hess["density"] - off_hess["density"], "error": np.hypot(on_hess["error"], off_hess["error"]),
+        "counts": excess, "n_stars": float(excess.sum()),
+    }
+
+
+def _band_name(column: str) -> str:
+    """Band of a magnitude column: "euclid_dr1_VIS_obs" -> "VIS"."""
+    return column.removesuffix("_obs").rsplit("_", 1)[-1]

@@ -50,7 +50,7 @@ Steps of ``CandidateInvestigation``, in order:
 References
 ----------
 Shipp et al. 2018, ApJ 862, 114 (Gaussian width with a constant background;
-on - off Hess diagrams). On band 1.4 sigma, off bands 2.5 to 4.5 sigma: user
+on - off Hess diagrams). On band 1.4 sigma, off bands 3.5 to 6 sigma: user
 choices, no reference.
 """
 
@@ -64,7 +64,13 @@ from numpy.polynomial import polynomial
 from scipy.optimize import curve_fit
 
 from streameucliddes.analysis.build_masks import excluded_healpix_mask
-from streameucliddes.analysis.cmd_match_filter import select_stars_in_match_filter
+from streameucliddes.analysis.cmd_match_filter import (
+    difference_hess,
+    hess_diagram,
+    isochrone_cmd_track,
+    match_filter_columns,
+    select_stars_in_match_filter,
+)
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import (
     prepare_search,
@@ -96,7 +102,7 @@ if TYPE_CHECKING:
     from streameucliddes.analysis.stream_frame_search import PreparedSearch
 
 DEFAULT_ON_N_SIGMA = 1.4  # user choice
-DEFAULT_OFF_N_SIGMA = (2.5, 4.5)  # user choice
+DEFAULT_OFF_N_SIGMA = (3.5, 6)  # user choice
 DEFAULT_SIGMA_GUESS_DEG = 0.2  # initial sigma of the width fit
 DEFAULT_PHI2_BIN_DEG = 0.05  # bins of the phi2 profile
 DEFAULT_PHI1_BIN_DEG = 0.5  # bins of the phi1 profile
@@ -1151,14 +1157,24 @@ class CandidateInvestigation:
         )
         return self
 
-    def compute_hess(self, *, color_bins: Any = None, mag_bins: Any = None) -> CandidateInvestigation:
+    def compute_hess(
+        self, *, color_bins: Any = None, mag_bins: Any = None, color_index: int = 0
+    ) -> CandidateInvestigation:
         """On, off and on - off Hess diagrams (``hess_diagram``, ``difference_hess``).
+
+        Every prepared star of the on region and of the off bands
+        (``region_windows``, ``in_phi12_window``), not only those in the
+        match filter; colour ``reference_band - color_bands[color_index]`` of
+        the match filter and magnitude ``reference_band``; densities per deg²
+        with the areas of ``define_regions``.
 
         Parameters
         ----------
         color_bins, mag_bins : array_like, optional
             Bin edges, the same for on and off. Default: those of
             ``hess_diagram``.
+        color_index : int, optional
+            Colour band of the match filter.
 
         Returns
         -------
@@ -1169,7 +1185,20 @@ class CandidateInvestigation:
         ValueError
             ``define_regions`` not done.
         """
-        raise NotImplementedError
+        self._require("regions", "define_regions")
+        windows = region_windows(self.regions)
+        stars = self.search.stars
+        phi1, phi2 = stars["phi1"].to_numpy(), stars["phi2"].to_numpy()
+        on = in_phi12_window(phi1, phi2, windows["on"])
+        off = in_phi12_window(phi1, phi2, windows["off"][0]) | in_phi12_window(phi1, phi2, windows["off"][1])
+        reference, *colors = match_filter_columns(self.search.match_filter)
+        kwargs = {"color_bins": color_bins, "mag_bins": mag_bins}
+        self.on_hess = hess_diagram(stars, (reference, colors[color_index]), mask=on, area_deg2=self.areas["on"],
+                                    **kwargs)
+        self.off_hess = hess_diagram(stars, (reference, colors[color_index]), mask=off,
+                                     area_deg2=self.areas["off"], **kwargs)
+        self.diff_hess = difference_hess(self.on_hess, self.off_hess)
+        return self
 
     def compute_isochrone(
         self,
@@ -1178,14 +1207,23 @@ class CandidateInvestigation:
         metallicity: float | None = None,
         feh: float | None = None,
         distance_modulus: float | None = None,
+        color_index: int = 0,
     ) -> CandidateInvestigation:
-        """Isochrone track in the bands of the match filter (``isochrone_cmd_track``).
+        """Isochrone track in the bands of the match filter (``isochrone_cmd_track``), in ``isochrone_track``.
+
+        The colour of the Hess diagrams (``compute_hess`` with the same
+        ``color_index``): the track can be drawn on them
+        (``plot_candidate_hess``). Does not need the earlier steps.
 
         Parameters
         ----------
         age, metallicity, feh, distance_modulus : float, optional
-            Default: those of the object. Given values are only used for
-            this track, not stored as inputs.
+            Default: those of the object (Z or [Fe/H] as given to it: ``feh``
+            when set, else the Z of ``isochrone``). Given values are only used
+            for this track, not stored as inputs; at most one of
+            ``metallicity`` and ``feh``.
+        color_index : int, optional
+            Colour band of the match filter.
 
         Returns
         -------
@@ -1194,9 +1232,21 @@ class CandidateInvestigation:
         Raises
         ------
         ValueError
-            No distance modulus.
+            No distance modulus; both ``metallicity`` and ``feh``.
         """
-        raise NotImplementedError
+        distance_modulus = self.distance_modulus if distance_modulus is None else distance_modulus
+        if distance_modulus is None:
+            raise ValueError("compute_isochrone needs a distance_modulus: give one, or set cand.distance_modulus.")
+        if metallicity is not None and feh is not None:
+            raise ValueError("Give metallicity (Z) or feh, not both.")
+        if metallicity is None and feh is None:  # those of the object
+            feh = self.feh
+            metallicity = None if feh is not None else self.isochrone["metallicity"]
+        self.isochrone_track = isochrone_cmd_track(
+            distance_modulus, self.age if age is None else age, metallicity, feh=feh,
+            match_filter=self.match_filter, color_index=color_index,
+        )
+        return self
 
     def run_all_steps(
         self, catalog: pd.DataFrame, *, footprint_mask: NDArray | None = None, nest: bool = False

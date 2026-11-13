@@ -20,6 +20,7 @@ from streameucliddes.analysis.candidate_investigation import (
     stream_regions,
     stream_width_model,
 )
+from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_METALLICITIES
@@ -28,7 +29,12 @@ from streameucliddes.catalogs.survey_footprint import (
     survey_footprint_healpix_mask,
     unmasked_area_deg2,
 )
-from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12, stream_frame_from_endpoints
+from streameucliddes.stream_frames import (
+    in_phi12_window,
+    phi12_to_radec,
+    radec_to_phi12,
+    stream_frame_from_endpoints,
+)
 from streameucliddes.unit_conversions import convert_FeH_to_z
 
 pytestmark = pytest.mark.candidate_investigation
@@ -52,7 +58,8 @@ def test_stream_regions_keys():
 @pytest.mark.parametrize("kwargs", [{"on_n_sigma": 2.6}, {"off_n_sigma": (3.0, 2.5)}, {"sigma": 0.0},
                                     {"phi1_range": (2.0, -3.0)}])
 def test_stream_regions_rejects_overlap(kwargs):
-    arguments = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.0, "sigma": 0.3, **kwargs}
+    arguments = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.0, "sigma": 0.3, "on_n_sigma": 1.4,
+                 "off_n_sigma": (2.5, 4.5), **kwargs}
     with pytest.raises(ValueError):
         stream_regions(**arguments)
 
@@ -448,6 +455,39 @@ def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate
         cand.define_regions(sigma=2.0)  # off bands to 8 deg
 
 
+# compute_hess: every prepared star of the on region and of the off bands, per deg² with the region areas,
+# on - off; the stream's stars in the match filter make the difference positive there
+def test_compute_hess(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    cand.prepare(candidate_stream_catalog).fit_width().define_regions()
+    assert cand.compute_hess(color_bins=np.linspace(-1.0, 1.5, 11), mag_bins=np.linspace(18.0, 26.0, 9)) is cand
+    windows = region_windows(cand.regions)
+    phi1, phi2 = cand.search.stars["phi1"], cand.search.stars["phi2"]
+    assert cand.on_hess["n_stars"] == in_phi12_window(phi1, phi2, windows["on"]).sum()
+    assert cand.on_hess["area_deg2"] == cand.areas["on"] and cand.off_hess["area_deg2"] == cand.areas["off"]
+    np.testing.assert_allclose(cand.diff_hess["density"], cand.on_hess["density"] - cand.off_hess["density"])
+    assert cand.diff_hess["density"].sum() > 5 * np.sqrt((cand.diff_hess["error"] ** 2).sum())
+
+
+# compute_isochrone: the track of the object's age, Z or [Fe/H] and distance modulus, in its match filter; the
+# values given only for this track; no distance modulus, or both Z and [Fe/H]: ValueError
+def test_compute_isochrone(candidate_endpoints):
+    cand = CandidateInvestigation("test", *candidate_endpoints, age=12.0, feh=-1.5)
+    with pytest.raises(ValueError, match="distance_modulus"):
+        cand.compute_isochrone()
+    cand.distance_modulus = 17.0
+    track = cand.compute_isochrone().isochrone_track
+    expected = isochrone_cmd_track(17.0, 12.0, feh=-1.5)
+    np.testing.assert_array_equal(track["mag"], expected["mag"])
+    assert track["feh"] == -1.5 and track["age"] == 12.0
+    track = cand.compute_isochrone(age=10.0, metallicity=0.001, distance_modulus=18.0).isochrone_track
+    assert (track["age"], track["metallicity"], track["distance_modulus"], track["feh"]) == (10.0, 0.001, 18.0, None)
+    assert (cand.age, cand.feh, cand.distance_modulus) == (12.0, -1.5, 17.0)  # inputs not changed
+    with pytest.raises(ValueError, match="not both"):
+        cand.compute_isochrone(metallicity=0.001, feh=-1.0)
+
+
 # ===================================================
 # scan_distance_moduli
 # ===================================================
@@ -474,9 +514,14 @@ def test_scan_distance_moduli(candidate_endpoints, candidate_catalog, no_object_
 # ===================================================
 
 
-@pytest.mark.skip(reason="stub")
-def test_steps_out_of_order_raise():
-    """Each step before the previous one raises a ValueError naming the missing step (e.g. compute_hess before define_regions)."""
+# Each step before the one it needs: ValueError naming the missing step
+def test_steps_out_of_order_raise(candidate_endpoints):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0)
+    for call, step in [(cand.compute_zoom_map, "prepare"), (cand.scan_distance_moduli, "prepare"),
+                       (cand.fit_width, "prepare"), (cand.define_regions, "prepare"),
+                       (cand.compute_hess, "define_regions")]:
+        with pytest.raises(ValueError, match=step):
+            call()
 
 
 # fit_width: the stream of the synthetic catalog (conftest.py) recovered, over the phi1 of the endpoints;

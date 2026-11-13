@@ -22,6 +22,12 @@ import numpy as np
 
 from streameucliddes.analysis.candidate_investigation import region_windows, stream_width_model
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
+from streameucliddes.plotting.plot_cmd import (
+    DEFAULT_DIFFERENCE_SMOOTHING_BINS,
+    plot_hess,
+    plot_isochrone,
+    plot_match_filter_polygon,
+)
 from streameucliddes.plotting.plot_generic_search import plot_generic_search_residual_map
 from streameucliddes.plotting.plot_stream_frame_search import (
     FOOTPRINT_OUTSIDE_GREY,
@@ -29,7 +35,12 @@ from streameucliddes.plotting.plot_stream_frame_search import (
     draw_stream_track_on_sky,
     plot_stream_frame_search_single_dm,
 )
-from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, escape_underscores, format_distance_modulus
+from streameucliddes.plotting.plot_style import (
+    COLORBAR_LABEL_SIZE,
+    CATEGORICAL_COLORS,
+    escape_underscores,
+    format_distance_modulus,
+)
 from streameucliddes.stream_frames import phi12_to_radec, phi12_window_outline, radec_to_phi12
 
 if TYPE_CHECKING:
@@ -196,7 +207,7 @@ def plot_width_fit_map(
         colormap.set_bad(FOOTPRINT_OUTSIDE_GREY)
         image = ax.imshow(np.ma.masked_invalid(values).T, origin="lower", extent=extent, cmap=colormap, vmin=vmin,
                           vmax=vmax, aspect="equal", interpolation="nearest")
-        fig.colorbar(image, ax=ax, label=r"stars deg$^{-2}$", shrink=0.8)
+        fig.colorbar(image, ax=ax, shrink=0.8).set_label(r"stars deg$^{-2}$", fontsize=COLORBAR_LABEL_SIZE)
         for edge in fit["phi2_fit_range"]:
             ax.axhline(edge, color=FIT_COLOR, lw=0.8, ls=":")
         ax.axhline(fit["phi2_centre"], color=FIT_COLOR, lw=0.8)
@@ -381,8 +392,12 @@ def plot_candidate_hess(
     ax: Axes | None = None,
     isochrone: bool = True,
     match_filter: bool = False,
+    smooth: bool = True,
 ) -> tuple[Figure, Axes]:
     """One Hess diagram of the candidate, with its isochrone on top.
+
+    The difference is smoothed by ``plot_cmd.DEFAULT_DIFFERENCE_SMOOTHING_BINS``
+    (only the figure), unless ``smooth`` is False.
 
     Parameters
     ----------
@@ -397,13 +412,35 @@ def plot_candidate_hess(
     match_filter : bool, optional
         Draw the match-filter polygon at ``cand.distance_modulus``
         (``plot_match_filter_polygon``).
+    smooth : bool, optional
+        Smooth the difference diagram.
 
     Returns
     -------
     fig : matplotlib.figure.Figure
     ax : matplotlib.axes.Axes
+
+    Raises
+    ------
+    ValueError
+        ``which`` not one of the three, or the Hess diagrams not computed.
     """
-    raise NotImplementedError
+    diagrams = {"on": cand.on_hess, "off": cand.off_hess, "difference": cand.diff_hess}
+    if which not in diagrams:
+        raise ValueError(f"which must be one of {sorted(diagrams)}, not {which!r}.")
+    if diagrams[which] is None:
+        raise ValueError("No Hess diagrams: call cand.compute_hess() first.")
+    smoothing_bins = DEFAULT_DIFFERENCE_SMOOTHING_BINS if smooth and which == "difference" else 0.0
+    title = f"{escape_underscores(cand.name)}: {which}" + (f", smoothed ({smoothing_bins:g} bin{'' if smoothing_bins == 1 else 's'})" if smoothing_bins else "")
+    fig, ax = plot_hess(diagrams[which], ax=ax, difference=which == "difference", smoothing_bins=smoothing_bins,
+                        title=f"{title}, dm {format_distance_modulus(cand.distance_modulus)}")
+    if isochrone and cand.isochrone_track is not None:
+        plot_isochrone(ax, cand.isochrone_track)
+    if match_filter:
+        plot_match_filter_polygon(ax, cand.distance_modulus, cand.isochrone, cand.search.match_filter)
+    if ax.get_legend_handles_labels()[0]:
+        ax.legend(loc="upper left", fontsize="small", framealpha=0.8)
+    return fig, ax
 
 
 def plot_candidate_overview(cand: CandidateInvestigation) -> tuple[Figure, list[Axes]]:

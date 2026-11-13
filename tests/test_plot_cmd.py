@@ -17,7 +17,14 @@ from streameucliddes.analysis.cmd_match_filter import (
 )
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.plotting import plot_cmd
-from streameucliddes.plotting.plot_cmd import plot_match_filter
+from streameucliddes.plotting.plot_style import COLORBAR_LABEL_SIZE
+from streameucliddes.plotting.plot_cmd import (
+    plot_hess,
+    plot_isochrone,
+    plot_match_filter,
+    plot_match_filter_polygon,
+    plot_on_off_difference_hess,
+)
 from streameucliddes.stream_frames import phi12_to_radec
 
 pytestmark = pytest.mark.plot_cmd
@@ -193,26 +200,84 @@ def test_plot_match_filter_errors(catalog):
 # Stubs of the candidate investigation (docs/dev/candidate_investigation_plan.md)
 
 
-@pytest.mark.skip(reason="stub")
+def _hess(density, area_deg2=1.0):
+    """A Hess diagram dict of a density array (n_color, n_mag)."""
+    n_color, n_mag = density.shape
+    return {"density": density, "counts": density, "error": np.ones_like(density), "area_deg2": area_deg2,
+            "color_edges": np.linspace(-1.0, 1.5, n_color + 1), "mag_edges": np.linspace(17.0, 27.0, n_mag + 1),
+            "n_stars": int(density.sum()), "color_label": "VIS - H", "mag_label": "VIS"}
+
+
+# The density drawn (transposed: magnitude on y), bright at the top, the labels, a colour bar per deg²;
+# counts: "N"; smoothing changes only the figure
 def test_plot_hess_runs():
-    """plot_hess on a synthetic Hess diagram; magnitude axis inverted."""
+    density = np.arange(12.0).reshape(3, 4)
+    fig, ax = plot_hess(_hess(density))
+    np.testing.assert_array_equal(ax.images[0].get_array(), density.T)
+    assert ax.get_ylim() == (27.0, 17.0) and (ax.get_xlabel(), ax.get_ylabel()) == ("VIS - H", "VIS")
+    assert "deg" in fig.axes[1].get_ylabel()
+    assert fig.axes[1].yaxis.label.get_size() == COLORBAR_LABEL_SIZE > ax.xaxis.label.get_size()
+    plt.close(fig)
+    fig, ax = plot_hess(_hess(density, area_deg2=None), norm="log", smoothing_bins=1.0)
+    assert fig.axes[1].get_ylabel() == "N" and not np.array_equal(ax.images[0].get_array(), density.T)
+    plt.close(fig)
+    with pytest.raises(ValueError, match="norm"):
+        plot_hess(_hess(density), norm="sqrt")
 
 
-@pytest.mark.skip(reason="stub")
+# difference=True: diverging colour map, limits -vlim, +vlim (default: a percentile of |density|)
 def test_plot_hess_difference_symmetric_limits():
-    """difference=True: colour limits -vlim, +vlim."""
+    density = np.linspace(-3.0, 1.0, 12).reshape(3, 4)
+    fig, ax = plot_hess(_hess(density), difference=True)
+    vmin, vmax = ax.images[0].get_clim()
+    assert vmin == -vmax and 0.0 < vmax <= 3.0 and ax.images[0].get_cmap().name == plot_cmd.HESS_DIFFERENCE_CMAP
+    plt.close(fig)
+    fig, ax = plot_hess(_hess(density), difference=True, vlim=5.0)
+    assert ax.images[0].get_clim() == (-5.0, 5.0)
+    plt.close(fig)
 
 
-@pytest.mark.skip(reason="stub")
-def test_plot_on_off_difference_hess_three_panels():
-    """Three panels with the same axes limits."""
+# Four panels by default (the difference also smoothed), three without; the same axes limits; the differences
+# with a diverging, symmetric scale; the isochrone on every panel
+def test_plot_on_off_difference_hess_panels():
+    density = np.random.default_rng(1).normal(0.0, 1.0, (12, 8))
+    on, off = _hess(density + 2.0), _hess(np.full((12, 8), 2.0))
+    difference = {**on, "density": density}
+    fig, axes = plot_on_off_difference_hess(on, off, difference)
+    assert len(axes) == 4
+    assert all(ax.get_xlim() == axes[0].get_xlim() and ax.get_ylim() == axes[0].get_ylim() for ax in axes)
+    np.testing.assert_array_equal(axes[2].images[0].get_array(), density.T)
+    assert np.std(axes[3].images[0].get_array()) < np.std(density)  # smoothed
+    for ax in axes[2:]:
+        vmin, vmax = ax.images[0].get_clim()
+        assert vmin == -vmax
+    plt.close(fig)
+    track = {"color": np.array([0.2, 0.4]), "mag": np.array([24.0, 21.0]), "age": 12.0, "metallicity": 0.0003,
+             "feh": None, "distance_modulus": 17.0}
+    fig, axes = plot_on_off_difference_hess(on, off, difference, smoothed_difference=False, isochrone_track=track)
+    assert len(axes) == 3 and all(len(ax.lines) == 1 for ax in axes)
+    plt.close(fig)
+    with pytest.raises(ValueError, match="panels"):
+        plot_on_off_difference_hess(on, off, difference, axes=axes)
 
 
-@pytest.mark.skip(reason="stub")
+# One line, the track's colour and magnitude, a default label with age, Z, [Fe/H] and dm
 def test_plot_isochrone_adds_line():
-    """One line, default label with age, Z and dm."""
+    fig, ax = plt.subplots()
+    track = {"color": np.array([0.2, 0.4]), "mag": np.array([24.0, 21.0]), "age": 12.0, "metallicity": 0.0003,
+             "feh": -1.75, "distance_modulus": 17.25}
+    line = plot_isochrone(ax, track)
+    np.testing.assert_array_equal(line.get_xydata(), [[0.2, 24.0], [0.4, 21.0]])
+    assert line.get_label() == "12 Gyr, Z = 0.0003 ([Fe/H] = -1.75), dm 17.25"
+    assert plot_isochrone(ax, track, label="mine").get_label() == "mine"
+    plt.close(fig)
 
 
-@pytest.mark.skip(reason="stub")
+# The polygon of the match filter, closed (last point = first)
 def test_plot_match_filter_polygon_closed():
-    """Closed outline: last point = first."""
+    fig, ax = plt.subplots()
+    line = plot_match_filter_polygon(ax, DM, ISOCHRONE)
+    polygon, = match_filter_polygons(DM, ISOCHRONE)
+    np.testing.assert_array_equal(line.get_xydata(), np.vstack([polygon, polygon[:1]]))
+    assert line.get_label() == "Match filter"
+    plt.close(fig)

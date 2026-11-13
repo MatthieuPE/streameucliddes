@@ -14,6 +14,7 @@ CATEGORICAL_COLORS = [
     "#000000",
 ]
 N_SERIES_MAX = 6
+COLORBAR_LABEL_SIZE = 11  # colour-bar labels: larger than the axis labels, their units in mathtext read small
 
 plt_params = {
     "figure.figsize": [3.5, 2.625],  # Single column width, 4:3 aspect ratio
