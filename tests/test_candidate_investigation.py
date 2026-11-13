@@ -2,9 +2,11 @@
 (uniform stars + a Gaussian stream along the arc between the endpoints)."""
 
 import numpy as np
+import pandas as pd
 import pytest
 
 from streameucliddes.analysis.candidate_investigation import CandidateInvestigation
+from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_METALLICITIES
 from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12
 from streameucliddes.unit_conversions import convert_FeH_to_z
@@ -85,6 +87,24 @@ def test_post_init_frame_window_box(rng):
     assert cand.endpoint_1 == ENDPOINTS[0] and all(isinstance(x, float) for x in cand.endpoint_1)
 
 
+NSIDE = 64  # coarse maps: fast tests
+NO_OBJECT_MASKS = {"mask_lmc": False, "mask_smc": False, "mask_dwarfs": False, "mask_gc": False, "mask_galaxies": False}
+
+
+@pytest.fixture(scope="module")
+def catalog():
+    """Uniform stars in a box around the endpoints, with the columns of the default match filter."""
+    rng = np.random.default_rng(3)
+    n = 50_000
+    vis = rng.uniform(18.0, 26.0, n)
+    return pd.DataFrame({
+        "ra": rng.uniform(58.0, 90.0, n),
+        "dec": np.degrees(np.arcsin(rng.uniform(*np.sin(np.radians([-52.0, -30.0])), n))),
+        "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
+    })
+
+
 # Isochrone: Z given, Z from [Fe/H], the default Z; both given: ValueError, also when set later
 def test_isochrone_from_metallicity_or_feh():
     assert CandidateInvestigation("test", *ENDPOINTS, age=12.0, metallicity=0.001).isochrone == {
@@ -133,3 +153,29 @@ def test_summary_keys():
 @pytest.mark.skip(reason="stub")
 def test_catalog_not_copied():
     """The kept catalog is the object given (no copy)."""
+
+
+# ===================================================
+# Test compute_sky_map
+# ===================================================
+
+
+# The map of generic_search_single_dm with the isochrone and match filter of the object; the
+# catalog kept, not copied; a given distance modulus over the field
+def test_compute_sky_map(catalog):
+    kwargs = {"nside": NSIDE, "smoothing_deg": 1.0, **NO_OBJECT_MASKS}
+    cand = CandidateInvestigation("test", *ENDPOINTS, feh=-1.5, distance_modulus=17.0)
+    assert cand.compute_sky_map(catalog, **kwargs) is cand
+    expected = generic_search_single_dm(catalog, 17.0, cand.isochrone, **kwargs)
+    for key in ("density", "residual"):
+        np.testing.assert_array_equal(np.ma.filled(cand.sky_map[key], np.nan), np.ma.filled(expected[key], np.nan))
+    assert cand.sky_map["isochrone"] == cand.isochrone and cand.sky_map["n_selected"] == expected["n_selected"]
+    assert cand.catalog is catalog
+    cand.compute_sky_map(catalog, 18.0, **kwargs)
+    assert cand.sky_map["distance_modulus"] == 18.0 and cand.distance_modulus == 17.0
+
+
+# No distance modulus given nor set: ValueError
+def test_compute_sky_map_needs_distance_modulus(catalog):
+    with pytest.raises(ValueError, match="distance_modulus"):
+        CandidateInvestigation("test", *ENDPOINTS).compute_sky_map(catalog, nside=NSIDE, **NO_OBJECT_MASKS)

@@ -58,6 +58,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
+from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, DEFAULT_METALLICITIES
 from streameucliddes.stream_frames import (
     DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
@@ -486,7 +487,10 @@ class CandidateInvestigation:
     ) -> CandidateInvestigation:
         """Matched-filter map of the loaded box, once (``generic_search_single_dm``).
 
-        Does not depend on the frame: ``set_endpoints`` keeps it.
+        The corrected map (``residual``) shows the streams of the box; the
+        frame check draws the great circle of the endpoints over it. Does not
+        depend on the frame: ``set_endpoints`` keeps it. The catalog is kept
+        in ``self.catalog`` (a reference), the default of ``prepare``.
 
         Parameters
         ----------
@@ -497,7 +501,9 @@ class CandidateInvestigation:
             Default: ``self.distance_modulus``.
         **generic_kwargs
             Arguments of ``generic_search_single_dm`` (``smoothing_deg``,
-            ``nside``...). The isochrone is that of the object.
+            ``polynomial_degree``) and of ``prepare_generic_search``
+            (``nside``, ``cuts``, ``mask_*``...). The isochrone and the match
+            filter are those of the object.
 
         Returns
         -------
@@ -508,7 +514,14 @@ class CandidateInvestigation:
         ValueError
             No distance modulus given nor set.
         """
-        raise NotImplementedError
+        distance_modulus = self.distance_modulus if distance_modulus is None else distance_modulus
+        if distance_modulus is None:
+            raise ValueError("compute_sky_map needs a distance_modulus: give one, or set cand.distance_modulus.")
+        self.sky_map = generic_search_single_dm(
+            catalog, distance_modulus, self.isochrone, match_filter=self.match_filter, **generic_kwargs
+        )
+        self.catalog = catalog
+        return self
 
     def prepare(
         self,

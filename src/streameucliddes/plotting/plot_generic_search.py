@@ -140,6 +140,7 @@ def plot_generic_search_residual_map(
     lat_range: tuple[float, float] | None = None,
     cmap: str = "gray_r",
     title: str | None = None,
+    ax: Axes | None = None,
 ) -> tuple[Figure, Axes]:
     """Corrected map of a generic search, with the known stream tracks over it.
 
@@ -168,6 +169,10 @@ def plot_generic_search_residual_map(
         Colour map.
     title : str, optional
         Default: the distance modulus and distance, and the isochrone.
+    ax : matplotlib.axes.Axes, optional
+        A plain axes of an existing figure, turned into the sky map (e.g. one
+        panel of several); the title is then that of the panel. Default: a
+        new figure, the title above it.
 
     Returns
     -------
@@ -181,7 +186,8 @@ def plot_generic_search_residual_map(
         lon_range = default_lon if lon_range is None else lon_range
         lat_range = default_lat if lat_range is None else lat_range
 
-    fig, ax = plt.subplots(figsize=(10.0, 7.0))
+    in_panel = ax is not None
+    fig, ax = (ax.figure, ax) if in_panel else plt.subplots(figsize=(10.0, 7.0))
     values = np.ma.compressed(result["residual"])
     vmin, vmax = tuple(np.percentile(values, DENSITY_PERCENTILES)) if values.size else (None, None)
     fig, ax = plot_2D_density_from_hp(
@@ -197,7 +203,11 @@ def plot_generic_search_residual_map(
     if label_tracks:
         _label_tracks(ax, tracks, footprint_mask, nest=result["nest"], alpha=KNOWN_TRACK_LABEL_ALPHA)
 
-    fig.suptitle(_title(result) if title is None else title)
+    title = _title(result) if title is None else title
+    if in_panel:
+        ax.set_title(title, pad=20)
+    else:
+        fig.suptitle(title)
     return fig, ax
 
 

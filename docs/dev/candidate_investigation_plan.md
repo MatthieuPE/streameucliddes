@@ -251,6 +251,12 @@ Done:
   that `feh=...` alone works. The notebook passes the DR1 match filter
   (`DEFAULT_MATCH_FILTER` has the Q1 columns). Candidate: window φ1 ±8.02,
   φ2 ±5 deg; box ra 60.6–86.7, dec −50.2 to −32.6 deg.
+- S2 (2026-11-13): `compute_sky_map` (generic_search_single_dm with the
+  object's isochrone and match filter; keeps the catalog reference);
+  `plot_generic_search_residual_map(..., ax=None)`: with `ax`, the map in
+  that panel and the title on the panel. Notebook: stars read in the window
+  box + `LOAD_MARGIN_DEG = 5` (ra 55.6–91.7, dec −55.2 to −27.6: 5.6 M
+  stars, 31 s with the map), `SKY_MAP_DM` an input.
 
 ## 4. New functions, by module
 
