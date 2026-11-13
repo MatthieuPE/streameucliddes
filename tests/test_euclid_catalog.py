@@ -174,11 +174,114 @@ def test_magnitude_columns(catalog_dir):
     assert added == set(euclid_catalog.magnitude_columns(catalog))
 
 
-def test_stars_default_cuts_no_warning(catalog_dir):
+@pytest.mark.parametrize("star_selection", euclid_catalog.STAR_SELECTIONS)
+def test_stars_default_cuts_no_warning(catalog_dir, star_selection):
     catalog, path, _ = catalog_dir
+    cuts = euclid_catalog.default_star_cuts(catalog, star_selection)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        euclid_catalog.get_euclid_stars(catalog, data_path=path, verbose=False)
+        euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+
+
+XGBOOST_PROB = euclid_catalog.XGBOOST_STAR_PROB_COLUMN
+
+
+@pytest.mark.parametrize("catalog", CATALOG_NAMES)
+def test_star_selections(catalog):
+    """Same quality cuts; morphology cuts or a classifier cut."""
+    morphology = euclid_catalog.default_star_cuts(catalog)
+    classifier = euclid_catalog.default_star_cuts(catalog, "xgboost_classifier")
+    morphology_columns = {euclid_catalog.euclid_column(catalog, c) for c in euclid_catalog.MORPHOLOGY_STAR_CUTS}
+    assert morphology_columns <= set(morphology)
+    assert XGBOOST_PROB not in morphology
+    assert classifier[XGBOOST_PROB] == (euclid_catalog.XGBOOST_MIN_STAR_PROB, None)
+    assert not morphology_columns & set(classifier)
+    assert ({c: s for c, s in morphology.items() if c not in morphology_columns}
+            == {c: s for c, s in classifier.items() if c != XGBOOST_PROB})
+
+
+@pytest.mark.parametrize("star_selection", euclid_catalog.STAR_SELECTIONS)
+def test_star_cut_thresholds(star_selection):
+    catalog = CATALOG_NAMES[1]
+    point_like = euclid_catalog.euclid_column(catalog, "POINT_LIKE_PROB")
+    cuts = euclid_catalog.default_star_cuts(
+        catalog, star_selection, min_point_like_prob=0.8, min_xgboost_star_prob=0.7
+    )
+    assert cuts[point_like] == (0.8, None)
+    assert cuts[XGBOOST_PROB] == (0.7, None)
+
+
+def test_unknown_star_selection():
+    with pytest.raises(ValueError, match="morphology_cuts"):
+        euclid_catalog.default_star_cuts(CATALOG_NAMES[0], "neural_network")
+
+
+def test_add_xgboost_star_prob(catalog_dir):
+    catalog, _, data = catalog_dir
+    feature_names = euclid_catalog.star_classifier.load_star_classifier().feature_names
+    expected = euclid_catalog.star_classifier.star_probability(
+        {name: data[euclid_catalog.euclid_column(catalog, name.upper())] for name in feature_names}
+    )
+    added = euclid_catalog.add_xgboost_star_prob(data.copy(), catalog)
+    np.testing.assert_array_equal(added[XGBOOST_PROB], expected)
+    with pytest.raises(KeyError, match="MAG_STARGAL_SEP"):
+        euclid_catalog.add_xgboost_star_prob(
+            data.drop(columns=euclid_catalog.euclid_column(catalog, "MAG_STARGAL_SEP")), catalog
+        )
+
+
+def _median_xgboost_cuts(catalog, data):
+    """Classifier selection whose threshold about half the mock sources pass."""
+    probability = euclid_catalog.add_xgboost_star_prob(data.copy(), catalog)[XGBOOST_PROB]
+    return euclid_catalog.default_star_cuts(
+        catalog, "xgboost_classifier", min_xgboost_star_prob=float(np.median(probability))
+    )
+
+
+def test_stars_xgboost_classifier(catalog_dir):
+    catalog, path, data = catalog_dir
+    all_rows = euclid_catalog.add_xgboost_star_prob(euclid_catalog.add_magnitudes(data.copy(), catalog), catalog)
+    cuts = _median_xgboost_cuts(catalog, data)
+    threshold = cuts[XGBOOST_PROB][0]
+    stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
+    assert (stars[XGBOOST_PROB] >= threshold).all()
+
+    read = euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False)
+    from_data = euclid_catalog.get_euclid_stars(catalog, data=read, cuts=cuts, verbose=False)
+    pd.testing.assert_frame_equal(stars, from_data)
+
+
+@pytest.mark.parametrize("star_selection", euclid_catalog.STAR_SELECTIONS)
+def test_stars_by_batches(catalog_dir, monkeypatch, star_selection):
+    """Reading by small batches gives the stars of a single batch, 64-bit ids included."""
+    catalog, path, data = catalog_dir
+    cuts = (_median_xgboost_cuts(catalog, data) if star_selection == "xgboost_classifier"
+            else euclid_catalog.default_star_cuts(catalog))
+    columns = euclid_catalog.default_columns(catalog) + [euclid_catalog.euclid_column(catalog, "GAIA_ID")]
+    kwargs = dict(cuts=cuts, columns=columns, data_path=path, verbose=False)
+    one_batch = euclid_catalog.get_euclid_stars(catalog, **kwargs)
+    monkeypatch.setattr(euclid_catalog, "READ_BATCH_SIZE", len(data) // 20)
+    by_batches = euclid_catalog.get_euclid_stars(catalog, **kwargs)
+    assert len(by_batches) > 0
+    pd.testing.assert_frame_equal(by_batches, one_batch)
+
+
+@pytest.mark.parametrize("cut", ["catalog column", "magnitude", "classifier"])
+def test_stars_none_selected(catalog_dir, cut):
+    """No star passes: an empty table with all the columns."""
+    catalog, path, _ = catalog_dir
+    expected_columns = euclid_catalog.default_columns(catalog) + euclid_catalog.magnitude_columns(catalog)
+    if cut == "catalog column":  # nothing read
+        cuts = {euclid_catalog.euclid_column(catalog, "OBJECT_ID"): -1}
+    elif cut == "magnitude":  # rows read, none selected
+        cuts = {f"{euclid_catalog.euclid_survey(catalog).namespace}_VIS_obs": (100.0, None)}
+    else:  # rows read, none passing the classifier cut
+        cuts = {XGBOOST_PROB: (2.0, None)}
+        expected_columns.append(XGBOOST_PROB)
+    stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    assert len(stars) == 0
+    assert list(stars.columns) == expected_columns
 
 
 def test_stars_unknown_cut_column(catalog_dir):
