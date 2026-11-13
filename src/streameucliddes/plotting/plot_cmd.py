@@ -57,6 +57,10 @@ def plot_CMD(
     To plot 2D hist in the CMD
 
     data must be data frame of dict.
+
+    To be changed (candidate investigation, step S7): the counts computed by
+    ``analysis.cmd_match_filter.hess_diagram`` and drawn by ``plot_hess``,
+    same signature and defaults.
     """
 
     if fig is None or ax is None:
@@ -261,26 +265,33 @@ def plot_hess(
     ax: Axes | None = None,
     difference: bool = False,
     cmap: str | None = None,
+    norm: str | None = None,
     vlim: float | None = None,
     smoothing_bins: float = 0.0,
     colorbar: bool = True,
     title: str | None = None,
 ) -> tuple[Figure, Axes]:
-    """One Hess diagram: on, off or on - off, in stars / deg² / bin.
+    """Draw a colour-magnitude 2D histogram: counts, a Hess diagram, or on - off.
 
+    The only function that draws CMD histograms: ``plot_CMD`` computes its
+    counts with ``analysis.cmd_match_filter.hess_diagram`` and calls it.
     Colour on x, magnitude on y, inverted. With ``difference``, a diverging
-    colour map and symmetric limits ``±vlim``, so that 0 is white.
+    colour map and symmetric limits ``±vlim``, so that 0 is white. Draws
+    only: the histogram is computed by ``hess_diagram`` or ``difference_hess``.
 
     Parameters
     ----------
     hess : mapping
-        From ``analysis.hess_diagrams.hess_diagram`` or ``difference_hess``.
+        From ``analysis.cmd_match_filter.hess_diagram`` (counts, or per deg²
+        with an area) or ``difference_hess``.
     ax : matplotlib.axes.Axes, optional
         Axes to draw on. Default: a new figure.
     difference : bool, optional
         Draw an on - off diagram.
     cmap : str, optional
         Default: ``HESS_DIFFERENCE_CMAP`` with ``difference``, else ``HESS_CMAP``.
+    norm : {None, "log"}, optional
+        Colour scale of a diagram that is not a difference.
     vlim : float, optional
         Limit of the colour scale. Default: with ``difference``, the
         ``HESS_DIFFERENCE_PERCENTILE`` percentile of ``|density|``; else the
@@ -290,7 +301,7 @@ def plot_hess(
         (``scipy.ndimage.gaussian_filter``); 0: none. Only the figure is
         smoothed.
     colorbar : bool, optional
-        Add a colour bar, ``HESS_COLORBAR_LABEL``.
+        Add a colour bar: ``HESS_COLORBAR_LABEL`` per deg², "N" for counts.
     title : str, optional
         Default: the number of stars and the area.
 
@@ -321,7 +332,7 @@ def plot_on_off_difference_hess(
     Parameters
     ----------
     on_hess, off_hess, diff_hess : mapping
-        From ``analysis.hess_diagrams``.
+        From ``analysis.cmd_match_filter.hess_diagram`` and ``difference_hess``.
     axes : sequence of three matplotlib.axes.Axes, optional
         Default: a new figure.
     **kwargs

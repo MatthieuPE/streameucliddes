@@ -28,7 +28,13 @@ import numpy as np
 import pandas as pd
 from gala.coordinates.greatcircle import sph_midpoint
 
-from streameucliddes.stream_frames import radec_to_phi12
+from streameucliddes.stream_frames import (
+    DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
+    DEFAULT_PADDING_PHI1_DEG,
+    DEFAULT_PADDING_PHI2_DEG,
+    phi12_window_around,
+    radec_to_phi12,
+)
 from streameucliddes.unit_conversions import convert_kpc_to_DM
 
 if TYPE_CHECKING:
@@ -240,18 +246,16 @@ def galstreams_phi12_window(
     *,
     footprint_mask: NDArray[np.bool_] | None = None,
     nest: bool | None = None,
-    padding_phi1_deg: float = 5.0,
-    padding_phi2_deg: float = 2.0,
-    min_phi2_half_width_deg: float = 5.0,
+    padding_phi1_deg: float = DEFAULT_PADDING_PHI1_DEG,
+    padding_phi2_deg: float = DEFAULT_PADDING_PHI2_DEG,
+    min_phi2_half_width_deg: float = DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
 ) -> tuple[float, float, float, float]:
     """phi1/phi2 window of the maps of a known stream, in its galstreams frame.
 
     Around the track, or, with ``footprint_mask``, around its part inside
     the footprint (the segments of ``galstreams_track_length_in_footprint``,
-    without distance cut): where there are both data and the track. phi1
-    covers it plus ``padding_phi1_deg`` on each side. phi2 is centred on it:
-    its extent plus ``padding_phi2_deg`` on each side, and at least
-    ``min_phi2_half_width_deg`` on each side of its centre.
+    without distance cut): where there are both data and the track
+    (``stream_frames.phi12_window_around`` of these points).
 
     Parameters
     ----------
@@ -280,10 +284,9 @@ def galstreams_phi12_window(
     Notes
     -----
     Adapted from celestial_currents
-    ``visualization.py::get_stream_phi12_bounds`` (its phi1 padding is 10
-    deg, 5 deg here; same phi2 defaults, but its phi2 range always includes
-    -5 to 5 deg, around phi2 = 0, not around the track). Its per-stream
-    overrides are left out: pass another window instead.
+    ``visualization.py::get_stream_phi12_bounds`` (see
+    ``stream_frames.phi12_window_around``). Its per-stream overrides are left
+    out: pass another window instead.
     """
     phi1, phi2 = _track_phi12(track)
     if footprint_mask is not None:
@@ -296,13 +299,9 @@ def galstreams_phi12_window(
         in_footprint[:-1] |= kept
         in_footprint[1:] |= kept
         phi1, phi2 = phi1[in_footprint], phi2[in_footprint]
-    phi2_centre = (phi2.min() + phi2.max()) / 2
-    phi2_half_width = max((phi2.max() - phi2.min()) / 2 + padding_phi2_deg, min_phi2_half_width_deg)
-    return (
-        float(phi1.min() - padding_phi1_deg),
-        float(phi1.max() + padding_phi1_deg),
-        float(phi2_centre - phi2_half_width),
-        float(phi2_centre + phi2_half_width),
+    return phi12_window_around(
+        phi1, phi2, padding_phi1_deg=padding_phi1_deg, padding_phi2_deg=padding_phi2_deg,
+        min_phi2_half_width_deg=min_phi2_half_width_deg,
     )
 
 

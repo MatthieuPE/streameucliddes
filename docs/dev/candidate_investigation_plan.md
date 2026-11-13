@@ -74,8 +74,8 @@ Review of the plan (user, 2026-11-13, second round):
   areas.
 - The phi2 and phi1 profiles are densities (stars/deg²): each bin divided by
   its area outside the excluded mask (Euclid tile edges and masked objects
-  would otherwise make dips that bias the width fit). Hence the names
-  `phi2_density_profile`, `phi1_density_profile`.
+  would otherwise make dips that bias the width fit). One function for both
+  (`phi12_density_profile`, Sect. 4 C4).
 - Isochrone: reuse `streamobs.match_filter._isochrone_locus`, the function
   `build_match_filter` calls (same model by construction).
 - phi1 margin of the window: `padding_phi1_deg = 5.0`, the same name and
@@ -183,12 +183,15 @@ Done 2026-11-13. Changes from Section 4, made while writing the stubs:
   return the lines they add (the regions test counts 3); `plot_isochrone`
   and `plot_match_filter_polygon` return their line; `plot_*` return
   `(fig, ax)`. `draw_stream_track` has `phi2_offset_deg`.
-- `phi1_density_profile` has a `phi1_range` for its bins (default:
+- `on_off_phi1_profile` has a `phi1_range` for its bins (default:
   `regions["phi1_range"]`), so that the profile can extend over the window
   and show where the stream stops.
-- Default Hess ranges: `DEFAULT_COLOR_RANGE = (-1.0, 1.5)`,
-  `DEFAULT_MAG_RANGE = (17.0, 27.0)` (VIS − H, VIS), those of the CMDs of
-  the known-stream notebook.
+- Second review (user, 2026-11-13): window code in `stream_frames.py` only,
+  one window format (`phi12_window_around` shared with
+  `galstreams_phi12_window`; regions as windows); no `stream_regions.py` nor
+  `hess_diagrams.py`; Hess diagrams computed in `cmd_match_filter.py` and
+  drawn by `plot_hess` only, which `plot_CMD` will call. Section 4 is
+  rewritten for this layout.
 - `run` renamed `run_all_steps` (user, 2026-11-13, a more explicit name):
   `run_all_steps(catalog, *, footprint_mask=None, nest=False)`: every other input comes
   from the fields.
@@ -224,299 +227,189 @@ Then:
 
 | Step | Notebook section (Sect. 5) | Functions | Class | Plots |
 |---|---|---|---|---|
-| S1 | 1–2 Inputs, frame, window | C1: `stream_frame_from_endpoints`, `endpoints_phi12_window`, `phi12_window_radec_box`, `great_circle_radec`, `window_outline_radec` | dataclass fields, `__post_init__` | — |
+| S1 | 1–2 Inputs, frame, window | C1: `stream_frame_from_endpoints`, `phi12_window_radec_box`, `phi12_window_outline` (`phi12_window_around` done) | dataclass fields, `__post_init__` | — |
 | S2 | 3 Catalog, MF map of the loaded box | (existing `generic_search_single_dm`) | `compute_sky_map` | (existing `plot_generic_search_residual_map`, + `ax` argument) |
-| S3 | 4 Frame check, endpoints by hand | (existing `prepare_search`, `stream_frame_search_single_dm`); `excluded_healpix_mask` (Masks, Sect. 1) | `prepare`, `compute_zoom_map`, `set_endpoints` | `plot_candidate_frame_check`, `draw_stream_track_on_sky`, `draw_stream_track` |
-| S4 | 5 MF maps over dm, in the frame | C3: `stream_track_phi12`, `stream_track_radec` | `scan_distance_moduli`, `track_phi12`, `track_radec` | `plot_candidate_map` (without regions) |
-| S5 | 6 Width | C3: `phi2_density_profile`, `fit_stream_width` | `fit_width` | `plot_phi2_profile` |
-| S6 | 7 Regions | C3: `stream_regions`, `on_stream_mask`, `off_stream_mask`, `phi1_density_profile`, `region_area_deg2` | `define_regions` | `draw_stream_regions`, `plot_phi1_profile`; regions in `plot_candidate_map` |
-| S7 | 8 CMDs | C4: `hess_diagram`, `difference_hess` | `compute_hess` | `plot_hess`, `plot_on_off_difference_hess`, `plot_candidate_hess` |
+| S3 | 4 Frame check, endpoints by hand | (existing `prepare_search`, `stream_frame_search_single_dm`); C3: `excluded_healpix_mask` | `prepare`, `compute_zoom_map`, `set_endpoints` | `plot_candidate_frame_check`, `draw_stream_track_on_sky`, `draw_stream_track` |
+| S4 | 5 MF maps over dm, in the frame | — | `scan_distance_moduli`, `track_phi12`, `track_radec` | `plot_candidate_map` (without regions) |
+| S5 | 6 Width | C3: `unmasked_area_deg2`; C4: `phi12_density_profile`, `fit_stream_width` | `fit_width` | `plot_phi2_profile` |
+| S6 | 7 Regions | C1: `in_phi12_window`; C4: `stream_regions`, `region_windows`, `region_area_deg2`, `on_off_phi1_profile` | `define_regions` | `draw_stream_regions`, `plot_phi1_profile`; regions in `plot_candidate_map` |
+| S7 | 8 CMDs | C5: `hess_diagram`, `difference_hess` | `compute_hess` | `plot_hess` (and `plot_CMD` through it), `plot_on_off_difference_hess`, `plot_candidate_hess` |
 | S8 | 9 Isochrone | C5: `isochrone_cmd_track` | `compute_isochrone` | `plot_isochrone`, `plot_match_filter_polygon`; isochrone in `plot_candidate_hess` |
 | S9 | 10–11 Summary, all at once | — | `summary`, `run_all_steps` | `plot_candidate_overview` |
 
 Sections C1–C7 below describe the functions; the table says when each is filled.
 
-## 4. New functions
+## 4. New functions, by module
 
-`[NEW]` = new. Plain dicts are described by their keys.
+Layout after the second review of the stubs (user, 2026-11-13): window code
+in one place (`stream_frames.py`), one window format, few modules. The
+docstrings of the stubs are the reference for the signatures; this section
+says what goes where and what each test checks. Plain dicts are described
+by their keys.
 
-### C1. Frame from endpoints — `stream_frames.py`
+A **window** is `(phi1_min, phi1_max, phi2_min, phi2_max)` (deg): the window
+of the maps, the on region and each off band.
 
-```python
-def stream_frame_from_endpoints(endpoint_1, endpoint_2):
-    """Great-circle frame through two (ra, dec) points (deg), phi1 along the arc.
-    gala GreatCircleICRSFrame.from_endpoints. Returns the frame."""
+### C1. Windows and frame — `stream_frames.py`
 
-def endpoints_phi12_window(stream_frame, endpoint_1, endpoint_2, *,
-                           phi2_halfwidth_deg=DEFAULT_PHI2_HALFWIDTH_DEG,
-                           padding_phi1_deg=DEFAULT_PADDING_PHI1_DEG):
-    """(phi1_min, phi1_max, phi2_min, phi2_max) around the arc between the endpoints.
-    padding_phi1_deg on each side in phi1 (5.0, as galstreams_phi12_window)."""
-
-def great_circle_radec(stream_frame, *, phi1_range=(-180.0, 180.0), n_points=721):
-    """(ra, dec) of the great circle phi2 = 0 of a frame, for sky maps."""
-
-def window_outline_radec(stream_frame, window, *, n_points_per_edge=50):
-    """(ra, dec) of the outline of a phi1/phi2 window, for sky maps."""
-
-def phi12_window_radec_box(stream_frame, window, *, margin_deg=0.5):
-    """(ra_range, dec_range) of the box containing a phi1/phi2 window, for
-    get_euclid_stars. Edges of the window sampled, converted with phi12_to_radec,
-    min/max plus a margin. Handles the ra = 0/360 wrap (warn if crossed)."""
-```
-
-- gala's default origin is the midpoint (phi1 = 0), endpoint_1 at negative
-  phi1 (Sect. 1, facts checked). Write it in the docstring.
-- `DEFAULT_PHI2_HALFWIDTH_DEG = 3.0`: wide enough for the off bands
-  (4.5σ for σ up to ~0.5 deg) plus a margin. No reference: a practical choice.
-- Tests: both endpoints at phi2 = 0 (to 1e-8 deg); their phi1 symmetric
-  around 0; window contains them; round trip with `phi12_to_radec`.
+- `phi12_window_around(phi1, phi2, *, padding_phi1_deg=5, padding_phi2_deg=2,
+  min_phi2_half_width_deg=5)`: the core of `galstreams_phi12_window`, moved
+  here (done in Phase B; `galstreams_phi12_window` calls it, unchanged).
+  The candidate window is `phi12_window_around` of its two endpoints:
+  phi1 between them ± 5 deg, phi2 ±5 deg (min half-width).
+- `in_phi12_window(phi1, phi2, window)`: stars in a window (on region, off
+  bands).
+- `phi12_window_outline(window, *, n_points_per_edge=50)`: closed outline in
+  phi1/phi2; on the sky with `phi12_to_radec`.
+- `phi12_window_radec_box(stream_frame, window, *, margin_deg=0.5)`: (ra,
+  dec) box from the outline, for `get_euclid_stars`; warns across ra = 0.
+- `stream_frame_from_endpoints(endpoint_1, endpoint_2)`: gala
+  `GreatCircleICRSFrame.from_endpoints` (Sect. 1, facts). The great circle
+  on a sky map is `phi12_to_radec(phi1, 0, frame)`: no function.
+- Tests: window around points (done); `in_phi12_window` edges; outline
+  closed; box contains the window, wrap warning; endpoints at phi2 = 0 (1e-8
+  deg), phi1 symmetric, endpoint_1 negative.
 
 ### C2. MF map of the candidate — no new function
 
 `prepare_search(catalog, stream_frame=frame, window=window, footprint_mask=..., nest=..., isochrone=..., distance_moduli=...)`,
 then `stream_frame_search_single_dm(search=search, distance_modulus=dm)` or
-`stream_frame_search_dm_scan(search=search)`. Only notebook cells. If
-something blocks a frame without a track, report it before changing
-`prepare_search`.
+`stream_frame_search_dm_scan(search=search)`. If something blocks a frame
+without a track, report it before changing `prepare_search`.
 
-### C3. Regions and width — `analysis/stream_regions.py` [NEW module]
+### C3. Masks and areas — `analysis/build_masks.py`, `catalogs/survey_footprint.py`
+
+- `build_masks.excluded_healpix_mask(footprint_mask, object_healpix_mask, *, nest)`
+  → `(mask, nside)`, RING (Sect. 1, Masks).
+- `survey_footprint.unmasked_area_deg2(stream_frame, phi1_edges, phi2_edges,
+  excluded_healpix_mask, *, step_deg=0.01)`: area of each cell outside the
+  mask (fine grid, cos(phi2) weights, pixel look-up as
+  `survey_footprint_phi12_mask`, sharing a private helper). A window is one
+  cell.
+- Tests: footprint upgraded to the object nside; OR of the objects; no
+  objects; coarser objects rejected. No mask: area Δφ1 · (sin φ2,max − sin
+  φ2,min) · (180/π)² within 1 %; half the sky masked: about half; cells sum
+  to the whole window.
+
+### C4. Regions, profiles, width, and the class — `analysis/candidate_investigation.py`
+
+No `stream_regions.py` (user, 2026-11-13: it would only hold the regions
+dict, the profiles and the width fit, all candidate-specific). Functions
+first, then the class (C7).
 
 ```python
 DEFAULT_ON_N_SIGMA = 1.4          # user choice
 DEFAULT_OFF_N_SIGMA = (2.5, 4.5)  # user choice
+DEFAULT_SIGMA_GUESS_DEG = 0.2
 DEFAULT_PHI2_BIN_DEG = 0.05
-DEFAULT_SIGMA_GUESS_DEG = 0.2    # initial sigma of the width fit
+DEFAULT_PHI1_BIN_DEG = 0.5
 
-def stream_regions(phi1_range, phi2_centre=0.0, sigma=DEFAULT_SIGMA_GUESS_DEG, *,
-                   on_n_sigma=DEFAULT_ON_N_SIGMA, off_n_sigma=DEFAULT_OFF_N_SIGMA):
-    """Plain dict {phi1_range, phi2_centre, sigma, on_n_sigma, off_n_sigma}.
-    Edit it by hand in the notebook if needed."""
-
-def on_stream_mask(phi1, phi2, regions):
-    """True for |phi2 - phi2_centre| <= on_n_sigma*sigma and phi1 in phi1_range."""
-
-def off_stream_mask(phi1, phi2, regions):
-    """True for off_n_sigma[0]*sigma <= |phi2 - phi2_centre| <= off_n_sigma[1]*sigma, phi1 in range."""
-
-def phi2_density_profile(phi1, phi2, phi1_range, stream_frame, excluded_healpix_mask, *,
-                         phi2_range, bin_deg=DEFAULT_PHI2_BIN_DEG, step_deg=0.01):
-    """Density of stars (e.g. MF-selected, stars/deg²) in phi2 bins, over phi1_range:
-    counts / area of each bin outside excluded_healpix_mask (unmasked_area_deg2).
-    Dict {phi2_centres, counts, area_deg2, density, error, bin_deg}."""
-
-def fit_stream_width(profile, *, phi2_centre_guess=0.0, sigma_guess=DEFAULT_SIGMA_GUESS_DEG):
-    """Gaussian + constant fitted to a phi2 density profile (scipy.optimize.curve_fit,
-    Poisson errors sqrt(counts)/area). Dict {phi2_centre, sigma, amplitude, background, errors, model}."""
-
-def phi1_density_profile(phi1, phi2, regions, stream_frame, excluded_healpix_mask, *,
-                         bin_deg=0.5, step_deg=0.01):
-    """On − off density (stars/deg²) along phi1, each phi1 bin of the on region and
-    of the off bands divided by its own area outside the mask (unmasked_area_deg2),
-    to see where the stream starts and stops. Dict {phi1_centres, on, off, difference, error}."""
-
-def unmasked_area_deg2(stream_frame, phi1_edges, phi2_edges, excluded_healpix_mask, *,
-                       step_deg=0.01):
-    """Area (deg²) of each phi1/phi2 cell outside excluded_healpix_mask (RING).
-    Fine grid of step_deg, cos(phi2) weights, -> (ra, dec) -> HEALPix pixel
-    (nside from the mask size) -> kept if not excluded. Shape (n_phi1, n_phi2).
-    Shared by region_area_deg2 and the two profiles."""
-
-def region_area_deg2(regions, stream_frame, excluded_healpix_mask, *, step_deg=0.01):
-    """Areas (deg²) of the on and off regions outside excluded_healpix_mask
-    (unmasked_area_deg2 on the region edges). Dict {on, off}."""
-
-def stream_track_phi12(regions, n_points=100):
-    """(phi1, phi2) of the straight track: phi2 = phi2_centre over phi1_range."""
-
-def stream_track_radec(regions, stream_frame, n_points=100):
-    """Same track in (ra, dec), for sky maps (phi12_to_radec)."""
+stream_regions(phi1_range, phi2_centre=0.0, sigma=DEFAULT_SIGMA_GUESS_DEG, *, on_n_sigma, off_n_sigma)
+    # plain dict, edit it by hand
+region_windows(regions)            # {"on": window, "off": (below, above)}, computed each time
+region_area_deg2(regions, stream_frame, excluded_healpix_mask)   # {"on", "off"} deg²
+phi12_density_profile(phi1, phi2, windows, stream_frame, excluded_healpix_mask, *,
+                      axis, bin_deg, axis_range=None)
+    # one function for both profiles: counts in bins along phi1 or phi2,
+    # over one or more windows, / unmasked area of each bin -> stars/deg²
+fit_stream_width(profile, *, phi2_centre_guess=0.0, sigma_guess=DEFAULT_SIGMA_GUESS_DEG)
+    # Gaussian + constant, curve_fit, Poisson errors (Shipp et al. 2018)
+on_off_phi1_profile(phi1, phi2, regions, stream_frame, excluded_healpix_mask, *,
+                    phi1_range=None, bin_deg=DEFAULT_PHI1_BIN_DEG)
+    # on and off (two bands) profiles along phi1, and on - off
 ```
 
-- `excluded_healpix_mask` = footprint mask (True outside) OR masked objects,
-  RING, at `object_mask_nside(bin_size_deg)`, from
-  `build_masks.excluded_healpix_mask` (Sect. 1, Masks). Built by the class,
-  never in the notebook.
-- The window must contain the off bands: check it in the notebook with an
-  `assert`, not in the package.
-- Tests (synthetic): uniform stars + Gaussian stream of known centre and σ →
-  `fit_stream_width` recovers them within 3 errors; on and off masks are
-  disjoint; `unmasked_area_deg2` / `region_area_deg2` with no mask matches the analytic area
-  Δφ1 · (sin φ2,max − sin φ2,min) · (180/π)² within 1 %; with half the sky
-  masked, about half the area; a uniform population with half the sky
-  masked gives a flat `phi2_density_profile`.
+- No track function: the track is straight, `CandidateInvestigation.track_phi12`
+  and `track_radec` draw it (phi2 = phi2_centre over phi1_range; phi2 = 0
+  between the endpoints before the regions).
+- Tests (synthetic): regions keys, overlap rejected; windows disjoint;
+  region areas analytic; uniform stars with half the window masked give a
+  flat phi2 density; two windows add up; uniform + Gaussian stream → centre
+  and σ recovered within 3 errors; on − off along phi1 ≈ 0 without stream,
+  positive only where the stream is.
 
-### C4. Hess diagrams — `analysis/hess_diagrams.py` [NEW module]
+### C5. CMDs, Hess diagrams, isochrone — `analysis/cmd_match_filter.py`
 
-```python
-DEFAULT_COLOR_BIN = 0.04     # celestial hess.py defaults
-DEFAULT_MAG_BIN = 1 / 6
+Computed here, drawn by `plotting/plot_cmd.py` (`analysis/` computes,
+`plotting/` draws). No `hess_diagrams.py`.
 
-def hess_diagram(stars, mask, area_deg2, *, match_filter=None, color_index=0,
-                 color_bins=None, mag_bins=None):
-    """2D histogram of colour (reference - color_bands[color_index]) and magnitude
-    (reference band) of stars[mask], divided by area_deg2.
-    Dict {density (stars/deg²/bin, shape (n_color, n_mag)), counts, error
-    (sqrt(counts)/area), color_edges, mag_edges, area_deg2, n_stars,
-    color_label, mag_label}."""
+- `hess_diagram(stars, mag_cols, *, mask=None, area_deg2=None,
+  color_bins=None, mag_bins=None)`: 2D histogram of colour `mag_cols[0] −
+  mag_cols[1]` and magnitude `mag_cols[0]` (the convention of the polygons
+  and of `plot_CMD`); counts, or stars/deg²/bin with `area_deg2`. Defaults:
+  `DEFAULT_COLOR_RANGE = (-1.0, 1.5)`, `DEFAULT_MAG_RANGE = (17, 27)`, bins
+  0.04 and 1/6 mag (celestial `hess.py`). Shipp et al. 2018, Sect. 5.
+- `difference_hess(on_hess, off_hess)`: on − off, errors in quadrature;
+  `ValueError` if the bins differ.
+- `isochrone_cmd_track(distance_modulus, age, metallicity=None, *, feh=None,
+  match_filter=None, color_index=0)`: `streamobs.match_filter._isochrone_locus`
+  (model `ISOCHRONE_MODEL = "Marigo2017"`, band_1 = reference band, surveys
+  as `match_filter_polygons`), + dm. Here, not in `catalogs/`: it needs the
+  match filter, and `catalogs/` must not import `analysis/`.
+- Tests: counts without area; one star in 2 deg² → 0.5 in one bin; mask;
+  on and off from one uniform population, areas 1 and 3 → |diff|/error ~
+  N(0, 1); different bins rejected. Isochrone: dm 20 = dm 15 + 5 mag, same
+  colour; feh −1.9 → Z ≈ 0.0002; MSTO part inside the polygon; exactly one
+  of Z and feh.
 
-def difference_hess(on_hess, off_hess):
-    """on - off densities, errors in quadrature. Same dict keys.
-    Raises ValueError if the bin edges differ."""
-```
-
-- Columns from `match_filter_columns(match_filter)`, as the MF; `stars` is
-  `search.stars`.
-- Default bins: from the MF polygon extent, or fixed ranges as module
-  constants. Same bins for on and off (the notebook passes them).
-- Tests: on and off drawn from the same uniform population, areas 1 and 3 →
-  difference consistent with 0 (|diff| / error ~ N(0, 1)); density of a
-  single star in a 2 deg² region is 0.5 in one bin.
-- Background-subtracted Hess diagrams as in Shipp et al. 2018, Sect. 5.
-
-### C5. Isochrone — `catalogs/isochrone_parameters.py`
-
-```python
-def isochrone_cmd_track(distance_modulus, age, metallicity=None, *, feh=None,
-                        match_filter=None, color_index=0):
-    """Colour and magnitude of an isochrone in the bands of a match filter,
-    at a distance modulus. Exactly one of metallicity (Z) or feh.
-    Dict {color, mag, age, metallicity, feh, distance_modulus}."""
-```
-
-- Call `streamobs.match_filter._isochrone_locus(isochrone_model, age, Z,
-  band_1, survey_1, band_2, survey_2)`, the function `build_match_filter`
-  calls (model "Marigo2017", band_1 = reference band, so colour = reference −
-  colour band, as the polygons). Absolute magnitude + distance_modulus. Private
-  in streamobs: say it in the docstring. The track and the MF polygon then
-  come from the same model.
-- `feh` → Z with `unit_conversions.convert_FeH_to_z`. Check that it matches
-  the Marigo et al. 2017 scale used elsewhere (module docstring of
-  `isochrone_parameters`).
-- Tests: the track at dm = 20 is the track at dm = 15 shifted by 5 mag in
-  magnitude, same colour; `feh=-1.9` gives Z ≈ 0.0002 (within the grid
-  step); the track lies inside the MF polygon at the same dm (most points
-  of the main sequence turn-off region).
-
-### C6. Plots — `plotting/plot_cmd.py` and `plotting/plot_candidate_investigation.py` [NEW module]
+### C6. Plots — `plotting/plot_cmd.py`, `plotting/plot_candidate_investigation.py`
 
 In `plot_cmd.py`:
 
-```python
-def plot_hess(hess, *, ax=None, difference=False, cmap=None, vlim=None,
-              smoothing_bins=0.0, colorbar=True, title=None):
-    """One Hess diagram (on, off or on - off). Magnitude axis inverted.
-    difference=True: diverging cmap (RdBu_r), symmetric limits ±vlim
-    (default: 98th percentile of |density|). Colour bar 'stars / deg² / bin'.
-    Returns (fig, ax)."""
+- `plot_hess(hess, *, ax=None, difference=False, cmap=None, norm=None,
+  vlim=None, smoothing_bins=0.0, colorbar=True, title=None)`: the only
+  function drawing CMD histograms (counts, per deg², or on − off with RdBu_r
+  and symmetric limits ±vlim, default 98th percentile of |density|).
+- `plot_CMD` keeps its signature and defaults (used by the notebooks); in
+  S7 its body becomes `hess_diagram(...)` then `plot_hess(...)` (user,
+  2026-11-13: one drawing path).
+- `plot_on_off_difference_hess`, `plot_isochrone`, `plot_match_filter_polygon`
+  (factored out of `plot_match_filter`, which then calls it).
 
-def plot_on_off_difference_hess(on_hess, off_hess, diff_hess, *, axes=None, **kwargs):
-    """Three panels side by side, same axes limits; calls plot_hess three times."""
+In `plot_candidate_investigation.py` (one module, user 2026-11-13):
 
-def plot_isochrone(ax, isochrone_track, *, color="k", lw=1.0, label=None):
-    """Draws isochrone_cmd_track output on a CMD axes. Default label:
-    age, Z ([Fe/H]), dm."""
-
-def plot_match_filter_polygon(ax, distance_modulus, isochrone=None, match_filter=None,
-                              *, color_index=0, **line_kwargs):
-    """Outline of the MF polygon on an existing CMD axes
-    (factored out of plot_match_filter, which then calls it)."""
-```
-
-In `plotting/plot_candidate_investigation.py`:
-
-```python
-def draw_stream_track(ax, phi1, phi2, *, label=None, **line_kwargs):
-    """Track on a phi1/phi2 map (e.g. from plot_stream_frame_search_single_dm).
-    Thin dashed line, offset-able not to hide the stream."""
-
-def draw_stream_track_on_sky(ax, ra, dec, *, label=None, **line_kwargs):
-    """Track on a skyproj sky map (plot_generic_search_result,
-    plot_2D_density_from_hp), split at the map edge as in plot_generic_search."""
-
-def draw_stream_regions(ax, regions, *, on_color=..., off_color=...):
-    """Outlines of the on region and the two off bands on a phi1/phi2 map."""
-
-def plot_phi2_profile(profile, fit=None, *, ax=None):
-    """Counts vs phi2, with the fitted Gaussian + background and ±σ lines."""
-
-def plot_phi1_profile(profile, regions=None, *, ax=None):
-    """On - off density vs phi1; phi1_range shaded."""
-```
-
-- `draw_stream_track` and `draw_stream_track_on_sky` take arrays, so they
-  also draw galstreams tracks or the endpoints arc. Make
+- `draw_stream_track(ax, phi1, phi2, *, label=None, phi2_offset_deg=0.0,
+  **line_kwargs)`, `draw_stream_track_on_sky(ax, ra, dec, ...)` (split at the
+  map edge with `plot_stream_frame_search._split_at_map_edge`),
+  `draw_stream_regions(ax, regions, ...)` (`phi12_window_outline` of
+  `region_windows`): return the lines they add. Make
   `plot_stream_frame_search_single_dm(track_phi12=...)` call
   `draw_stream_track` (one style for all tracks).
-- Tests: each function runs on synthetic inputs and returns the axes;
-  `plot_hess(difference=True)` has symmetric colour limits; the number of
-  lines added by `draw_stream_regions` is 3 outlines.
-- Figure style: `plot_style`, colour-blind friendly colours
-  (`CATEGORICAL_COLORS`).
+- `plot_phi2_profile(profile, fit=None, *, ax=None)`,
+  `plot_phi1_profile(profile, regions=None, *, ax=None)`: `(fig, ax)`.
+- Wrappers taking the class: `plot_candidate_frame_check(cand, *,
+  sky_kwargs=None, zoom_kwargs=None)` (left: `cand.sky_map` residual with the
+  great circle, window outline and endpoints; right: `cand.zoom_map` with
+  the endpoints and phi2 = 0; same dm in the title),
+  `plot_candidate_map(cand, distance_modulus=None, *, ax=None,
+  show_regions=True)`, `plot_candidate_hess(cand, which="difference", *,
+  ax=None, isochrone=True, match_filter=False)`, `plot_candidate_overview(cand)`.
+- `plot_generic_search_residual_map` gets an optional `ax` (S2), so that the
+  frame check is one figure with two panels; old behaviour by default.
+- Tests: each function runs on synthetic inputs; `plot_hess(difference=True)`
+  has symmetric limits; `draw_stream_regions` adds 3 outlines. Style:
+  `plot_style`, `CATEGORICAL_COLORS`.
 
-### C7. The class — `analysis/candidate_investigation.py` [NEW module]
+### C7. The class — `CandidateInvestigation` in `analysis/candidate_investigation.py`
 
-Stub written in Phase B; each method filled in the step that needs it (table of Phase C).
+Fields (inputs): `name`, `endpoint_1`, `endpoint_2`, `age`, `metallicity`
+(or `feh`), `distance_modulus`, `distance_moduli`, `match_filter`,
+`padding_phi1_deg`, `padding_phi2_deg`, `min_phi2_half_width_deg`,
+`on_n_sigma`, `off_n_sigma`, `prepare_kwargs`. Fields (results, None until
+computed): `stream_frame`, `window`, `radec_box`, `catalog` (a reference,
+no copy), `search`, `excluded_healpix_mask`, `sky_map`, `zoom_map`, `maps`,
+`phi2_profile`, `width_fit`, `regions`, `areas`, `phi1_profile`, `on_hess`,
+`off_hess`, `diff_hess`, `isochrone_track`.
 
-```python
-@dataclass
-class CandidateInvestigation:
-    """All inputs and results of one candidate investigation.
-    Mutable: change a field and re-run the later steps."""
-    # inputs
-    name: str
-    endpoint_1: tuple[float, float]          # (ra, dec) deg
-    endpoint_2: tuple[float, float]
-    age: float = 13.0
-    metallicity: float | None = 0.0002       # Z; or feh
-    feh: float | None = None
-    distance_modulus: float | None = None    # chosen after the dm scan
-    distance_moduli: Sequence[float] | None = None
-    match_filter: dict | None = None
-    phi2_halfwidth_deg: float = DEFAULT_PHI2_HALFWIDTH_DEG
-    on_n_sigma: float = DEFAULT_ON_N_SIGMA
-    off_n_sigma: tuple[float, float] = DEFAULT_OFF_N_SIGMA
-    prepare_kwargs: dict = field(default_factory=dict)   # to prepare_search
-    # results, None until computed
-    stream_frame: Any = None
-    window: tuple | None = None
-    radec_box: tuple | None = None
-    search: PreparedSearch | None = None
-    excluded_healpix_mask: NDArray | None = None   # RING, build_masks.excluded_healpix_mask
-    catalog: Any = None                      # reference to the stars (no copy), kept to re-prepare
-    sky_map: dict | None = None              # generic_search_single_dm result on the loaded box, frame independent
-    zoom_map: dict | None = None             # stream_frame_search_single_dm at sky_map's dm
-    maps: dict | None = None                 # {dm: result of stream_frame_search_single_dm}
-    phi2_profile: dict | None = None        # phi2_density_profile result
-    width_fit: dict | None = None
-    regions: dict | None = None
-    areas: dict | None = None
-    phi1_profile: dict | None = None        # phi1_density_profile result
-    on_hess: dict | None = None
-    off_hess: dict | None = None
-    diff_hess: dict | None = None
-    isochrone_track: dict | None = None
+Methods: `__post_init__` (frame, window, box), `compute_sky_map`,
+`prepare`, `set_endpoints`, `compute_zoom_map`, `scan_distance_moduli`,
+`fit_width`, `define_regions`, `compute_hess`, `compute_isochrone`,
+`run_all_steps(catalog, *, footprint_mask=None, nest=False)` (renamed from
+`run`, user 2026-11-13), `track_phi12`, `track_radec`, `summary`.
 
-    def __post_init__(self): ...            # frame, window, radec_box (C1)
-    def compute_sky_map(self, catalog, distance_modulus, **generic_kwargs): ...  # MF map of the loaded box, once
-    def prepare(self, catalog=None, *, footprint_mask=None, nest=False): ...  # prepare_search + excluded mask; stores catalog
-    def set_endpoints(self, endpoint_1, endpoint_2, **window_kwargs): ...  # new frame, window, box; re-prepare
-                                            # from the stored catalog; clears every later result; returns self
-    def compute_zoom_map(self, distance_modulus=None): ...              # one map in the frame (default: sky_map dm)
-    def scan_distance_moduli(self, distance_moduli=None): ...           # fills maps
-    def fit_width(self, phi1_range=None): ...  # MF-selected stars at distance_modulus -> profile, fit
-    def define_regions(self, phi1_range=None, phi2_centre=None, sigma=None): ...  # regions, areas, phi1_profile
-    def compute_hess(self, *, color_bins=None, mag_bins=None): ...      # on, off, diff
-    def compute_isochrone(self, *, age=None, metallicity=None, feh=None, distance_modulus=None): ...
-    def run_all_steps(self, catalog, **kwargs): ...   # every step in order
-    def track_phi12(self): ...              # stream_track_phi12(regions), or the endpoints arc before regions
-    def track_radec(self): ...
-    def summary(self): ...                  # dict of the key numbers
-```
-
-- Each method: check that the previous step was done (clear
-  `ValueError` naming the missing step), call one or two functions of
-  C1–C6, store the result, return `self` (so calls can be chained).
+- Each method: check that the previous step was done (clear `ValueError`
+  naming the missing step), call one or two functions, store the result,
+  return `self`.
 - Defaults when an argument is None: `phi1_range` → the endpoints' phi1;
   `phi2_centre`, `sigma` → `width_fit`. `distance_modulus` has no default:
   the user picks it by eye after the scan; `fit_width` raises if it is
@@ -525,36 +418,14 @@ class CandidateInvestigation:
   its `nest`), else from the stars (`survey_footprint_healpix_mask(ra, dec,
   512, nest=False)`); `excluded_healpix_mask` from
   `build_masks.excluded_healpix_mask(footprint, search.object_healpix_mask,
-  nest=...)` (Sect. 1, Masks).
-- `set_endpoints` must be fast: the map of the loaded box is not recomputed
-  (it does not depend on the frame); only `prepare_search` on the stored
-  catalog (an (ra, dec) box larger than the window) and one zoom map. If the
-  new window leaves the loaded box, raise a clear error saying to reload a
-  larger box.
-- `plot_generic_search_residual_map` makes its own figure. Add an optional
-  `ax` argument (skyproj axes made from it) so that the frame check is one
-  figure with two panels. Small change, keep the old behaviour by default.
-- Plots accept the class (thin wrappers in `plotting/plot_candidate_investigation.py`):
-
-```python
-def plot_candidate_frame_check(cand, *, sky_kwargs=None, zoom_kwargs=None):
-    """The endpoints check. Left: cand.sky_map (residual) with the great
-    circle, the window outline and the two endpoints
-    (plot_generic_search_residual_map, tracks=...). Right: cand.zoom_map in
-    phi1/phi2 with the endpoints marked and the phi2 = 0 line. Same dm, said in
-    the title. Returns (fig, axes)."""
-
-def plot_candidate_map(cand, distance_modulus=None, *, ax=None, show_regions=True):
-    """plot_stream_frame_search_single_dm + draw_stream_track + draw_stream_regions."""
-def plot_candidate_hess(cand, which="difference", *, ax=None, isochrone=True, match_filter=False):
-    """One Hess ('on', 'off' or 'difference') with the isochrone on top."""
-def plot_candidate_overview(cand):
-    """Map with regions, phi2 profile, phi1 profile, difference Hess + isochrone."""
-```
-
+  nest=...)`.
+- `define_regions` raises if the off bands leave the window.
+- `set_endpoints` must be fast: the sky map is kept (frame independent);
+  only `prepare_search` on the stored catalog and one zoom map. If the new
+  window leaves the loaded box, a clear error saying to load a larger box.
 - Tests: a synthetic catalog (uniform + Gaussian stream along the endpoints
-  arc) through `run_all_steps`; σ and phi2_centre recovered; calling
-  `compute_hess` before `define_regions` raises; `summary` keys.
+  arc) through `run_all_steps`; σ and phi2_centre recovered; steps out of
+  order raise; `summary` keys.
 
 ## 5. Example notebook — `notebooks/candidate_investigation_example.ipynb`
 
@@ -589,10 +460,10 @@ Sections (one markdown title each, a few code cells):
 5. **MF maps over dm, in the frame.** `cand.scan_distance_moduli()`; plot a
    few dm with `plot_candidate_map`; keep the best dm by eye
    (`cand.distance_modulus = ...`).
-6. **Width.** MF-selected stars → `phi2_density_profile` → `fit_stream_width` →
+6. **Width.** MF-selected stars → `phi12_density_profile` along phi2 → `fit_stream_width` →
    `plot_phi2_profile`.
 7. **Regions.** `stream_regions` (phi1_range by eye, then from
-   `phi1_density_profile`); `draw_stream_regions` on the MF map; `region_area_deg2`.
+   `on_off_phi1_profile`); `draw_stream_regions` on the MF map; `region_area_deg2`.
 8. **CMDs.** `hess_diagram` on and off (same bins), `difference_hess`,
    `plot_on_off_difference_hess`; then the difference alone with
    `plot_hess(difference=True)`.

@@ -2,7 +2,7 @@
 
 Two kinds of functions:
 
-- tracks, regions and profiles (``analysis.stream_regions``): the ``draw_*``
+- tracks, regions and profiles (``analysis.candidate_investigation``): the ``draw_*``
   functions draw on existing axes and return what they added; the
   ``plot_*`` functions make or take axes and return ``(fig, ax)``. The track
   functions take arrays, so they also draw galstreams tracks or the arc
@@ -120,12 +120,15 @@ def draw_stream_regions(
 ) -> list[Line2D]:
     """Outlines of the on region and of the two off bands on a phi1/phi2 map.
 
+    ``stream_frames.phi12_window_outline`` of each window of
+    ``analysis.candidate_investigation.region_windows``.
+
     Parameters
     ----------
     ax : matplotlib.axes.Axes
         Axes of a phi1/phi2 map.
     regions : dict
-        From ``analysis.stream_regions.stream_regions``.
+        From ``analysis.candidate_investigation.stream_regions``.
     on_color, off_color : str, optional
         Colours of the outlines.
 
@@ -148,7 +151,7 @@ def plot_phi2_profile(
     Parameters
     ----------
     profile : dict
-        From ``analysis.stream_regions.phi2_density_profile``.
+        From ``analysis.candidate_investigation.phi12_density_profile`` along phi2.
     fit : dict, optional
         From ``fit_stream_width``: its model, and lines at
         ``phi2_centre ± sigma``.
@@ -174,7 +177,7 @@ def plot_phi1_profile(
     Parameters
     ----------
     profile : dict
-        From ``analysis.stream_regions.phi1_density_profile``.
+        From ``analysis.candidate_investigation.on_off_phi1_profile``.
     regions : dict, optional
         From ``stream_regions``: its ``phi1_range`` is shaded.
     ax : matplotlib.axes.Axes, optional

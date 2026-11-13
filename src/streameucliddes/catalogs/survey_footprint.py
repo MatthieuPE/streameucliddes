@@ -1,4 +1,4 @@
-"""Survey footprint: HEALPix mask, and its projection on a phi1/phi2 grid.
+"""Survey footprint: HEALPix mask, its projection on a phi1/phi2 grid, and areas outside a mask.
 
 As in ``analysis.star_density_maps.star_density_healpix`` and
 ``analysis.background_polynomial_fit.process_data``, a mask is True outside
@@ -202,3 +202,41 @@ def survey_footprint_phi12_mask(
     ra, dec = phi12_to_radec(phi1, phi2, stream_frame)
     pixels = hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)
     return footprint_mask[pixels]
+
+
+def unmasked_area_deg2(
+    stream_frame: coord.BaseCoordinateFrame,
+    phi1_edges: ArrayLike,
+    phi2_edges: ArrayLike,
+    excluded_healpix_mask: NDArray[np.bool_] | None,
+    *,
+    step_deg: float = 0.01,
+) -> NDArray[np.float64]:
+    """Area of each phi1/phi2 cell outside a HEALPix mask.
+
+    Each cell is sampled on a fine grid of ``step_deg``; each sample weighs
+    its solid angle (``cos(phi2)`` weights) and is kept when the HEALPix
+    pixel of its (ra, dec) is not masked: the same look-up as
+    ``survey_footprint_phi12_mask``, at the samples instead of the bin
+    centres. A window is one cell: ``phi1_edges = (phi1_min, phi1_max)``,
+    ``phi2_edges = (phi2_min, phi2_max)``.
+
+    Parameters
+    ----------
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Frame of the cells.
+    phi1_edges, phi2_edges : array_like
+        Edges of the cells along each axis (deg), increasing.
+    excluded_healpix_mask : numpy.ndarray of bool or None
+        True where excluded (outside the footprint, on a masked object),
+        RING, e.g. from ``analysis.build_masks.excluded_healpix_mask``; nside
+        from its length. None: nothing excluded.
+    step_deg : float, optional
+        Step of the fine grid (deg).
+
+    Returns
+    -------
+    area_deg2 : numpy.ndarray
+        Shape (len(phi1_edges) - 1, len(phi2_edges) - 1) (deg²).
+    """
+    raise NotImplementedError

@@ -180,3 +180,34 @@ def test_isochrone_track_metallicity_or_feh():
 @pytest.mark.skip(reason="stub")
 def test_isochrone_track_inside_polygon():
     """Main-sequence turn-off part of the track inside the match-filter polygon at the same dm."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_hess_counts_without_area():
+    """No area: density = counts, error = sqrt(counts)."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_hess_single_star_density():
+    """One star in a 2 deg^2 region: density 0.5 in one bin, 0 elsewhere."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_hess_mask_selects_stars():
+    """Only the stars of mask are counted."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_hess_rejects_non_positive_area():
+    """area_deg2 <= 0: ValueError."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_difference_hess_consistent_with_zero():
+    """On and off from the same uniform population, areas 1 and 3: |diff| / error ~ N(0, 1)."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_difference_hess_rejects_different_bins():
+    """Different bin edges: ValueError."""
+

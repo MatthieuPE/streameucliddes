@@ -11,6 +11,13 @@ A star is selected when it is inside the polygon of every colour
 Magnitudes are the ``<namespace>_<band>_obs`` columns of
 ``catalogs.euclid_catalog`` (the streamobs convention), used as they are:
 the catalog magnitudes are already dereddened.
+
+Also the colour-magnitude diagrams of a set of stars, computed here and drawn
+by ``plotting.plot_cmd``: 2D histograms of colour ``mag_cols[0] -
+mag_cols[1]`` and magnitude ``mag_cols[0]`` (``hess_diagram``), per deg²
+for a region of known area, and the on - off difference of two regions
+(``difference_hess``, Shipp et al. 2018, Sect. 5); and the isochrone track
+in the bands of a match filter (``isochrone_cmd_track``).
 """
 
 from __future__ import annotations
@@ -24,7 +31,7 @@ from streamobs.match_filter import build_match_filter, is_in_match_filter
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping
+    from collections.abc import Mapping, Sequence
     from typing import Any
 
     import pandas as pd
@@ -44,6 +51,13 @@ DES_GR_MATCH_FILTER = {
 }
 # ugali isochrone model of the polygons (default of build_match_filter): Marigo et al. 2017 (PARSEC)
 ISOCHRONE_MODEL = "Marigo2017"
+
+# Hess diagrams: default bins (mag). Bin sizes of celestial_currents hess.py; ranges of the
+# VIS - H CMDs of notebooks/known_stream_search_example.ipynb
+DEFAULT_COLOR_BIN = 0.04
+DEFAULT_MAG_BIN = 1 / 6
+DEFAULT_COLOR_RANGE = (-1.0, 1.5)
+DEFAULT_MAG_RANGE = (17.0, 27.0)
 
 
 @functools.lru_cache(maxsize=1024)
@@ -240,5 +254,83 @@ def isochrone_cmd_track(
     References
     ----------
     Marigo et al. 2017, ApJ 835, 77; Bressan et al. 2012, MNRAS 427, 127.
+    """
+    raise NotImplementedError
+
+
+def hess_diagram(
+    stars: pd.DataFrame,
+    mag_cols: Sequence[str],
+    *,
+    mask: ArrayLike | None = None,
+    area_deg2: float | None = None,
+    color_bins: ArrayLike | None = None,
+    mag_bins: ArrayLike | None = None,
+) -> dict[str, Any]:
+    """Colour-magnitude 2D histogram of stars: counts, or a Hess diagram per deg².
+
+    Colour ``mag_cols[0] - mag_cols[1]`` and magnitude ``mag_cols[0]``, the
+    convention of the match-filter polygons. With ``area_deg2``, the counts
+    are divided by it: stars / deg² / bin.
+
+    Parameters
+    ----------
+    stars : pandas.DataFrame
+        Stars with the ``mag_cols`` columns, e.g. ``search.stars`` of
+        ``analysis.stream_frame_search.prepare_search``. Not copied.
+    mag_cols : sequence of two str
+        Magnitude columns, e.g. ``match_filter_columns(match_filter)[0]`` and
+        ``[1 + color_index]``.
+    mask : array_like of bool, optional
+        Stars to count, e.g. those of the on region
+        (``stream_frames.in_phi12_window``). Default: all.
+    area_deg2 : float, optional
+        Area of the region (deg²): density per deg². None: counts only
+        (``density`` = ``counts``).
+    color_bins, mag_bins : array_like, optional
+        Bin edges (mag). Default: ``DEFAULT_COLOR_RANGE`` and
+        ``DEFAULT_MAG_RANGE`` every ``DEFAULT_COLOR_BIN`` and
+        ``DEFAULT_MAG_BIN``. Give the same bins to the on and off diagrams.
+
+    Returns
+    -------
+    hess : dict
+        ``{"density", "counts", "error", "color_edges", "mag_edges",
+        "area_deg2", "n_stars", "color_label", "mag_label"}``: ``density``
+        and ``counts`` of shape (n_color, n_mag), ``error`` =
+        ``sqrt(counts) / area_deg2`` (``sqrt(counts)`` without area);
+        ``n_stars`` the stars inside the bins; labels from the band names.
+
+    Raises
+    ------
+    ValueError
+        ``area_deg2 <= 0``.
+
+    References
+    ----------
+    Shipp et al. 2018, ApJ 862, 114, Sect. 5.
+    """
+    raise NotImplementedError
+
+
+def difference_hess(on_hess: Mapping[str, Any], off_hess: Mapping[str, Any]) -> dict[str, Any]:
+    """On - off Hess diagram.
+
+    Parameters
+    ----------
+    on_hess, off_hess : mapping
+        From ``hess_diagram`` with ``area_deg2``, with the same bin edges.
+
+    Returns
+    -------
+    hess : dict
+        The keys of ``hess_diagram``: ``density`` on - off, ``error`` the two
+        errors in quadrature, ``counts`` and ``n_stars`` on - off,
+        ``area_deg2`` that of the on region.
+
+    Raises
+    ------
+    ValueError
+        The bin edges differ, or a diagram has no area.
     """
     raise NotImplementedError

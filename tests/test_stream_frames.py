@@ -6,7 +6,7 @@ import gala.coordinates as gc
 import numpy as np
 import pytest
 
-from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec, radec_to_phi12
+from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec, phi12_window_around, radec_to_phi12
 
 pytestmark = pytest.mark.stream_frames
 
@@ -140,7 +140,44 @@ def test_phi12_bin_centres_narrow_window():
         phi12_bin_centres((0.0, 0.04, 0.0, 1.0), 0.1)
 
 
+# Test phi12_window_around
+
+
+def test_window_around_points():
+    """phi1: extent + padding; phi2: centred, extent + padding."""
+    window = phi12_window_around([-3.0, 1.0, 4.0], [0.5, 1.5, 9.5], padding_phi1_deg=2.0, padding_phi2_deg=1.0,
+                                 min_phi2_half_width_deg=0.5)
+    assert window == pytest.approx((-5.0, 6.0, -0.5, 10.5))
+
+
+def test_window_around_minimum_phi2_half_width():
+    """Points on phi2 = 0 (two endpoints): phi2 half-width min_phi2_half_width_deg."""
+    window = phi12_window_around([-3.0, 3.0], [0.0, 0.0], padding_phi1_deg=5.0, padding_phi2_deg=2.0,
+                                 min_phi2_half_width_deg=4.0)
+    assert window == pytest.approx((-8.0, 8.0, -4.0, 4.0))
+
+
 # Stubs of the candidate investigation (docs/dev/candidate_investigation_plan.md)
+
+
+@pytest.mark.skip(reason="stub")
+def test_in_phi12_window():
+    """Points inside, on the edges (kept) and outside a window."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_window_outline_closed():
+    """phi12_window_outline: closed, on the window edges."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_radec_box_contains_window():
+    """phi12_window_radec_box contains the window (round trip with phi12_to_radec)."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_radec_box_ra_wrap_warns():
+    """A window across ra = 0: ra_min > ra_max and a warning."""
 
 
 @pytest.mark.skip(reason="stub")
@@ -151,28 +188,3 @@ def test_endpoints_on_phi2_zero():
 @pytest.mark.skip(reason="stub")
 def test_endpoints_phi1_symmetric():
     """Endpoints at phi1 symmetric around 0, endpoint_1 negative."""
-
-
-@pytest.mark.skip(reason="stub")
-def test_endpoints_window_contains_endpoints():
-    """endpoints_phi12_window contains the endpoints plus the padding."""
-
-
-@pytest.mark.skip(reason="stub")
-def test_radec_box_contains_window():
-    """phi12_window_radec_box contains the window edges (round trip with phi12_to_radec)."""
-
-
-@pytest.mark.skip(reason="stub")
-def test_radec_box_ra_wrap_warns():
-    """A window across ra = 0: ra_min > ra_max and a warning."""
-
-
-@pytest.mark.skip(reason="stub")
-def test_great_circle_on_phi2_zero():
-    """great_circle_radec back to the frame: phi2 = 0."""
-
-
-@pytest.mark.skip(reason="stub")
-def test_window_outline_closed():
-    """window_outline_radec: closed, on the window edges."""

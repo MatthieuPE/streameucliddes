@@ -273,3 +273,22 @@ def test_phi12_footprint_from_uniform_stars(rng, gc_frame):
     assert mask.shape == in_box.shape == (30, 10)
     assert mask[~in_box].all()
     assert np.mean(mask[in_box]) < 0.01
+
+
+# Stubs of the candidate investigation (docs/dev/candidate_investigation_plan.md)
+
+
+@pytest.mark.skip(reason="stub")
+def test_unmasked_area_matches_analytic():
+    """No mask: Delta phi1 (sin phi2_max - sin phi2_min) (180/pi)^2 within 1 %."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_unmasked_area_half_masked():
+    """Half of the sky excluded: about half the area."""
+
+
+@pytest.mark.skip(reason="stub")
+def test_unmasked_area_cells_shape():
+    """Edges of n + 1 and m + 1 values: areas of shape (n, m), summing to the area of the whole window."""
+
