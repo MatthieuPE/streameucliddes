@@ -29,6 +29,12 @@ compared directly with injected streams:
 - the same default star selection: ``POINT_LIKE_PROB >= 0.5`` and
   ``SPURIOUS_FLAG == 0`` for Euclid, ``0 <= EXT_XGB <= 1`` for DES.
 
+Two Euclid star selections (:data:`STAR_SELECTIONS`, see :func:`default_star_cuts`):
+``"morphology_cuts"`` (default), cuts on the Euclid morphology columns, and
+``"xgboost_classifier"``, a cut on the star probability of the XGBoost classifier
+trained on Euclid Q1 (:mod:`~streameucliddes.catalogs.star_classifier`), added as
+the column ``xgboost_star_prob`` (:func:`add_xgboost_star_prob`).
+
 Column documentation:
 
 - Euclid: MER Final Catalog data product description,
@@ -49,6 +55,7 @@ import pyarrow.dataset as ds
 import pyarrow.parquet as pq
 from streamobs.surveys import Survey
 
+from streameucliddes.catalogs import star_classifier
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
 from streameucliddes.unit_conversions import flux_to_mag
 
@@ -69,6 +76,9 @@ DES_BANDS = ("g", "r", "i", "z")
 # DES magnitudes outside this range are sentinels (-99, 37.5, -9.999e9).
 DES_VALID_MAG_RANGE = (0.0, 37.5)
 
+# Rows per batch when open_euclid_catalog reads by batches (batch_selection).
+READ_BATCH_SIZE = 1_000_000
+
 # Euclid fluxes and errors per band, in micro-Jansky. There is no FLUX_VIS_TEMPLFIT:
 # the template fitting measures the NISP bands with the VIS image as prior, VIS being
 # measured by PSF fitting.
@@ -88,6 +98,7 @@ EUCLID_DEFAULT_COLUMNS = [
     "POINT_LIKE_PROB",  # probability of being point-like (NaN for NIR-only sources)
     "ELLIPTICITY",  # ellipticity of the source (0: circular, 1: linear)
     "MUMAX_MINUS_MAG",  # difference between the peak surface brightness and the total magnitude
+    "MAG_STARGAL_SEP",  # star-galaxy separation magnitude (a star classifier feature)
 ]
 # DES columns read by default (crossmatched catalogs), besides the magnitudes.
 DES_DEFAULT_COLUMNS = [
@@ -111,6 +122,19 @@ EUCLID_QUALITY_CUTS = {
     "SPURIOUS_PROB": (None, 0.2),  # not likely spurious
     "DET_QUALITY_FLAG": 0,  # no detection flag
 }
+
+# Euclid star selections, see default_star_cuts.
+STAR_SELECTIONS = ("morphology_cuts", "xgboost_classifier")
+# "morphology_cuts": cuts on the Euclid morphology columns.
+MORPHOLOGY_STAR_CUTS = {
+    "POINT_LIKE_PROB": (0.5, None),  # point-like
+    "ELLIPTICITY": (None, 0.2),  # not elongated
+    "MUMAX_MINUS_MAG": (-3.25, -2.7),  # within the expected range
+}
+# "xgboost_classifier": minimum star probability of the classifier (star_classifier),
+# in the column added by add_xgboost_star_prob.
+XGBOOST_MIN_STAR_PROB = 0.9
+XGBOOST_STAR_PROB_COLUMN = "xgboost_star_prob"
 
 # ===================================================
 # Catalog description
@@ -211,22 +235,44 @@ def default_columns(catalog):
     return columns
 
 
-def default_star_cuts(catalog):
+def default_star_cuts(
+    catalog, star_selection="morphology_cuts", min_point_like_prob=None, min_xgboost_star_prob=None,
+):
     """
-    Default star selection (format of :func:`~streameucliddes.catalogs.catalog_cuts.get_cut_mask`).
+    Star selection cuts (format of :func:`~streameucliddes.catalogs.catalog_cuts.get_cut_mask`).
 
-    Euclid: point-like, not spurious, fainter than the VIS saturation (brighter,
-    ``POINT_LIKE_PROB`` is undefined). With DES, also: DES quality flags and DES
-    high-confidence or likely stars.
+    Always: Euclid quality cuts (not spurious, no detection flag) and fainter than
+    the VIS saturation (brighter, ``POINT_LIKE_PROB`` is undefined); with DES, also
+    the DES quality flags and DES high-confidence or likely stars. Then, according
+    to ``star_selection``:
+
+    - ``"morphology_cuts"``: the cuts of :data:`MORPHOLOGY_STAR_CUTS` on
+      ``POINT_LIKE_PROB``, ``ELLIPTICITY`` and ``MUMAX_MINUS_MAG``;
+    - ``"xgboost_classifier"``: star probability of the XGBoost classifier
+      (column ``xgboost_star_prob``) at least :data:`XGBOOST_MIN_STAR_PROB`.
+
+    The returned dict can be edited to change any cut, e.g.
+    ``cuts[euclid_column(catalog, "ELLIPTICITY")] = (None, 0.3)``.
 
     Parameters
     ----------
     catalog : str
         Key of :data:`CATALOGS`.
+    star_selection : str
+        One of :data:`STAR_SELECTIONS`.
+    min_point_like_prob : float, optional
+        Keep ``POINT_LIKE_PROB >= min_point_like_prob``, whatever ``star_selection``
+        (it replaces the ``"morphology_cuts"`` threshold). None: the threshold of
+        the selection, no cut with ``"xgboost_classifier"``.
+    min_xgboost_star_prob : float, optional
+        Keep ``xgboost_star_prob >= min_xgboost_star_prob``, whatever
+        ``star_selection``. None: :data:`XGBOOST_MIN_STAR_PROB` with
+        ``"xgboost_classifier"``, no cut with ``"morphology_cuts"``.
 
     Returns
     -------
     dict
+        ``get_euclid_stars`` adds the ``xgboost_star_prob`` column when a cut uses it.
     """
     survey = euclid_survey(catalog)
     cuts = {}
@@ -236,10 +282,21 @@ def default_star_cuts(catalog):
 
     # Euclid column names without suffix: "_euclid" added for crossmatched catalogs
     cuts.update({euclid_column(catalog, c): spec for c, spec in EUCLID_QUALITY_CUTS.items()})
-    cuts[euclid_column(catalog, "POINT_LIKE_PROB")] = (0.5, None)  # point-like
     cuts[f"{survey.namespace}_VIS_obs"] = (survey.saturation["VIS"], None)  # not saturated
-    cuts[euclid_column(catalog, "ELLIPTICITY")] = (None, 0.2)  # not elongated
-    cuts[euclid_column(catalog, "MUMAX_MINUS_MAG")] = (-3.25, -2.7)  # within the expected range
+
+    # Star / galaxy separation
+    if star_selection == "morphology_cuts":
+        cuts.update({euclid_column(catalog, c): spec for c, spec in MORPHOLOGY_STAR_CUTS.items()})
+    elif star_selection == "xgboost_classifier":
+        cuts[XGBOOST_STAR_PROB_COLUMN] = (XGBOOST_MIN_STAR_PROB, None)
+    else:
+        raise ValueError(f"Unknown star_selection {star_selection!r}: choose one of {STAR_SELECTIONS}")
+
+    # Thresholds given explicitly, whatever the selection
+    if min_point_like_prob is not None:
+        cuts[euclid_column(catalog, "POINT_LIKE_PROB")] = (min_point_like_prob, None)
+    if min_xgboost_star_prob is not None:
+        cuts[XGBOOST_STAR_PROB_COLUMN] = (min_xgboost_star_prob, None)
 
     return cuts
 
@@ -331,7 +388,7 @@ def available_columns(catalog, data_path=None):
 
 def open_euclid_catalog(
     catalog, columns=None, cuts=None, ra_range=None, dec_range=None, data_path=None,
-    verbose=True,
+    verbose=True, batch_selection=None,
 ):
     """
     Read a Euclid catalog.
@@ -355,6 +412,13 @@ def open_euclid_catalog(
         Folder containing the HATS catalog; default: the one of :data:`CATALOGS`.
     verbose : bool
         Print the number of rows read.
+    batch_selection : callable, optional
+        Read the catalog by batches of :data:`READ_BATCH_SIZE` rows and keep only
+        ``batch_selection(table)`` of each batch: ``table`` is a pyarrow Table, the
+        result a pd.DataFrame (e.g. converted with :func:`_to_pandas`). For a
+        selection that the cuts on catalog columns cannot do while reading, e.g.
+        the star classifier (:func:`get_euclid_stars`), without having all the
+        rows in memory. None: the whole selection is read at once.
 
     Returns
     -------
@@ -384,16 +448,32 @@ def open_euclid_catalog(
     for cut in expressions:
         expression = cut if expression is None else expression & cut
 
-    table = dataset.to_table(columns=list(columns), filter=expression)
+    if batch_selection is None:
+        data = _to_pandas(dataset.to_table(columns=list(columns), filter=expression))
+    else:
+        scanner = dataset.scanner(columns=list(columns), filter=expression, batch_size=READ_BATCH_SIZE)
+        selected = [batch_selection(pa.Table.from_batches([b])) for b in scanner.to_batches() if b.num_rows]
+        selected = [s for s in selected if len(s)]  # pandas warns when concatenating empty tables
+        if not selected:  # nothing selected: an empty table with the right columns
+            selected = [batch_selection(scanner.projected_schema.empty_table())]
+        data = pd.concat(selected, ignore_index=True)
+    if verbose:
+        print(f"Read {len(data):,} rows x {len(data.columns)} columns of {catalog}")
+    return data
+
+
+def _to_pandas(table):
+    """
+    pandas version of a pyarrow table.
+
+    pyarrow turns an integer column with nulls into float64, which loses the digits
+    of 64-bit ids beyond 2**53 (e.g. GAIA_ID): those are kept as nullable Int64.
+    """
     data = table.to_pandas()
-    # pyarrow turns an integer column with nulls into float64, which loses the
-    # digits of 64-bit ids beyond 2**53 (e.g. GAIA_ID): keep those as nullable Int64.
     for name in table.column_names:
         column = table.column(name)
         if pa.types.is_int64(column.type) and column.null_count:
             data[name] = column.to_pandas(types_mapper={pa.int64(): pd.Int64Dtype()}.get)
-    if verbose:
-        print(f"Read {len(data):,} rows x {len(data.columns)} columns of {catalog}")
     return data
 
 
@@ -491,6 +571,67 @@ def add_magnitudes(data, catalog, euclid_bands=tuple(EUCLID_FLUX_COLUMNS), des_b
 
 
 # ===================================================
+# Star classifier
+# ===================================================
+
+
+def add_xgboost_star_prob(data, catalog):
+    """
+    Add the column ``xgboost_star_prob`` in place: the probability of being a star
+    from the XGBoost classifier (:func:`~streameucliddes.catalogs.star_classifier.star_probability`).
+
+    The classifier features are the Euclid columns ``ELLIPTICITY``,
+    ``MUMAX_MINUS_MAG``, ``POINT_LIKE_PROB`` and ``MAG_STARGAL_SEP`` (read by
+    default). Missing values (e.g. ``POINT_LIKE_PROB`` of NIR-only sources) are
+    handled by the classifier.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        Catalog read with :func:`open_euclid_catalog`.
+    catalog : str
+        Key of :data:`CATALOGS`.
+
+    Returns
+    -------
+    pd.DataFrame
+        ``data``, with the new column (float32).
+    """
+    data[XGBOOST_STAR_PROB_COLUMN] = _xgboost_star_prob(data, catalog)
+    return data
+
+
+def _xgboost_star_prob(data, catalog):
+    """Classifier probability of each row of ``data`` (pd.DataFrame or pyarrow Table)."""
+    available = data.column_names if isinstance(data, pa.Table) else data.columns
+    feature_names = star_classifier.load_star_classifier().feature_names
+    columns = {name: euclid_column(catalog, name.upper()) for name in feature_names}
+    missing = [c for c in columns.values() if c not in available]
+    if missing:
+        raise KeyError(f"Column(s) needed by the star classifier are missing: {missing}")
+    return star_classifier.star_probability({name: np.asarray(data[c]) for name, c in columns.items()})
+
+
+def _xgboost_batch_selection(catalog, spec):
+    """
+    ``batch_selection`` of :func:`open_euclid_catalog` for the classifier: keeps the
+    rows whose ``xgboost_star_prob`` passes the cut ``spec``, with that column.
+
+    The classifier runs on the pyarrow table: only the kept rows are converted to
+    pandas.
+    """
+    def select(table):
+        probability = _xgboost_star_prob(table, catalog)
+        column = XGBOOST_STAR_PROB_COLUMN
+        keep = get_cut_mask(pd.DataFrame({column: probability}), {column: spec})
+        data = _to_pandas(table.filter(pa.array(keep)))
+        data[XGBOOST_STAR_PROB_COLUMN] = probability[keep]
+        return data
+
+    return select
+
+
+# ===================================================
 # Stars
 # ===================================================
 
@@ -512,8 +653,10 @@ def get_euclid_stars(
     cuts : dict, optional
         Cuts to apply (format of
         :func:`~streameucliddes.catalogs.catalog_cuts.get_cut_mask`); they may use
-        the columns added by :func:`add_magnitudes`. None applies
-        :func:`default_star_cuts`; ``{}`` applies no cut.
+        the columns added by :func:`add_magnitudes` and ``xgboost_star_prob``
+        (:func:`add_xgboost_star_prob`, added only when a cut uses it). None applies
+        :func:`default_star_cuts`; ``{}`` applies no cut. Other star selections:
+        e.g. ``cuts=default_star_cuts(catalog, "xgboost_classifier", min_xgboost_star_prob=0.95)``.
     columns : list of str, "all" or None
         Catalog columns to read when ``data`` is None (see :func:`open_euclid_catalog`).
     ra_range, dec_range : (float, float), optional
@@ -558,17 +701,25 @@ def get_euclid_stars(
                              "'southwest', 'southeast'")
     if data is None:
         names = set(available_columns(catalog, data_path))
-        unknown = [c for c in cuts if c not in names and c not in magnitude_columns(catalog)]
+        derived = magnitude_columns(catalog) + [XGBOOST_STAR_PROB_COLUMN]
+        unknown = [c for c in cuts if c not in names and c not in derived]
         if unknown:
             raise KeyError(
-                f"Cut column(s) neither in the catalog nor added by add_magnitudes: {unknown}"
+                f"Cut column(s) neither in the catalog nor added by add_magnitudes or "
+                f"add_xgboost_star_prob: {unknown}"
             )
         # Cuts on catalog columns while reading, the others (magnitudes) after.
         read_cuts = {c: s for c, s in cuts.items() if c in names}
         cuts = {c: s for c, s in cuts.items() if c not in names}
+        # Star classifier: its cut is applied while reading, batch by batch, since
+        # the rows passing only the cuts on catalog columns may not fit in memory.
+        batch_selection = None
+        if XGBOOST_STAR_PROB_COLUMN in cuts:
+            batch_selection = _xgboost_batch_selection(catalog, cuts[XGBOOST_STAR_PROB_COLUMN])
         data = open_euclid_catalog(
             catalog, columns=columns, cuts=read_cuts, ra_range=ra_range,
             dec_range=dec_range, data_path=data_path, verbose=verbose,
+            batch_selection=batch_selection,
         )
         n_input = None
     else:
@@ -576,6 +727,8 @@ def get_euclid_stars(
 
     if f"{euclid_survey(catalog).namespace}_VIS_obs" not in data.columns:
         add_magnitudes(data, catalog)
+    if XGBOOST_STAR_PROB_COLUMN in cuts and XGBOOST_STAR_PROB_COLUMN not in data.columns:
+        add_xgboost_star_prob(data, catalog)
 
     stars = data[get_cut_mask(data, cuts)].reset_index(drop=True)
     if verbose:
