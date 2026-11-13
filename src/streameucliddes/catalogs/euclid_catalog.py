@@ -274,8 +274,6 @@ def default_star_cuts(
     dict
         ``get_euclid_stars`` adds the ``xgboost_star_prob`` column when a cut uses it.
     """
-    if star_selection not in STAR_SELECTIONS:
-        raise ValueError(f"Unknown star_selection {star_selection!r}: choose one of {STAR_SELECTIONS}")
     survey = euclid_survey(catalog)
     cuts = {}
     if _catalog_info(catalog)["with_des"]:
@@ -286,10 +284,15 @@ def default_star_cuts(
     cuts.update({euclid_column(catalog, c): spec for c, spec in EUCLID_QUALITY_CUTS.items()})
     cuts[f"{survey.namespace}_VIS_obs"] = (survey.saturation["VIS"], None)  # not saturated
 
+    # Star / galaxy separation
     if star_selection == "morphology_cuts":
         cuts.update({euclid_column(catalog, c): spec for c, spec in MORPHOLOGY_STAR_CUTS.items()})
-    else:
+    elif star_selection == "xgboost_classifier":
         cuts[XGBOOST_STAR_PROB_COLUMN] = (XGBOOST_MIN_STAR_PROB, None)
+    else:
+        raise ValueError(f"Unknown star_selection {star_selection!r}: choose one of {STAR_SELECTIONS}")
+
+    # Thresholds given explicitly, whatever the selection
     if min_point_like_prob is not None:
         cuts[euclid_column(catalog, "POINT_LIKE_PROB")] = (min_point_like_prob, None)
     if min_xgboost_star_prob is not None:
