@@ -76,9 +76,19 @@ def test_on_off_phi1_profile_shows_stream_extent():
     """Stream over part of phi1: positive difference there only."""
 
 
-@pytest.mark.skip(reason="stub")
-def test_track_phi12_straight():
-    """track_phi12: phi2 = phi2_centre over phi1_range; phi2 = 0 between the endpoints before define_regions."""
+# Before the regions: the arc between the endpoints, at phi2 = 0, from endpoint_1 to endpoint_2 (also
+# in ra/dec); with regions: phi2 = phi2_centre over phi1_range
+def test_track_phi12_straight(candidate_endpoints):
+    cand = CandidateInvestigation("test", *candidate_endpoints)
+    phi1, phi2 = cand.track_phi12(n_points=11)
+    assert phi1.size == 11 and np.all(phi2 == 0.0) and phi1[0] < 0.0 < phi1[-1]
+    ra, dec = cand.track_radec(n_points=11)
+    assert (ra[0], dec[0]) == pytest.approx(candidate_endpoints[0], abs=1e-8)
+    assert (ra[-1], dec[-1]) == pytest.approx(candidate_endpoints[1], abs=1e-8)
+    cand.regions = {"phi1_range": (-2.0, 1.0), "phi2_centre": 0.3, "sigma": 0.2, "on_n_sigma": 1.4,
+                    "off_n_sigma": (2.5, 4.5)}
+    phi1, phi2 = cand.track_phi12(n_points=7)
+    assert phi1 == pytest.approx(np.linspace(-2.0, 1.0, 7)) and np.all(phi2 == 0.3)
 
 
 # ===================================================
@@ -247,6 +257,27 @@ def test_set_endpoints_without_catalog(candidate_endpoints):
     cand = CandidateInvestigation("test", *candidate_endpoints)
     cand.set_endpoints((76.0, -41.0), (69.0, -44.0))
     assert cand.search is None and cand.window != CandidateInvestigation("test", *candidate_endpoints).window
+
+
+# ===================================================
+# scan_distance_moduli
+# ===================================================
+
+
+# One map per distance modulus given, each that of stream_frame_search_single_dm with the isochrone of the
+# object; default: the distance moduli of the object; before prepare: ValueError
+def test_scan_distance_moduli(candidate_endpoints, candidate_catalog, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, feh=-1.5, distance_moduli=[16.0, 17.0],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    with pytest.raises(ValueError, match="prepare"):
+        cand.scan_distance_moduli()
+    cand.prepare(candidate_catalog)
+    assert list(cand.scan_distance_moduli().maps) == [16.0, 17.0]
+    assert list(cand.scan_distance_moduli([18.0, 16.5]).maps) == [18.0, 16.5]
+    expected = stream_frame_search_single_dm(search=cand.search, distance_modulus=16.5, isochrone=cand.isochrone)
+    np.testing.assert_array_equal(np.ma.filled(cand.maps[16.5]["density"], np.nan),
+                                  np.ma.filled(expected["density"], np.nan))
+    assert cand.maps[16.5]["isochrone"] == cand.isochrone
 
 
 # ===================================================

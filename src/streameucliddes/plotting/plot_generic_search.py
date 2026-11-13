@@ -16,6 +16,7 @@ from streameucliddes.plotting.plot_stream_frame_search import (
     draw_stream_track_on_sky,
 )
 from streameucliddes.plotting.plot_sky_density import plot_2D_density_from_hp
+from streameucliddes.plotting.plot_style import format_distance_modulus
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -212,7 +213,7 @@ def plot_generic_search_residual_map(
 def _title(result: Mapping[str, Any]) -> str:
     """Distance modulus and distance, and isochrone of a map."""
     isochrone = result["isochrone"]
-    return (f"dm {result['distance_modulus']:.1f} ({result['distance_kpc']:.1f} kpc), "
+    return (f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.1f} kpc), "
             f"{isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}")
 
 

@@ -276,6 +276,15 @@ Done:
   now takes an optional `object_healpix_mask` (used as it is; default path
   unchanged, user 2026-11-13), and `set_endpoints` passes that of the last
   `prepare`: the notebook cell takes 2.7 s with the figure (8.4 s before).
+- S4 (2026-11-13): `scan_distance_moduli` (maps in `cand.maps`,
+  `{dm: result}`), `track_phi12` / `track_radec` (endpoints arc, then
+  the regions' track), `plot_candidate_map` (map of `maps` closest to the
+  dm, else the zoom map). `plot_style.format_distance_modulus`: one
+  decimal, two when needed (dm 17.25 showed as 17.2), in every map title.
+  Masked bins stay light grey (`FOOTPRINT_OUTSIDE_GREY`; user 2026-11-13):
+  on DR1, 8.2 % of the bins, 5.1 % bright galaxies, 3.3 % footprint holes.
+  Notebook: `DISTANCE_MODULI` 15–20 every 0.25 (21 maps, 9.3 s), grid with
+  `layout="constrained"`, `cand.distance_modulus = 17.25` by eye.
 
 ## 4. New functions, by module
 

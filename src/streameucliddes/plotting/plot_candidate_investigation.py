@@ -27,7 +27,7 @@ from streameucliddes.plotting.plot_stream_frame_search import (
     draw_stream_track_on_sky,
     plot_stream_frame_search_single_dm,
 )
-from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, escape_underscores
+from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, escape_underscores, format_distance_modulus
 from streameucliddes.stream_frames import phi12_to_radec, phi12_window_outline, radec_to_phi12
 
 if TYPE_CHECKING:
@@ -183,7 +183,7 @@ def plot_candidate_frame_check(
     # Left: the sky map, the great circle, the window, the endpoints
     sky_dm = cand.sky_map["distance_modulus"]
     _, sky_ax = plot_generic_search_residual_map(
-        cand.sky_map, ax=sky_panel, title=f"Loaded box, dm {sky_dm:.2f}", **(sky_kwargs or {})
+        cand.sky_map, ax=sky_panel, title=f"Loaded box, dm {format_distance_modulus(sky_dm)}", **(sky_kwargs or {})
     )
     phi1_circle = np.linspace(-180.0, 180.0, 721)
     draw_stream_track_on_sky(sky_ax, *phi12_to_radec(phi1_circle, np.zeros_like(phi1_circle), cand.stream_frame),
@@ -196,7 +196,7 @@ def plot_candidate_frame_check(
     # Right: the map in the frame, phi2 = 0, the endpoints
     zoom_dm = cand.zoom_map["distance_modulus"]
     _, zoom_ax = plot_stream_frame_search_single_dm(
-        cand.zoom_map, ax=zoom_panel, title=f"In the frame, dm {zoom_dm:.2f}", **(zoom_kwargs or {})
+        cand.zoom_map, ax=zoom_panel, title=f"In the frame, dm {format_distance_modulus(zoom_dm)}", **(zoom_kwargs or {})
     )
     draw_stream_track(zoom_ax, cand.window[:2], [0.0, 0.0], label=r"$\phi_2 = 0$")
     zoom_ax.plot(*radec_to_phi12(ends_ra, ends_dec, cand.stream_frame), label="endpoints", **ENDPOINT_STYLE)
@@ -215,16 +215,18 @@ def plot_candidate_map(
 ) -> tuple[Figure, Axes]:
     """Matched-filter map in the frame, with the track and the regions.
 
-    ``plot_stream_frame_search_single_dm``, ``draw_stream_track`` and
-    ``draw_stream_regions``.
+    ``plot_stream_frame_search_single_dm``, ``draw_stream_track`` of
+    ``cand.track_phi12()`` (the arc between the endpoints before the regions)
+    and ``draw_stream_regions``. The title gives the distance modulus of the
+    map drawn.
 
     Parameters
     ----------
     cand : CandidateInvestigation
         With ``maps`` (or ``zoom_map``) computed.
     distance_modulus : float, optional
-        Map of ``cand.maps`` closest to it. Default: ``cand.distance_modulus``,
-        else ``cand.zoom_map``.
+        Map of ``cand.maps`` closest to it. Default: ``cand.distance_modulus``;
+        without it or without ``maps``, ``cand.zoom_map``.
     ax : matplotlib.axes.Axes, optional
         Default: a new figure.
     show_regions : bool, optional
@@ -234,8 +236,32 @@ def plot_candidate_map(
     -------
     fig : matplotlib.figure.Figure
     ax : matplotlib.axes.Axes
+
+    Raises
+    ------
+    ValueError
+        No map: neither ``maps`` nor a ``zoom_map`` at this distance modulus.
     """
-    raise NotImplementedError
+    fig, ax = plot_stream_frame_search_single_dm(_candidate_map(cand, distance_modulus), ax=ax)
+    draw_stream_track(ax, *cand.track_phi12(), label="track" if cand.regions is not None else "endpoints arc")
+    if show_regions and cand.regions is not None:
+        draw_stream_regions(ax, cand.regions)
+    ax.legend(loc="upper right", fontsize="small", framealpha=0.8)
+    return fig, ax
+
+
+def _candidate_map(cand: CandidateInvestigation, distance_modulus: float | None) -> Mapping[str, Any]:
+    """Map of ``cand.maps`` closest to ``distance_modulus`` (default ``cand.distance_modulus``), else the zoom map."""
+    if distance_modulus is None:
+        distance_modulus = cand.distance_modulus
+    if distance_modulus is not None and cand.maps:
+        return cand.maps[min(cand.maps, key=lambda dm: abs(dm - distance_modulus))]
+    zoom = cand.zoom_map
+    if zoom is not None and (distance_modulus is None or np.isclose(zoom["distance_modulus"], distance_modulus)):
+        return zoom
+    raise ValueError("No map at this distance modulus: call cand.scan_distance_moduli() or cand.compute_zoom_map().")
+
+
 
 
 def plot_candidate_hess(

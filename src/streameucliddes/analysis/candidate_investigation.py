@@ -60,13 +60,18 @@ import numpy as np
 
 from streameucliddes.analysis.build_masks import excluded_healpix_mask
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
-from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
+from streameucliddes.analysis.stream_frame_search import (
+    prepare_search,
+    stream_frame_search_dm_scan,
+    stream_frame_search_single_dm,
+)
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, DEFAULT_METALLICITIES
 from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 from streameucliddes.stream_frames import (
     DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
     DEFAULT_PADDING_PHI1_DEG,
     DEFAULT_PADDING_PHI2_DEG,
+    phi12_to_radec,
     phi12_window_around,
     phi12_window_radec_box,
     radec_to_phi12,
@@ -737,13 +742,24 @@ class CandidateInvestigation:
                 f"{star_dec.min():.1f} to {star_dec.max():.1f} deg): load a larger box."
             )
 
-    def scan_distance_moduli(self, distance_moduli: Sequence[float] | None = None) -> CandidateInvestigation:
+    def scan_distance_moduli(
+        self, distance_moduli: Sequence[float] | None = None, **scan_kwargs: Any
+    ) -> CandidateInvestigation:
         """Maps in the frame over distance moduli (``stream_frame_search_dm_scan``), in ``maps``.
+
+        One map per distance modulus, with the isochrone of the object, on
+        the prepared stars. The maps are small (the grid of the window): all
+        are kept, ``{distance_modulus: result}``. Then choose
+        ``distance_modulus`` by eye (``plot_candidate_map``).
 
         Parameters
         ----------
         distance_moduli : sequence of float, optional
-            Default: ``self.distance_moduli``, else the grid of the search.
+            Default: ``self.distance_moduli``, else the grid of the search
+            (``prepare_search``: 15 to 22 every 0.1).
+        **scan_kwargs
+            Arguments of ``stream_frame_search_dm_scan`` (``smoothing_deg``,
+            ``n_workers``).
 
         Returns
         -------
@@ -754,7 +770,13 @@ class CandidateInvestigation:
         ValueError
             ``prepare`` not done.
         """
-        raise NotImplementedError
+        self._require("search", "prepare")
+        if distance_moduli is None:
+            distance_moduli = self.distance_moduli
+        self.maps = dict(stream_frame_search_dm_scan(
+            search=self.search, distance_moduli=distance_moduli, isochrone=self.isochrone, **scan_kwargs
+        ))
+        return self
 
     def fit_width(self, phi1_range: tuple[float, float] | None = None) -> CandidateInvestigation:
         """phi2 density profile of the stars in the match filter, and its Gaussian width.
@@ -903,7 +925,13 @@ class CandidateInvestigation:
         phi1, phi2 : numpy.ndarray
             (deg).
         """
-        raise NotImplementedError
+        if self.regions is not None:
+            phi1 = np.linspace(*self.regions["phi1_range"], n_points)
+            return phi1, np.full(n_points, float(self.regions["phi2_centre"]))
+        phi1_ends, _ = radec_to_phi12(
+            [self.endpoint_1[0], self.endpoint_2[0]], [self.endpoint_1[1], self.endpoint_2[1]], self.stream_frame
+        )
+        return np.linspace(phi1_ends[0], phi1_ends[1], n_points), np.zeros(n_points)
 
     def track_radec(self, n_points: int = DEFAULT_TRACK_POINTS) -> tuple[NDArray, NDArray]:
         """(ra, dec) of ``track_phi12``, for sky maps.
@@ -918,7 +946,7 @@ class CandidateInvestigation:
         ra, dec : numpy.ndarray
             (deg).
         """
-        raise NotImplementedError
+        return phi12_to_radec(*self.track_phi12(n_points), self.stream_frame)
 
     def summary(self) -> dict[str, Any]:
         """Key numbers of the investigation, those computed so far.

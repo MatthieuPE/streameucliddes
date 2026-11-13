@@ -13,7 +13,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.patheffects import withStroke
 
-from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS
+from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, format_distance_modulus
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -207,7 +207,7 @@ def _single_dm_title(result: Mapping[str, Any]) -> str:
     """Track, distance modulus (or offset along the track) and isochrone of a map."""
     parts = [result["track_name"]] if result.get("track_name") else []
     if "distance_modulus" in result:
-        parts.append(f"dm {result['distance_modulus']:.1f} ({result['distance_kpc']:.1f} kpc)")
+        parts.append(f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.1f} kpc)")
     else:
         parts.append(f"dm along the track {result['dm_offset']:+.1f}")
     isochrone = result["isochrone"]

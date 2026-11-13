@@ -64,3 +64,8 @@ def escape_underscores(text: str) -> str:
     """Text as displayed: the serif font (cmr10) has no underscore glyph, so each ``_`` is drawn by mathtext."""
     return text.replace("_", r"$\_$")
 
+
+def format_distance_modulus(distance_modulus: float) -> str:
+    """Distance modulus for titles: one decimal, two when needed (17.0, 17.25)."""
+    text = f"{distance_modulus:.2f}"
+    return text[:-1] if text.endswith("0") else text

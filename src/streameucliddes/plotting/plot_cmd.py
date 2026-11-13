@@ -18,7 +18,7 @@ from streameucliddes.analysis.cmd_match_filter import (
 )
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
-from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS
+from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, format_distance_modulus
 from streameucliddes.unit_conversions import convert_DM_to_kpc
 
 if TYPE_CHECKING:
@@ -247,7 +247,7 @@ def plot_match_filter(
         ax.legend(loc="upper right")
 
     if title is None:
-        title = (f"dm {distance_modulus:.1f} ({convert_DM_to_kpc(distance_modulus).value:.1f} kpc), "
+        title = (f"dm {format_distance_modulus(distance_modulus)} ({convert_DM_to_kpc(distance_modulus).value:.1f} kpc), "
                  f"{isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}")
         if stars is not None:
             n_selected = select_stars_in_match_filter(stars, distance_modulus, isochrone, match_filter).sum()
