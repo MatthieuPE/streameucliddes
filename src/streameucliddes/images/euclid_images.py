@@ -9,9 +9,10 @@ filter look like.
 
 Steps, for one position:
 
-1. ``mer_cutouts_for_eummy``: VIS, Y, J and H cutouts of one MER tile (IRSA
-   SIA, ``MER_COLLECTION``), read with fsspec (only the pixels of the
-   cutout), saved under their original MER file names;
+1. ``mer_cutouts_for_eummy``: VIS, Y, J and H cutouts of one MER tile,
+   saved under their original MER file names, from the ESA Euclid archive
+   (default: cut on the server, ~20 s per band) or from IRSA (read with
+   fsspec, only the pixels of the cutout, ~50 s per band);
 2. ``make_color_image``: the ``eummy`` command on them (``pipx install
    eummy``, or a venv with ``~/.local/bin/eummy``), a colour TIFF;
 3. ``read_color_image`` and ``cutout_wcs``, then ``plot_color_image``: the
@@ -50,8 +51,14 @@ if TYPE_CHECKING:
 
     from streameucliddes.analysis.candidate_investigation import CandidateInvestigation
 
+CUTOUT_SOURCES = ("esa", "irsa")  # archives of mer_cutouts_for_eummy
 MER_COLLECTION = "euclid_dr1_wide_DpdMerBksMosaic"  # IRSA SIA collection of the DR1 wide MER mosaics
-EUMMY_BANDS = ("VIS", "Y", "J", "H")  # energy_bandpassname of the four MER mosaics eummy combines
+EUMMY_BANDS = ("VIS", "Y", "J", "H")  # energy_bandpassname (IRSA) of the four MER mosaics eummy combines
+ESA_TAP_URL = "https://eas.esac.esa.int/tap-server/tap"  # ESA Euclid archive: table dr1.mosaic_product
+ESA_CUTOUT_URL = "https://eas.esac.esa.int/sas-cutout/cutout"  # its cutout service
+ESA_FILTERS = ("VIS", "NIR_Y", "NIR_J", "NIR_H")  # filter_name in dr1.mosaic_product, in the order of EUMMY_BANDS
+ESA_MOSAIC_TYPE = "DpdMerBksMosaic"  # product_type of the background-subtracted MER mosaics
+REQUEST_TIMEOUT_S = 600
 # File names of the MER mosaics, as eummy finds them (one per band, in the order of EUMMY_BANDS)
 MER_FILE_PATTERNS = ("EUC_MER_BGSUB-MOSAIC-VIS*.fits", "EUC_MER_BGSUB-MOSAIC-NIR-Y*.fits",
                      "EUC_MER_BGSUB-MOSAIC-NIR-J*.fits", "EUC_MER_BGSUB-MOSAIC-NIR-H*.fits")
@@ -69,14 +76,27 @@ STAR_MARKER_SIZE = 80
 
 
 def mer_cutouts_for_eummy(
-    ra: float, dec: float, size_arcmin: float, outdir: str | os.PathLike, *, overwrite: bool = False
+    ra: float,
+    dec: float,
+    size_arcmin: float,
+    outdir: str | os.PathLike,
+    *,
+    source: str = "esa",
+    overwrite: bool = False,
 ) -> list[Path]:
     """Save VIS, Y, J and H cutouts of one MER tile under their original MER file names.
 
-    The tile is the VIS mosaic whose centre is closest to (ra, dec); the
-    NISP mosaics are those of the same tile. Each cutout is read with fsspec
-    (only its pixels) and saved with the header of its mosaic, its WCS
-    updated. Positions near a tile edge give partial cutouts (NaN outside).
+    The tile is the one whose VIS mosaic has its centre closest to (ra, dec);
+    the NISP mosaics are those of the same tile. The two archives serve the
+    same DR1 mosaics under the same file names:
+
+    - ``"esa"``: the ESA Euclid archive, ``dr1.mosaic_product`` (TAP,
+      ``ESA_TAP_URL``) and its cutout service (``ESA_CUTOUT_URL``): the
+      cutout is cut on the server;
+    - ``"irsa"``: IRSA SIA (``MER_COLLECTION``), each cutout read with
+      fsspec (only its pixels) and saved with the header of its mosaic.
+
+    Positions near a tile edge give partial cutouts.
 
     Parameters
     ----------
@@ -86,6 +106,8 @@ def mer_cutouts_for_eummy(
         Side of the cutouts (arcmin).
     outdir : str or path
         Folder of the cutouts, created if needed.
+    source : {"esa", "irsa"}, optional
+        Archive. Try the other one when one is down.
     overwrite : bool, optional
         Download again when ``outdir`` already holds one cutout per band.
         Default: keep them, no query.
@@ -98,12 +120,67 @@ def mer_cutouts_for_eummy(
     Raises
     ------
     ValueError
-        No VIS mosaic at this position, or a band missing for its tile.
+        Unknown ``source``; no VIS mosaic at this position, or a band missing
+        for its tile; the archive returned something else than FITS.
     """
+    if source not in CUTOUT_SOURCES:
+        raise ValueError(f"source must be one of {CUTOUT_SOURCES}, not {source!r}.")
     outdir = Path(outdir)
     existing = [sorted(outdir.glob(pattern)) for pattern in MER_FILE_PATTERNS]
     if not overwrite and all(len(paths) == 1 for paths in existing):
         return [paths[0] for paths in existing]
+    outdir.mkdir(parents=True, exist_ok=True)
+    if source == "esa":
+        return _esa_cutouts(ra, dec, size_arcmin, outdir)
+    return _irsa_cutouts(ra, dec, size_arcmin, outdir)
+
+
+def _closest_tile(tile_ra: ArrayLike, tile_dec: ArrayLike, ra: float, dec: float) -> int:
+    """Index of the tile centre closest to (ra, dec) (deg)."""
+    centres = SkyCoord(np.asarray(tile_ra, dtype=float) * u.deg, np.asarray(tile_dec, dtype=float) * u.deg)
+    return int(np.argmin(centres.separation(SkyCoord(ra * u.deg, dec * u.deg))))
+
+
+def _esa_mosaic_table(ra: float, dec: float) -> pd.DataFrame:
+    """MER mosaics of ``dr1.mosaic_product`` (ESA Euclid archive) whose footprint contains (ra, dec)."""
+    import pyvo  # only for a download
+
+    query = ("SELECT file_name, file_path, filter_name, tile_index, instrument_name, ra, dec FROM dr1.mosaic_product "
+             f"WHERE product_type = '{ESA_MOSAIC_TYPE}' AND 1 = CONTAINS(POINT('ICRS', {float(ra)}, {float(dec)}), fov)")
+    return pyvo.dal.TAPService(ESA_TAP_URL).search(query).to_table().to_pandas()
+
+
+def _esa_cutouts(ra: float, dec: float, size_arcmin: float, outdir: Path) -> list[Path]:
+    """Cutouts of the closest tile, cut by the ESA cutout service (a box of side 2 r around a circle of radius r)."""
+    import requests  # only for a download
+
+    table = _esa_mosaic_table(ra, dec)
+    vis = table[table["filter_name"] == ESA_FILTERS[0]]
+    if vis.empty:
+        raise ValueError(f"No VIS mosaic of dr1.mosaic_product at (ra, dec) = ({ra}, {dec}).")
+    tile = vis["tile_index"].iloc[_closest_tile(vis["ra"], vis["dec"], ra, dec)]
+    written = []
+    for band, filter_name in zip(EUMMY_BANDS, ESA_FILTERS):
+        rows = table[(table["tile_index"] == tile) & (table["filter_name"] == filter_name)]
+        if rows.empty:
+            raise ValueError(f"No {band} mosaic of tile {tile} at (ra, dec) = ({ra}, {dec}).")
+        row = rows.iloc[0]
+        response = requests.get(ESA_CUTOUT_URL, timeout=REQUEST_TIMEOUT_S, params={
+            "filepath": f"{row['file_path']}/{row['file_name']}", "collection": row["instrument_name"],
+            "obsid": str(tile), "POS": f"CIRCLE,{float(ra)},{float(dec)},{size_arcmin / 120:.6f}",
+        })
+        response.raise_for_status()
+        if not response.content.startswith(b"SIMPLE"):
+            raise ValueError(f"The ESA cutout service returned no FITS for {row['file_name']}: "
+                             f"{response.content[:200]!r}")
+        path = outdir / str(row["file_name"])
+        path.write_bytes(response.content)
+        written.append(path)
+    return written
+
+
+def _irsa_cutouts(ra: float, dec: float, size_arcmin: float, outdir: Path) -> list[Path]:
+    """Cutouts of the closest tile, read from the IRSA mosaics with fsspec."""
     from astroquery.ipac.irsa import Irsa  # only for a download
 
     coord = SkyCoord(ra * u.deg, dec * u.deg)
@@ -116,10 +193,9 @@ def mer_cutouts_for_eummy(
     vis = np.where(science & (names == "VIS"))[0]
     if len(vis) == 0:
         raise ValueError(f"No VIS mosaic of {MER_COLLECTION} at (ra, dec) = ({ra}, {dec}).")
-    distances = SkyCoord(tile_ra_all[vis] * u.deg, tile_dec_all[vis] * u.deg).separation(coord)
-    tile_ra, tile_dec = tile_ra_all[vis[np.argmin(distances)]], tile_dec_all[vis[np.argmin(distances)]]
+    closest = vis[_closest_tile(tile_ra_all[vis], tile_dec_all[vis], ra, dec)]
+    tile_ra, tile_dec = tile_ra_all[closest], tile_dec_all[closest]
 
-    outdir.mkdir(parents=True, exist_ok=True)
     written = []
     for band in EUMMY_BANDS:
         index = np.where(science & (names == band))[0]

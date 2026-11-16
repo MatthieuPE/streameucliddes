@@ -1,10 +1,12 @@
 """Tests of images/euclid_images.py, offline: synthetic MER mosaics on disk instead of IRSA."""
 
+import io
 from pathlib import Path
 
 import astropy.units as u
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 import pytest
 from astropy.coordinates import SkyCoord
 from astropy.io import fits
@@ -57,7 +59,7 @@ def _write_mer_images(directory, ra, dec, n, tile="TILE102000001", source=False)
     return paths
 
 
-# Two tiles, the cutout of the closer one in each band, under its MER file name, the WCS centred on the position,
+# IRSA: two tiles, the cutout of the closer one in each band, under its MER file name, the WCS centred on the position,
 # the header kept; a second call reuses the files without a query
 def test_mer_cutouts_for_eummy(tmp_path, monkeypatch):
     from astroquery.ipac.irsa import Irsa
@@ -71,7 +73,7 @@ def test_mer_cutouts_for_eummy(tmp_path, monkeypatch):
     table = Table(rows=rows, names=("energy_bandpassname", "dataproduct_subtype", "s_ra", "s_dec", "access_url"))
     monkeypatch.setattr(Irsa, "query_sia", lambda **kwargs: table)
     ra, dec, size_arcmin = 45.501, -45.001, 0.5
-    paths = mer_cutouts_for_eummy(ra, dec, size_arcmin, tmp_path / "cutouts")
+    paths = mer_cutouts_for_eummy(ra, dec, size_arcmin, tmp_path / "cutouts", source="irsa")
     assert [path.name for path in paths] == [near[band].name for band in EUMMY_BANDS]
     n = round(size_arcmin / 60 / PIXEL_DEG)
     for path in paths:
@@ -84,7 +86,7 @@ def test_mer_cutouts_for_eummy(tmp_path, monkeypatch):
         raise AssertionError("queried again")
 
     monkeypatch.setattr(Irsa, "query_sia", no_query)
-    assert mer_cutouts_for_eummy(ra, dec, size_arcmin, tmp_path / "cutouts") == paths
+    assert mer_cutouts_for_eummy(ra, dec, size_arcmin, tmp_path / "cutouts", source="irsa") == paths
 
 
 # No VIS mosaic at the position: ValueError
@@ -95,7 +97,73 @@ def test_mer_cutouts_for_eummy_no_vis(tmp_path, monkeypatch):
                   names=("energy_bandpassname", "dataproduct_subtype", "s_ra", "s_dec", "access_url"))
     monkeypatch.setattr(Irsa, "query_sia", lambda **kwargs: table)
     with pytest.raises(ValueError, match="VIS"):
-        mer_cutouts_for_eummy(45.5, -45.0, 0.5, tmp_path)
+        mer_cutouts_for_eummy(45.5, -45.0, 0.5, tmp_path, source="irsa")
+
+
+# ESA: the mosaics of the closer tile in each band, cut by the cutout service (a circle of radius half the side),
+# saved under their MER file names in the order of the bands; a second call reuses the files without a query
+def test_mer_cutouts_for_eummy_esa(tmp_path, monkeypatch):
+    rows = []
+    for tile, tile_ra in ((102000001, 45.5), (102000002, 45.52)):
+        for band, filter_name in zip(EUMMY_BANDS, euclid_images.ESA_FILTERS):
+            name = f"EUC_MER_BGSUB-MOSAIC-{FILE_BANDS[band]}_TILE{tile}-ABC_20260101T000000.000000Z_00.00.fits"
+            rows.append({"file_name": name, "file_path": f"/data/{tile}", "filter_name": filter_name,
+                         "tile_index": tile, "instrument_name": "VIS" if band == "VIS" else "NISP",
+                         "ra": tile_ra, "dec": -45.0})
+    table = pd.DataFrame(rows)
+    monkeypatch.setattr(euclid_images, "_esa_mosaic_table", lambda ra, dec: table)
+    fits_bytes = io.BytesIO()
+    fits.PrimaryHDU(np.zeros((3, 3), dtype=np.float32), header=_wcs(45.5, -45.0, 3).to_header()).writeto(fits_bytes)
+    requests_made = []
+
+    class Response:
+        content = fits_bytes.getvalue()
+
+        def raise_for_status(self):
+            pass
+
+    def fake_get(url, params, timeout):
+        requests_made.append((url, params))
+        return Response()
+
+    import requests
+
+    monkeypatch.setattr(requests, "get", fake_get)
+    paths = mer_cutouts_for_eummy(45.501, -45.001, 3.0, tmp_path / "cutouts")
+    assert [path.name for path in paths] == list(table["file_name"][:4])  # tile 102000001, the closer one
+    assert all(url == euclid_images.ESA_CUTOUT_URL for url, _ in requests_made)
+    first = requests_made[0][1]
+    assert first["filepath"] == f"/data/102000001/{table['file_name'][0]}" and first["obsid"] == "102000001"
+    assert first["collection"] == "VIS" and first["POS"] == "CIRCLE,45.501,-45.001,0.025000"
+    assert all(path.read_bytes() == Response.content for path in paths)
+    assert mer_cutouts_for_eummy(45.501, -45.001, 3.0, tmp_path / "cutouts") == paths
+    assert len(requests_made) == 4
+
+
+# ESA: no VIS mosaic, or no FITS returned (an error page): ValueError; an unknown source: ValueError
+def test_mer_cutouts_for_eummy_esa_errors(tmp_path, monkeypatch):
+    import requests
+
+    with pytest.raises(ValueError, match="source"):
+        mer_cutouts_for_eummy(45.5, -45.0, 3.0, tmp_path, source="mast")
+    empty = pd.DataFrame(columns=["file_name", "file_path", "filter_name", "tile_index", "instrument_name", "ra", "dec"])
+    monkeypatch.setattr(euclid_images, "_esa_mosaic_table", lambda ra, dec: empty)
+    with pytest.raises(ValueError, match="No VIS"):
+        mer_cutouts_for_eummy(45.5, -45.0, 3.0, tmp_path)
+    table = pd.DataFrame([{"file_name": f"{band}.fits", "file_path": "/data", "filter_name": filter_name,
+                           "tile_index": 1, "instrument_name": "VIS", "ra": 45.5, "dec": -45.0}
+                          for band, filter_name in zip(EUMMY_BANDS, euclid_images.ESA_FILTERS)])
+    monkeypatch.setattr(euclid_images, "_esa_mosaic_table", lambda ra, dec: table)
+
+    class ErrorPage:
+        content = b"<html>Service unavailable</html>"
+
+        def raise_for_status(self):
+            pass
+
+    monkeypatch.setattr(requests, "get", lambda url, params, timeout: ErrorPage())
+    with pytest.raises(ValueError, match="no FITS"):
+        mer_cutouts_for_eummy(45.5, -45.0, 3.0, tmp_path)
 
 
 # The TIFF of eummy is north up: read_color_image gives it back in the FITS row order, in [0, 1]
