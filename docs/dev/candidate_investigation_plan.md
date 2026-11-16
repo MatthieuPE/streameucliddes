@@ -370,6 +370,28 @@ Done:
     `__setattr__`); `compute_isochrone` uses the match filter of the search.
   - DR1 stream 2 after these fixes: excess 254 ± 43 stars in the match filter
     (287 ± 43 before), off bands 5.11 and 5.79 deg².
+- Candidate list and fit module (2026-11-16):
+  - `fit_stream_width`, `stream_width_model` and their defaults
+    (`DEFAULT_SIGMA_GUESS_DEG`, `DEFAULT_FIT_HALF_WIDTH_DEG`,
+    `DEFAULT_BACKGROUND_DEGREE`) moved to `analysis/fit_stream.py`, where the
+    2D fit will go; the density profiles and maps stay in
+    `candidate_investigation.py` (the on/off φ1 profile uses them). No
+    re-export: imports updated; tests in `tests/test_fit_stream.py`.
+  - `catalogs/stream_candidates.py`: the list of candidates,
+    `data/candidates/candidates_info.csv` (local, gitignored: user choice),
+    columns `id, endpoint_1_ra, endpoint_1_dec, endpoint_2_ra,
+    endpoint_2_dec, best_dm` (ra/dec split: plain numbers); `load_candidates`,
+    `add_candidate` (next id), `candidate_endpoints`. Columns added by hand
+    are kept.
+  - `plotting/plot_candidates.py`: `plot_candidates(ax)` (arc between the
+    endpoints, endpoints, id over a skyproj map), `EndpointPicker` (left
+    click adds an endpoint, right click removes the last; (ra, dec) from the
+    inverse of the skyproj projection, `sky_axes_to_radec`). Needs ipympl
+    (`%matplotlib widget`), pip-installed in streameuclid (ipympl 0.10.0,
+    ipywidgets 8.1.9; nothing upgraded).
+  - `notebooks/find_candidates.ipynb`: generic map at one dm, known streams
+    and listed candidates over it, click, check in the frame with
+    `CandidateInvestigation` over dm, `add_candidate`.
 
 ## 4. New functions, by module
 

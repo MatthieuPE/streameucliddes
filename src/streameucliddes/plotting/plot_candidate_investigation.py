@@ -20,7 +20,8 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 
-from streameucliddes.analysis.candidate_investigation import region_windows, stream_width_model
+from streameucliddes.analysis.candidate_investigation import region_windows
+from streameucliddes.analysis.fit_stream import stream_width_model
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
 from streameucliddes.plotting.plot_cmd import (
     DEFAULT_DIFFERENCE_SMOOTHING_BINS,
@@ -165,7 +166,7 @@ def plot_width_fit_map(
 ) -> tuple[Figure, list[Axes]]:
     """The width fit in 2D: observed density, model, observed - model, in phi1/phi2.
 
-    The model (``analysis.candidate_investigation.stream_width_model``) is
+    The model (``analysis.fit_stream.stream_width_model``) is
     constant along phi1: the residual shows whether the stream follows the
     straight track over the phi1 range, and where the field is not
     constant. Observed and model share one colour scale (stars/deg²); the
