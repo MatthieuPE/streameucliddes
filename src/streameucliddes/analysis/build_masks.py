@@ -35,7 +35,7 @@ from streameucliddes.catalogs.survey_footprint import convert_footprint_healpix_
 
 if TYPE_CHECKING:
     import pandas as pd
-    from numpy.typing import NDArray
+    from numpy.typing import ArrayLike, NDArray
 
 LOGGER = logging.getLogger(__name__)
 
@@ -121,15 +121,51 @@ def objects_healpix_mask(
             mask[hp.ang2pix(nside, ra[i], dec[i], lonlat=True, nest=nest)] = True
         vector = hp.ang2vec(ra[i], dec[i], lonlat=True)
         candidates = hp.query_disc(nside, vector, np.radians(semi_major_deg[i]), nest=nest)  # centres in the circle
-        lon, lat = np.radians(hp.pix2ang(nside, candidates, nest=nest, lonlat=True))
-        centre_lon, centre_lat = np.radians(ra[i]), np.radians(dec[i])
-        separation = np.degrees(angular_separation(centre_lon, centre_lat, lon, lat))
-        angle = np.asarray(position_angle(centre_lon, centre_lat, lon, lat)) - np.radians(major_angle[i])
-        along_major, along_minor = separation * np.cos(angle), separation * np.sin(angle)
-        semi_minor_deg = semi_major_deg[i] * (1.0 - ellipticity[i])
-        inside = (along_major / semi_major_deg[i]) ** 2 + (along_minor / semi_minor_deg) ** 2 <= 1.0
-        mask[candidates[inside]] = True
+        lon, lat = hp.pix2ang(nside, candidates, nest=nest, lonlat=True)
+        radius = elliptical_radius_deg(lon, lat, ra[i], dec[i], ellipticity[i], major_angle[i])
+        mask[candidates[radius <= semi_major_deg[i]]] = True
     return mask
+
+
+def elliptical_radius_deg(
+    ra: ArrayLike,
+    dec: ArrayLike,
+    centre_ra: float,
+    centre_dec: float,
+    ellipticity: float,
+    major_axis_angle: float,
+) -> NDArray[np.float64]:
+    """Elliptical radius of points around a centre: the semi-major axis of the ellipse through each point.
+
+    A point is inside the ellipse of semi-major axis ``a`` (and semi-minor
+    axis ``(1 - ellipticity) * a``, major axis at ``major_axis_angle``) when
+    its elliptical radius is at most ``a``. Computed in the coordinates
+    (separation, position angle) around the centre
+    (``astropy.coordinates.angular_separation`` and ``position_angle``):
+    exact on the sky whatever the size.
+
+    Parameters
+    ----------
+    ra, dec : array_like
+        Points (deg).
+    centre_ra, centre_dec : float
+        Centre (deg).
+    ellipticity : float
+        1 - b/a; 0 for a circle (the elliptical radius is then the separation).
+    major_axis_angle : float
+        Position angle of the major axis (deg, north to east).
+
+    Returns
+    -------
+    radius : numpy.ndarray
+        Elliptical radius (deg), of the shape of ``ra``.
+    """
+    lon, lat = np.radians(np.asarray(ra, dtype=float)), np.radians(np.asarray(dec, dtype=float))
+    centre_lon, centre_lat = np.radians(centre_ra), np.radians(centre_dec)
+    separation = np.degrees(angular_separation(centre_lon, centre_lat, lon, lat))
+    angle = np.asarray(position_angle(centre_lon, centre_lat, lon, lat)) - np.radians(major_axis_angle)
+    along_major, along_minor = separation * np.cos(angle), separation * np.sin(angle)
+    return np.hypot(along_major, along_minor / (1.0 - ellipticity))
 
 
 def object_mask_nside(bin_size_deg: float) -> int:

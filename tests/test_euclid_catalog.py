@@ -5,6 +5,7 @@ import importlib.util
 import warnings
 from pathlib import Path
 
+import healpy as hp
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -85,6 +86,21 @@ def catalog_dir(request, tmp_path, rng):
 def test_unknown_catalog():
     with pytest.raises(ValueError, match="euclid_dr1"):
         euclid_catalog.default_columns("euclid_dr2")
+
+
+# The point map of the HATS folder, NESTED, read once per folder
+def test_catalog_point_map(tmp_path):
+    folder = tmp_path / "euclid_dr1" / "euclid_dr1_mer"
+    folder.mkdir(parents=True)
+    (folder / "hats.properties").write_text("obs_collection=euclid_dr1\n")
+    nside = 8
+    counts = np.arange(hp.nside2npix(nside), dtype=float)
+    hp.write_map(folder / "point_map.fits", counts, nest=True)
+    euclid_catalog._read_point_map.cache_clear()
+    point_map = euclid_catalog.catalog_point_map("euclid_dr1", data_path=tmp_path / "euclid_dr1")
+    np.testing.assert_array_equal(point_map, counts)
+    assert not point_map.flags.writeable
+    assert euclid_catalog.catalog_point_map("euclid_dr1", data_path=tmp_path / "euclid_dr1") is point_map
 
 
 def test_column_names():

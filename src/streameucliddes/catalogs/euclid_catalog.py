@@ -48,6 +48,7 @@ import functools
 import warnings
 from pathlib import Path
 
+import healpy as hp
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -384,6 +385,38 @@ def available_columns(catalog, data_path=None):
     """
     data_path = _catalog_info(catalog)["data_path"] if data_path is None else data_path
     return pq.read_schema(_catalog_dir(data_path) / "dataset" / "_common_metadata").names
+
+
+def catalog_point_map(catalog, data_path=None):
+    """
+    Number of sources of a catalog per HEALPix pixel: the ``point_map.fits`` of its HATS folder.
+
+    Written by hats-import, for all the sources of the catalog (not only the
+    stars), in NESTED order. Read once per folder (cached). A cheap way to
+    tell whether a position is in the catalog, without reading it.
+
+    Parameters
+    ----------
+    catalog : str
+        Key of :data:`CATALOGS`.
+    data_path : str or Path, optional
+        Folder containing the HATS catalog; default: the one of :data:`CATALOGS`.
+
+    Returns
+    -------
+    counts : numpy.ndarray
+        Sources per pixel, NESTED (read-only: shared between calls).
+    """
+    data_path = _catalog_info(catalog)["data_path"] if data_path is None else data_path
+    return _read_point_map(str(_catalog_dir(data_path) / "point_map.fits"))
+
+
+@functools.lru_cache(maxsize=2)
+def _read_point_map(path):
+    """HATS point map of a catalog, NESTED, read-only."""
+    counts = hp.read_map(path, nest=True)
+    counts.setflags(write=False)
+    return counts
 
 
 def open_euclid_catalog(
