@@ -73,6 +73,5 @@ markers = [
     "fit_stream: analysis/fit_stream.py (fits of a stream in its frame: width in phi2)",
     "candidate_investigation: analysis/candidate_investigation.py (regions, width and investigation of one stream candidate)",
     "stream_candidates: catalogs/stream_candidates.py (CSV list of the stream candidates)",
-    "plot_candidates: plotting/plot_candidates.py (candidates on a sky map, endpoints picked by clicking)",
-    "plot_candidate_investigation: plotting/plot_candidate_investigation.py (figures of a candidate investigation: tracks, regions, profiles)",
+    "plot_candidate_investigation: plotting/plot_candidate_investigation.py (figures of a candidate investigation: tracks, regions, profiles; the list of candidates on the sky, clicked endpoints)",
 ]

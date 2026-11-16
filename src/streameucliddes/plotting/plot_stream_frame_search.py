@@ -46,6 +46,8 @@ def plot_stream_frame_search_single_dm(
     other_tracks: Sequence[tuple[str, ArrayLike, ArrayLike]] = (),
     ax: Axes | None = None,
     vmax: float | None = None,
+    phi1_range: tuple[float, float] | None = None,
+    phi2_range: tuple[float, float] | None = None,
     cmap: str = "gray_r",
     title: str | None = None,
 ) -> tuple[Figure, Axes]:
@@ -56,7 +58,10 @@ def plot_stream_frame_search_single_dm(
     window. Does not save the figure: the workflows do.
 
     The colour scale goes from the 1st percentile of the density to
-    ``vmax`` (default: its 99.5th percentile), to bring out faint streams.
+    ``vmax`` (default: its 99.5th percentile), to bring out faint streams;
+    the percentiles are those of the bins shown (``phi1_range``,
+    ``phi2_range``), so that a dense object left out of view does not set
+    the scale.
     Bins outside the footprint are light grey. The track of the stream is a
     thin dashed line, not to hide the stream; the other tracks have one
     colour each and a legend.
@@ -74,7 +79,11 @@ def plot_stream_frame_search_single_dm(
         Axes to draw in. Default: a new figure.
     vmax : float, optional
         Top of the colour scale. Default: the 99.5th percentile of the density
-        (``DENSITY_PERCENTILES``).
+        (``DENSITY_PERCENTILES``) of the bins shown.
+    phi1_range, phi2_range : tuple of float, optional
+        Part of the map shown (deg), e.g. to leave out a dense object: the
+        axis limits and the bins of the colour scale (those whose centre is
+        inside, ``bins_in_phi12_range``). Default: the whole window.
     cmap : str, optional
         Colour map.
     title : str, optional
@@ -97,14 +106,15 @@ def plot_stream_frame_search_single_dm(
     half_bin = result["bin_size_deg"] / 2
     extent = (phi1_centres[0] - half_bin, phi1_centres[-1] + half_bin,
               phi2_centres[0] - half_bin, phi2_centres[-1] + half_bin)
+    view = _view_limits(extent, phi1_range, phi2_range)
     if ax is None:
-        width = extent[1] - extent[0]
-        height = extent[3] - extent[2]
+        width = view[1] - view[0]
+        height = view[3] - view[2]
         fig, ax = plt.subplots(figsize=(10.0, float(np.clip(10.0 * height / width, 2.0, 8.0)) + 1.0))
     else:
         fig = ax.figure
 
-    values = density.compressed()
+    values = density[bins_in_phi12_range(phi1_centres, phi2_centres, view[:2], view[2:])].compressed()
     vmin = float(np.percentile(values, DENSITY_PERCENTILES[0])) if values.size else 0.0
     if vmax is None:
         vmax = float(np.percentile(values, DENSITY_PERCENTILES[1])) if values.size else 1.0
@@ -123,10 +133,55 @@ def plot_stream_frame_search_single_dm(
     if track_phi12 is not None or len(other_tracks):
         ax.legend(loc="upper right", fontsize="small", framealpha=0.8, labelcolor=INK)
 
-    ax.set(xlim=(extent[1], extent[0]), ylim=(extent[2], extent[3]),  # phi1 increasing to the left
+    ax.set(xlim=(view[1], view[0]), ylim=(view[2], view[3]),  # phi1 increasing to the left
            xlabel=r"$\phi_1$ [deg]", ylabel=r"$\phi_2$ [deg]")
     ax.set_title(_single_dm_title(result) if title is None else title, color=INK)
     return fig, ax
+
+
+def bins_in_phi12_range(
+    phi1_centres: ArrayLike,
+    phi2_centres: ArrayLike,
+    phi1_range: tuple[float, float] | None = None,
+    phi2_range: tuple[float, float] | None = None,
+) -> NDArray[np.bool_]:
+    """Bins of a phi1/phi2 map whose centre is inside a phi1 and a phi2 range: those shown.
+
+    The colour scale of a zoomed map is computed on them only, so that a
+    dense object outside the view does not set it.
+
+    Parameters
+    ----------
+    phi1_centres, phi2_centres : array_like
+        Bin centres of the map (deg).
+    phi1_range, phi2_range : tuple of float, optional
+        Ranges (deg), in either order. None: the whole axis.
+
+    Returns
+    -------
+    inside : numpy.ndarray of bool
+        Shape (n_phi1, n_phi2), as the maps.
+    """
+    phi1_centres, phi2_centres = np.asarray(phi1_centres, dtype=float), np.asarray(phi2_centres, dtype=float)
+    inside = []
+    for centres, value_range in ((phi1_centres, phi1_range), (phi2_centres, phi2_range)):
+        if value_range is None:
+            inside.append(np.ones(centres.size, dtype=bool))
+        else:
+            low, high = sorted(float(value) for value in value_range)
+            inside.append((centres >= low) & (centres <= high))
+    return inside[0][:, None] & inside[1][None, :]
+
+
+def _view_limits(
+    extent: tuple[float, float, float, float],
+    phi1_range: tuple[float, float] | None,
+    phi2_range: tuple[float, float] | None,
+) -> tuple[float, float, float, float]:
+    """(phi1_min, phi1_max, phi2_min, phi2_max) shown: the given ranges (sorted), else those of the map."""
+    phi1 = extent[:2] if phi1_range is None else sorted(float(value) for value in phi1_range)
+    phi2 = extent[2:] if phi2_range is None else sorted(float(value) for value in phi2_range)
+    return (float(phi1[0]), float(phi1[1]), float(phi2[0]), float(phi2[1]))
 
 
 def draw_stream_track(

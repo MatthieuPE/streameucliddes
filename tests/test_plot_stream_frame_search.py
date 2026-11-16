@@ -29,6 +29,7 @@ from streameucliddes.plotting.plot_stream_frame_search import (
     draw_stream_track_on_sky,
     plot_galstreams_selection,
     plot_stream_frame_search_single_dm,
+    bins_in_phi12_range,
 )
 
 pytestmark = pytest.mark.plot_stream_frame_search
@@ -269,4 +270,33 @@ def test_draw_stream_track_on_sky_split():
     assert len(lines) == 2 and [line.get_label() for line in lines][0] == "edge"
     assert not lines[1].get_label() or lines[1].get_label().startswith("_")
     assert len(draw_stream_track_on_sky(sky_ax, np.full(50, 10.0), np.linspace(-30.0, -10.0, 50))) == 1
+    plt.close(fig)
+
+
+def _map_with_dense_corner():
+    """A flat map (about 1 per bin) with a dense object, like a dwarf: the bins at phi1 < -4 (a tenth of the map)."""
+    phi1_centres, phi2_centres = np.arange(-4.95, 5.0, 0.1), np.arange(-1.95, 2.0, 0.1)
+    density = np.ones((phi1_centres.size, phi2_centres.size)) + 0.01 * np.arange(phi2_centres.size)[None, :]
+    density[:10, :] = 1000.0
+    return {"density": density, "phi1_centres": phi1_centres, "phi2_centres": phi2_centres, "bin_size_deg": 0.1}
+
+
+# Bins whose centre is inside both ranges, in either order; None: the whole axis
+def test_bins_in_phi12_range():
+    inside = bins_in_phi12_range([-1.0, 0.0, 1.0], [-0.5, 0.5], (1.5, -0.5), None)
+    assert inside.shape == (3, 2) and inside.tolist() == [[False, False], [True, True], [True, True]]
+    assert bins_in_phi12_range([-1.0, 0.0, 1.0], [-0.5, 0.5]).all()
+
+
+# phi1_range and phi2_range set the limits (phi1 to the left) and the colour scale: the dense object out of
+# view no longer sets its top; the whole window by default
+def test_plot_single_dm_view_ranges_set_colour_scale():
+    result = _map_with_dense_corner()
+    fig, ax = plot_stream_frame_search_single_dm(result, title="")
+    assert ax.images[0].get_clim()[1] > 100.0
+    plt.close(fig)
+    fig, ax = plot_stream_frame_search_single_dm(result, phi1_range=(-3.0, 3.0), phi2_range=(1.5, -1.5), title="")
+    vmin, vmax = ax.images[0].get_clim()
+    assert vmax < 2.0 and vmin >= 1.0
+    assert ax.get_xlim() == (3.0, -3.0) and ax.get_ylim() == (-1.5, 1.5)
     plt.close(fig)

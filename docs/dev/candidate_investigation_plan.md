@@ -383,15 +383,25 @@ Done:
     endpoint_2_dec, best_dm` (ra/dec split: plain numbers); `load_candidates`,
     `add_candidate` (next id), `candidate_endpoints`. Columns added by hand
     are kept.
-  - `plotting/plot_candidates.py`: `plot_candidates(ax)` (arc between the
-    endpoints, endpoints, id over a skyproj map), `EndpointPicker` (left
-    click adds an endpoint, right click removes the last; (ra, dec) from the
-    inverse of the skyproj projection, `sky_axes_to_radec`). Needs ipympl
-    (`%matplotlib widget`), pip-installed in streameuclid (ipympl 0.10.0,
-    ipywidgets 8.1.9; nothing upgraded).
+  - `plot_candidates(ax)` (arc between the endpoints, endpoints, id over a
+    skyproj map), `EndpointPicker` (left click adds an endpoint, right click
+    removes the last; a click is a press and release at the same place, so
+    it works with the zoom or pan tool on; (ra, dec) from the inverse of the
+    skyproj projection, `sky_axes_to_radec`): in
+    `plotting/plot_candidate_investigation.py`, last section (first in a
+    `plot_candidates.py` of their own, merged at the user's request: one
+    plotting module for the candidates). Needs ipympl (`%matplotlib
+    widget`), pip-installed in streameuclid (ipympl 0.10.0, ipywidgets
+    8.1.9; nothing upgraded).
   - `notebooks/find_candidates.ipynb`: generic map at one dm, known streams
     and listed candidates over it, click, check in the frame with
     `CandidateInvestigation` over dm, `add_candidate`.
+  - phi1/phi2 maps zoomable with their colour scale: `phi1_range`,
+    `phi2_range` of `plot_stream_frame_search_single_dm`,
+    `plot_candidate_map` and `plot_width_fit_map` (the frame check through
+    `zoom_kwargs`) set the axis limits and the bins of the percentiles
+    (`bins_in_phi12_range`), so that a dense object out of view does not
+    saturate the scale; `MAP_PHI1_RANGE`, `MAP_PHI2_RANGE` in find_candidates.
 
 ## 4. New functions, by module
 

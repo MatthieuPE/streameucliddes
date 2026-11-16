@@ -8,8 +8,8 @@ The file is in ``data/candidates/`` (local, gitignored with the rest of
 ``data/``). Columns added by hand are kept when a candidate is added.
 
 ``load_candidates`` reads the list, ``add_candidate`` adds one and writes the
-file; ``plotting.plot_candidates`` draws them on a sky map, and its
-``EndpointPicker`` gives the endpoints from clicks on the map.
+file; ``plotting.plot_candidate_investigation.plot_candidates`` draws them on a
+sky map, and ``EndpointPicker`` gives the endpoints from clicks on the map.
 """
 
 from __future__ import annotations
