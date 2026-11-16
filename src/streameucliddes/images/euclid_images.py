@@ -38,9 +38,10 @@ from astropy.nddata import Cutout2D
 from astropy.wcs import WCS
 
 from streameucliddes.analysis.candidate_investigation import region_windows
+from streameucliddes.analysis.cmd_match_filter import match_filter_columns
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
 from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS
-from streameucliddes.stream_frames import phi12_to_radec
+from streameucliddes.stream_frames import in_phi12_window, phi12_to_radec
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -64,6 +65,8 @@ MER_FILE_PATTERNS = ("EUC_MER_BGSUB-MOSAIC-VIS*.fits", "EUC_MER_BGSUB-MOSAIC-NIR
                      "EUC_MER_BGSUB-MOSAIC-NIR-J*.fits", "EUC_MER_BGSUB-MOSAIC-NIR-H*.fits")
 DEFAULT_CUTOUT_SIZE_ARCMIN = 3.0
 DEFAULT_IMAGE_STEP_DEG = 1.0  # spacing of the image positions along the track
+DEFAULT_N_STAMPS = 24  # match-filter stars of the on region in match_filter_star_positions
+DEFAULT_STAMP_SIZE_ARCMIN = 0.5  # side of the stamps centred on single stars
 COLOR_IMAGE_NAME = "color.tif"  # TIFF written by make_color_image, in the folder of the cutouts
 EUMMY_FALLBACK_PATH = Path("~/.local/bin/eummy").expanduser()  # where pipx installs it
 IMAGE_FIGSIZE = (8.0, 8.0)
@@ -349,6 +352,56 @@ def candidate_image_positions(
     return pd.concat(rows, ignore_index=True)
 
 
+def match_filter_star_positions(cand: CandidateInvestigation, n_stars: int = DEFAULT_N_STAMPS) -> pd.DataFrame:
+    """Stars of the on region in the match filter, ``n_stars`` of them spread evenly along the track.
+
+    The stars counted in the stream (``cand.stars_in_match_filter()``,
+    outside the excluded mask, in the on region of ``region_windows``),
+    sorted by phi1, every k-th one so that the ``n_stars`` follow their
+    distribution along the track: to look at them one by one (stamps
+    centred on each) and check that they are stars, not something in the
+    data (artefacts, compact galaxies, tile edges).
+
+    Parameters
+    ----------
+    cand : CandidateInvestigation
+        With its regions (``define_regions``) and a distance modulus.
+    n_stars : int, optional
+        Number of stars; all of them if there are fewer.
+
+    Returns
+    -------
+    stars : pandas.DataFrame
+        Columns ``phi1``, ``phi2``, ``ra``, ``dec`` (deg), the magnitude and
+        colour of the match filter (``mag``, ``color``, with their band
+        names in ``mag_label``, ``color_label``), and ``index``, the row of
+        ``cand.search.stars``; sorted by phi1.
+
+    Raises
+    ------
+    ValueError
+        No regions, or ``n_stars < 1``.
+    """
+    if cand.regions is None:
+        raise ValueError("No regions: call cand.define_regions() first.")
+    if n_stars < 1:
+        raise ValueError(f"n_stars must be >= 1, not {n_stars}.")
+    stars = cand.search.stars
+    phi1, phi2 = stars["phi1"].to_numpy(), stars["phi2"].to_numpy()
+    on = cand.stars_in_match_filter() & in_phi12_window(phi1, phi2, region_windows(cand.regions)["on"])
+    rows = np.flatnonzero(on)
+    rows = rows[np.argsort(phi1[rows], kind="stable")]
+    if rows.size > n_stars:
+        rows = rows[np.round(np.linspace(0, rows.size - 1, n_stars)).astype(int)]
+    reference, color_band, *_ = match_filter_columns(cand.search.match_filter)
+    mag = stars[reference].to_numpy()[rows]
+    return pd.DataFrame({
+        "phi1": phi1[rows], "phi2": phi2[rows], "ra": stars["ra"].to_numpy()[rows], "dec": stars["dec"].to_numpy()[rows],
+        "mag": mag, "color": mag - stars[color_band].to_numpy()[rows], "mag_label": reference,
+        "color_label": f"{reference} - {color_band}", "index": stars.index.to_numpy()[rows],
+    })
+
+
 # ===================================================
 # Figure
 # ===================================================
@@ -361,6 +414,7 @@ def plot_color_image(
     marked_stars: Mapping[str, tuple[ArrayLike, ArrayLike]] | None = None,
     ax: Axes | None = None,
     title: str | None = None,
+    legend: bool = True,
 ) -> tuple[Figure, Axes]:
     """Colour image with its sky coordinates, and stars of a catalog circled.
 
@@ -377,6 +431,8 @@ def plot_color_image(
         Axes with ``projection=wcs``. Default: a new figure.
     title : str, optional
         Title of the axes.
+    legend : bool, optional
+        Draw the legend of the marked stars (e.g. not on small stamps).
 
     Returns
     -------
@@ -403,7 +459,7 @@ def plot_color_image(
             coord.set_format_unit(u.deg, decimal=True, show_decimal_unit=False)
     ax.set_xlabel("ra [deg]")
     ax.set_ylabel("dec [deg]")
-    if marked_stars:
+    if marked_stars and legend:
         ax.legend(loc="upper right", fontsize="small", framealpha=0.8)
     if title is not None:
         ax.set_title(title)

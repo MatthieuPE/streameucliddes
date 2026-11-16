@@ -20,11 +20,12 @@ from streameucliddes.images.euclid_images import (
     candidate_image_positions,
     cutout_wcs,
     make_color_image,
+    match_filter_star_positions,
     mer_cutouts_for_eummy,
     plot_color_image,
     read_color_image,
 )
-from streameucliddes.stream_frames import radec_to_phi12
+from streameucliddes.stream_frames import in_phi12_window, radec_to_phi12
 
 pytestmark = pytest.mark.euclid_images
 
@@ -225,6 +226,29 @@ def test_candidate_image_positions(candidate_endpoints):
         candidate_image_positions(cand, off_region="left")
     with pytest.raises(ValueError, match="step_deg"):
         candidate_image_positions(cand, 0.0)
+
+
+# The on-region stars in the match filter: n of them, sorted by phi1, spread over the whole list (first and last
+# kept), with their magnitude and colour; all of them when fewer; errors
+def test_match_filter_star_positions(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    with pytest.raises(ValueError, match="define_regions"):
+        match_filter_star_positions(cand)
+    cand.prepare(candidate_stream_catalog).fit_width().define_regions()
+    stars = cand.search.stars
+    on = cand.stars_in_match_filter() & in_phi12_window(stars["phi1"], stars["phi2"], region_windows(cand.regions)["on"])
+    all_on = stars[on].sort_values("phi1")
+    picked = match_filter_star_positions(cand, 10)
+    assert len(picked) == 10 and picked["phi1"].is_monotonic_increasing
+    assert set(picked["index"]) <= set(all_on.index)
+    assert picked["index"].iloc[0] == all_on.index[0] and picked["index"].iloc[-1] == all_on.index[-1]
+    row = stars.loc[picked["index"].iloc[0]]
+    assert picked["ra"].iloc[0] == row["ra"] and picked["mag"].iloc[0] == row["euclid_q1_VIS_obs"]
+    assert picked["color"].iloc[0] == pytest.approx(row["euclid_q1_VIS_obs"] - row["euclid_q1_H_obs"])
+    assert len(match_filter_star_positions(cand, 10 * on.sum())) == on.sum()
+    with pytest.raises(ValueError, match="n_stars"):
+        match_filter_star_positions(cand, 0)
 
 
 # The image on WCS axes; only the marked stars inside it drawn, at their pixel, counted in the legend
