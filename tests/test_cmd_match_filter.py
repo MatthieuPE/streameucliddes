@@ -8,8 +8,12 @@ from streameucliddes.analysis.cmd_match_filter import (
     difference_hess,
     hess_diagram,
     isochrone_cmd_track,
+    match_filter_cmd_columns,
+    match_filter_cmd_limits,
+    match_filter_polygons,
     mean_off_density,
     mean_off_hess,
+    on_off_hess,
 )
 
 pytestmark = pytest.mark.cmd_match_filter
@@ -308,3 +312,40 @@ def test_mean_off_hess():
         mean_off_hess(below, hess_diagram(stars(4), columns, area_deg2=4.0, color_bins=[0.0, 1.0], mag_bins=[19.0, 21.0]))
     with pytest.raises(ValueError, match="Neither"):
         mean_off_hess(hess_diagram(stars(2), columns, **bins), hess_diagram(stars(4), columns, **bins))
+
+
+# ===================================================
+# Test match_filter_cmd_columns, match_filter_cmd_limits and on_off_hess
+# ===================================================
+
+
+# One CMD per colour band: (reference, colour band); its limits: the polygon plus the margin
+def test_match_filter_cmd_columns_and_limits():
+    assert match_filter_cmd_columns(MATCH_FILTER_GRI) == [("des_yr6_g_obs", "des_yr6_r_obs"),
+                                                          ("des_yr6_g_obs", "des_yr6_i_obs")]
+    limits = match_filter_cmd_limits(18.0, ISOCHRONE, MATCH_FILTER_GRI, margin_mag=0.3)
+    for (color_lim, mag_lim), polygon in zip(limits, match_filter_polygons(18.0, ISOCHRONE, MATCH_FILTER_GRI)):
+        assert color_lim == pytest.approx((polygon[:, 0].min() - 0.3, polygon[:, 0].max() + 0.3))
+        assert mag_lim == pytest.approx((polygon[:, 1].min() - 0.3, polygon[:, 1].max() + 0.3))
+
+
+# One off region: its own diagram; two: their mean (mean_off_hess); then the difference
+def test_on_off_hess(stars, rng):
+    mag_cols = ("euclid_q1_VIS_obs", "euclid_q1_H_obs")
+    region = rng.integers(0, 3, len(stars))
+    on, below, above = (region == i for i in range(3))
+    on_hess, off_hess, difference = on_off_hess(stars, mag_cols, on, 1.0, [below], [2.0])
+    np.testing.assert_array_equal(on_hess["density"], hess_diagram(stars, mag_cols, mask=on, area_deg2=1.0)["density"])
+    below_hess = hess_diagram(stars, mag_cols, mask=below, area_deg2=2.0)
+    np.testing.assert_array_equal(off_hess["density"], below_hess["density"])
+    np.testing.assert_array_equal(difference["density"], difference_hess(on_hess, off_hess)["density"])
+
+    _, off_hess, _ = on_off_hess(stars, mag_cols, on, 1.0, [below, above], [2.0, 0.0])  # one without area: left out
+    below_hess = hess_diagram(stars, mag_cols, mask=below, area_deg2=2.0)
+    np.testing.assert_array_equal(off_hess["density"], below_hess["density"])
+    _, off_hess, _ = on_off_hess(stars, mag_cols, on, 1.0, [below, above], [2.0, 3.0])
+    expected = mean_off_hess(hess_diagram(stars, mag_cols, mask=below, area_deg2=2.0),
+                             hess_diagram(stars, mag_cols, mask=above, area_deg2=3.0))
+    np.testing.assert_array_equal(off_hess["density"], expected["density"])
+    with pytest.raises(ValueError, match="One or two"):
+        on_off_hess(stars, mag_cols, on, 1.0, [below, above, on], [1.0, 1.0, 1.0])

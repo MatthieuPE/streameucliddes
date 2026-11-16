@@ -134,6 +134,58 @@ def star_count_nside(
     return nside
 
 
+def footprint_mask_from_stars(ra: ArrayLike, dec: ArrayLike, max_nside: int) -> NDArray[np.bool_]:
+    """Footprint of a set of stars, less its partly covered edge pixels (RING).
+
+    ``survey_footprint_healpix_mask`` of the star counts at
+    ``star_count_nside`` (``max_nside``, coarser when the pixels hold too
+    few stars), less its edge pixels (``trim_footprint_edge``): the
+    footprint of the stars of a window or of a box around an object.
+
+    Parameters
+    ----------
+    ra, dec : array_like
+        Stars (deg), not copied.
+    max_nside : int
+        Finest nside allowed.
+
+    Returns
+    -------
+    mask : numpy.ndarray of bool
+        True outside the footprint, RING, at the nside chosen (from its length).
+    """
+    nside = star_count_nside(ra, dec, max_nside)
+    return trim_footprint_edge(survey_footprint_healpix_mask(ra, dec, nside, nest=False), nest=False)
+
+
+def in_healpix_mask(ra: ArrayLike, dec: ArrayLike, healpix_mask: ArrayLike, *, nest: bool) -> NDArray[np.bool_]:
+    """Points in the True pixels of a HEALPix mask (nside from its length).
+
+    Points without finite coordinates are not in it.
+
+    Parameters
+    ----------
+    ra, dec : array_like
+        Points (deg).
+    healpix_mask : array_like of bool
+        HEALPix mask, of any nside.
+    nest : bool
+        Its ordering.
+
+    Returns
+    -------
+    inside : numpy.ndarray of bool
+        Of the shape of ``ra``.
+    """
+    healpix_mask = np.asarray(healpix_mask, dtype=bool)
+    ra, dec = np.asarray(ra, dtype=float), np.asarray(dec, dtype=float)
+    finite = np.isfinite(ra) & np.isfinite(dec)
+    inside = np.zeros(ra.shape, dtype=bool)
+    inside[finite] = healpix_mask[hp.ang2pix(hp.npix2nside(healpix_mask.size), ra[finite], dec[finite], lonlat=True,
+                                             nest=nest)]
+    return inside
+
+
 def trim_footprint_edge(footprint_mask: NDArray[np.bool_], *, nest: bool) -> NDArray[np.bool_]:
     """The footprint less its edge pixels: those with a neighbour outside it (``healpy.get_all_neighbours``).
 
@@ -273,9 +325,7 @@ def _mask_at_phi12(
     healpix_mask: ArrayLike, phi1: ArrayLike, phi2: ArrayLike, stream_frame: coord.BaseCoordinateFrame, *, nest: bool
 ) -> NDArray[np.bool_]:
     """Value of a HEALPix mask at phi1/phi2 points (nside from its length)."""
-    healpix_mask = np.asarray(healpix_mask, dtype=bool)
-    ra, dec = phi12_to_radec(phi1, phi2, stream_frame)
-    return healpix_mask[hp.ang2pix(hp.npix2nside(healpix_mask.size), ra, dec, lonlat=True, nest=nest)]
+    return in_healpix_mask(*phi12_to_radec(phi1, phi2, stream_frame), healpix_mask, nest=nest)
 
 
 def unmasked_area_deg2(
@@ -315,17 +365,50 @@ def unmasked_area_deg2(
     area_deg2 : numpy.ndarray
         Shape (len(phi1_edges) - 1, len(phi2_edges) - 1) (deg²).
     """
+    phi1, phi2, weight, cells = phi12_area_pieces(phi1_edges, phi2_edges, step_deg=step_deg)
+    if excluded_healpix_mask is not None:
+        weight = np.where(_mask_at_phi12(excluded_healpix_mask, phi1, phi2, stream_frame, nest=False), 0.0, weight)
+    n_1, n_2 = np.size(phi1_edges) - 1, np.size(phi2_edges) - 1
+    return np.bincount(cells, weights=weight, minlength=n_1 * n_2).reshape(n_1, n_2)
+
+
+def phi12_area_pieces(
+    phi1_edges: ArrayLike, phi2_edges: ArrayLike, *, step_deg: float = 0.01
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.float64], NDArray[np.int64]]:
+    """Fine pieces of phi1/phi2 cells, each with its exact solid angle.
+
+    Each cell is cut into pieces of about ``step_deg``; a piece of widths
+    ``dphi1``, ``dphi2`` centred at ``phi2`` has the solid angle ``dphi1
+    (sin(phi2 + dphi2/2) - sin(phi2 - dphi2/2))``, exact on the sphere: their
+    sum is the area of the cells. Summing the pieces whose centre is in a
+    region (outside a mask, inside an ellipse) gives the area of that
+    region, to the size of a piece. Used by ``unmasked_area_deg2``.
+
+    Parameters
+    ----------
+    phi1_edges, phi2_edges : array_like
+        Edges of the cells along each axis (deg), increasing.
+    step_deg : float, optional
+        Size of the pieces (deg).
+
+    Returns
+    -------
+    phi1, phi2 : numpy.ndarray
+        Centres of the pieces (deg), flattened.
+    area_deg2 : numpy.ndarray
+        Solid angle of each piece (deg²).
+    cell : numpy.ndarray of int
+        Cell of each piece, ``i_phi1 * n_phi2 + i_phi2``.
+    """
     phi1, cell_1, width_1 = _fine_pieces(phi1_edges, step_deg)
     phi2, cell_2, width_2 = _fine_pieces(phi2_edges, step_deg)
     half = np.radians(width_2) / 2
     strip = np.sin(np.radians(phi2) + half) - np.sin(np.radians(phi2) - half)  # solid angle per radian of phi1
-    weight = np.outer(np.radians(width_1), strip) * np.degrees(1.0) ** 2  # deg²
-    if excluded_healpix_mask is not None:
-        grid_1, grid_2 = np.meshgrid(phi1, phi2, indexing="ij")
-        weight = np.where(_mask_at_phi12(excluded_healpix_mask, grid_1, grid_2, stream_frame, nest=False), 0.0, weight)
-    n_1, n_2 = np.size(phi1_edges) - 1, np.size(phi2_edges) - 1
+    area = np.outer(np.radians(width_1), strip) * np.degrees(1.0) ** 2  # deg²
+    grid_1, grid_2 = np.meshgrid(phi1, phi2, indexing="ij")
+    n_2 = np.size(phi2_edges) - 1
     cells = (cell_1[:, None] * n_2 + cell_2[None, :]).ravel()
-    return np.bincount(cells, weights=weight.ravel(), minlength=n_1 * n_2).reshape(n_1, n_2)
+    return grid_1.ravel(), grid_2.ravel(), area.ravel(), cells
 
 
 def _fine_pieces(edges: ArrayLike, step_deg: float) -> tuple[NDArray[np.float64], NDArray[np.int64], NDArray[np.float64]]:

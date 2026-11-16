@@ -13,8 +13,13 @@ import healpy as hp
 import numpy as np
 import pandas as pd
 
-from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, match_filter_columns
+from streameucliddes.analysis.cmd_match_filter import (
+    DEFAULT_MATCH_FILTER,
+    match_filter_columns,
+    select_stars_in_match_filter,
+)
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
+from streameucliddes.catalogs.survey_footprint import in_healpix_mask
 from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12
 
 if TYPE_CHECKING:
@@ -22,7 +27,7 @@ if TYPE_CHECKING:
     from typing import Any
 
     import astropy.coordinates as coord
-    from numpy.typing import NDArray
+    from numpy.typing import ArrayLike, NDArray
 
 # Default cut on the errors of the match-filter bands (as the SNR forecasts of injected_stream_snr)
 DEFAULT_ERR_CUT = (None, 0.2)
@@ -188,7 +193,7 @@ def prepare_match_filter_catalog(
             keep_chunk = keep[chunk]  # a view: setting it updates keep
             chunk_ra, chunk_dec = ra[chunk][keep_chunk], dec[chunk][keep_chunk]
             if pixel_near is not None:
-                near = _in_pixels(chunk_ra, chunk_dec, pixel_near)
+                near = in_healpix_mask(chunk_ra, chunk_dec, pixel_near, nest=False)
                 keep_chunk[keep_chunk] = near
                 chunk_ra, chunk_dec = chunk_ra[near], chunk_dec[near]
             phi1, phi2 = radec_to_phi12(chunk_ra, chunk_dec, stream_frame)
@@ -213,6 +218,48 @@ def prepare_match_filter_catalog(
         index=catalog.index.take(np.flatnonzero(keep)),
         copy=False,  # the selected rows are already copies: not copied again
     )
+
+
+def catalog_match_filter_mask(
+    catalog: pd.DataFrame,
+    distance_modulus: float,
+    isochrone: Mapping[str, float] | None = None,
+    match_filter: Mapping[str, Any] | None = None,
+    *,
+    cuts: Mapping[str, Any] | None = None,
+    mask: ArrayLike | None = None,
+) -> NDArray[np.bool_]:
+    """Rows of a catalog passing the cuts of a match filter and inside it, as a mask: nothing copied.
+
+    ``prepare_match_filter_catalog`` with ``as_mask`` (the default error
+    cuts updated by ``cuts``), then ``cmd_match_filter.select_stars_in_match_filter``
+    on those rows. Combine it with other selections with ``&``, e.g. a cut
+    on the catalog columns.
+
+    Parameters
+    ----------
+    catalog : pandas.DataFrame
+        Stars, e.g. ``catalogs.euclid_catalog.get_euclid_stars()``.
+    distance_modulus : float
+        Distance modulus of the filter.
+    isochrone : mapping, optional
+        ``{"age", "metallicity"}``. Default: the first isochrone of
+        ``catalogs.isochrone_parameters.default_isochrone_grid``.
+    match_filter : mapping, optional
+        See ``cmd_match_filter``. Default: ``DEFAULT_MATCH_FILTER``.
+    cuts : mapping, optional
+        See ``prepare_match_filter_catalog``.
+    mask : array_like of bool, optional
+        Rows to consider; the others are not selected.
+
+    Returns
+    -------
+    selected : numpy.ndarray of bool, shape (len(catalog),)
+    """
+    keep = prepare_match_filter_catalog(catalog, match_filter, cuts=cuts, as_mask=True)
+    if mask is not None:
+        keep &= np.asarray(mask, dtype=bool)
+    return select_stars_in_match_filter(catalog, distance_modulus, isochrone, match_filter, mask=keep)
 
 
 def star_healpix_pixels(
@@ -294,15 +341,5 @@ def _drop_excluded_pixels(catalog, keep, excluded_pixels, nest, ra_col, dec_col)
     for start in range(0, len(catalog), CHUNK_SIZE):
         chunk = slice(start, start + CHUNK_SIZE)
         keep_chunk = keep[chunk]  # a view: setting it updates keep
-        keep_chunk[keep_chunk] = ~_in_pixels(ra[chunk][keep_chunk], dec[chunk][keep_chunk], excluded_pixels, nest=nest)
-
-
-def _in_pixels(
-    ra: NDArray[np.float64], dec: NDArray[np.float64], pixel_mask: NDArray[np.bool_], *, nest: bool = False
-) -> NDArray[np.bool_]:
-    """Stars in the True pixels of a HEALPix mask (RING by default); NaN coordinates are not."""
-    nside = hp.npix2nside(pixel_mask.size)
-    finite = np.isfinite(ra) & np.isfinite(dec)
-    inside = np.zeros(ra.size, dtype=bool)
-    inside[finite] = pixel_mask[hp.ang2pix(nside, ra[finite], dec[finite], lonlat=True, nest=nest)]
-    return inside
+        keep_chunk[keep_chunk] = ~in_healpix_mask(ra[chunk][keep_chunk], dec[chunk][keep_chunk], excluded_pixels,
+                                                  nest=nest)

@@ -16,7 +16,7 @@ import pandas as pd
 import pytest
 from streamobs.match_filter import is_in_match_filter
 
-from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, object_mask_nside, objects_healpix_mask
+from streameucliddes.analysis.build_masks import mask_radius_scales, object_mask_nside, objects_healpix_mask
 from streameucliddes.analysis.catalog_preparation import prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_MATCH_FILTER,
@@ -247,7 +247,7 @@ def test_prepare_search_object_masks(stream_catalog, gc_frame, monkeypatch):
     nside = object_mask_nside(BIN)
     healpix = np.zeros(hp.nside2npix(nside), dtype=bool)
     for object_type, object_table in objects.items():
-        healpix |= objects_healpix_mask(object_table, nside, nest=False, radius_scale=DEFAULT_RADIUS_SCALES[object_type])
+        healpix |= objects_healpix_mask(object_table, nside, nest=False, radius_scale=mask_radius_scales(object_table, object_type))
     expected = survey_footprint_phi12_mask(healpix, gc_frame, WINDOW, BIN, nest=False)
     assert 0 < expected.sum() < expected.size / 4
     np.testing.assert_array_equal(masked.object_mask, expected)

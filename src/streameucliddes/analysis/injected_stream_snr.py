@@ -7,8 +7,8 @@ import astropy.units as u
 import gala.coordinates as gc
 import logging
 
-from streameucliddes.analysis.catalog_preparation import default_error_cuts, prepare_match_filter_catalog
-from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, select_stars_in_match_filter
+from streameucliddes.analysis.catalog_preparation import catalog_match_filter_mask, default_error_cuts
+from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER
 from streameucliddes.catalogs.catalog_cuts import cut_flow
 from streameucliddes.catalogs.euclid_catalog import get_euclid_stars
 from streameucliddes.injection import inject
@@ -142,7 +142,7 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.debug(f"Background cut flow:\n{cut_flow(stars_background, mf_cuts)}")
 
-        snr_results[match_filter["name"]] = _compute_SNR(n_stream, n_background)
+        snr_results[match_filter["name"]] = compute_snr(n_stream, n_background)
 
     return snr_results, stream_config
 
@@ -177,11 +177,16 @@ def _count_selected(catalog, cuts, distance_modulus, isochrone, match_filter):
     Number of stars of ``catalog`` passing ``cuts`` and inside the match filter, with
     the preparation and selection of the searches.
     """
-    stars = prepare_match_filter_catalog(catalog, match_filter, cuts=cuts)
-    return int(select_stars_in_match_filter(stars, distance_modulus, isochrone, match_filter).sum())
+    return int(catalog_match_filter_mask(catalog, distance_modulus, isochrone, match_filter, cuts=cuts).sum())
 
-def _compute_SNR(n_stream, n_background):
-    """SNR of ``n_stream`` stream stars over ``n_background`` background stars."""
+
+def compute_snr(n_stream, n_background):
+    """SNR of ``n_stream`` stream (or excess) stars over ``n_background`` background stars.
+
+    ``n_stream / sqrt(n_background)``; 0 without stream stars, inf without
+    background. Also the SNR of the excess on a known object
+    (``analysis.gc_dwarf_optimization.selection_snr``).
+    """
     if n_stream == 0:
         return 0.0  # No stream star selected, even without background
     if n_background == 0:

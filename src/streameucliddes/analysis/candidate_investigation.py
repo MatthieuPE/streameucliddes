@@ -63,17 +63,14 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
-import healpy as hp
 import numpy as np
 
 from streameucliddes.analysis.build_masks import excluded_healpix_mask
 from streameucliddes.analysis.cmd_match_filter import (
-    difference_hess,
-    hess_diagram,
     isochrone_cmd_track,
     match_filter_columns,
     mean_off_density,
-    mean_off_hess,
+    on_off_hess,
     select_stars_in_match_filter,
 )
 from streameucliddes.analysis.fit_stream import DEFAULT_SIGMA_GUESS_DEG, fit_stream_width
@@ -83,14 +80,9 @@ from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_scan,
     stream_frame_search_single_dm,
 )
-from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, DEFAULT_METALLICITIES
+from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, isochrone_from_feh
 from streameucliddes.catalogs.stream_candidates import DEFAULT_CANDIDATES_PATH, candidate_endpoints, get_candidate
-from streameucliddes.catalogs.survey_footprint import (
-    star_count_nside,
-    survey_footprint_healpix_mask,
-    trim_footprint_edge,
-    unmasked_area_deg2,
-)
+from streameucliddes.catalogs.survey_footprint import footprint_mask_from_stars, in_healpix_mask, unmasked_area_deg2
 from streameucliddes.stream_frames import (
     DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
     DEFAULT_PADDING_PHI1_DEG,
@@ -102,7 +94,7 @@ from streameucliddes.stream_frames import (
     radec_to_phi12,
     stream_frame_from_endpoints,
 )
-from streameucliddes.unit_conversions import convert_DM_to_kpc, convert_FeH_to_z
+from streameucliddes.unit_conversions import convert_DM_to_kpc
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -697,7 +689,8 @@ class CandidateInvestigation:
         """``{"age", "metallicity"}`` of the match filter and of the isochrone track.
 
         Z from ``feh`` when given (``unit_conversions.convert_FeH_to_z``),
-        else ``metallicity``, else ``DEFAULT_METALLICITIES[0]``. Computed each
+        else ``metallicity``, else ``DEFAULT_METALLICITIES[0]``
+        (``catalogs.isochrone_parameters.isochrone_from_feh``). Computed each
         time: changing ``age``, ``metallicity`` or ``feh`` changes it.
 
         Raises
@@ -705,15 +698,7 @@ class CandidateInvestigation:
         ValueError
             Both ``metallicity`` and ``feh`` set.
         """
-        if self.metallicity is not None and self.feh is not None:
-            raise ValueError("Give metallicity (Z) or feh, not both.")
-        if self.feh is not None:
-            metallicity = float(convert_FeH_to_z(self.feh))
-        elif self.metallicity is not None:
-            metallicity = float(self.metallicity)
-        else:
-            metallicity = float(DEFAULT_METALLICITIES[0])
-        return {"age": float(self.age), "metallicity": metallicity}
+        return isochrone_from_feh(self.age, feh=self.feh, metallicity=self.metallicity)
 
     def _set_frame_and_window(self) -> None:
         """Frame from the endpoints, window around them, (ra, dec) box of the window."""
@@ -803,9 +788,10 @@ class CandidateInvestigation:
         footprint_mask : numpy.ndarray of bool, optional
             HEALPix footprint, True outside, kept in ``self.footprint_mask``.
             Default: the one kept, else from the stars
-            (``survey_footprint_healpix_mask`` at ``DEFAULT_FOOTPRINT_NSIDE``,
-            coarser if the pixels hold too few stars: ``star_count_nside``),
-            less its edge pixels (``trim_footprint_edge``: partly covered,
+            (``footprint_mask_from_stars``: ``survey_footprint_healpix_mask`` at
+            ``DEFAULT_FOOTPRINT_NSIDE``, coarser if the pixels hold too few
+            stars: ``star_count_nside``), less its edge pixels
+            (``trim_footprint_edge``: partly covered,
             they would count their whole area). A given footprint is used as
             it is.
         nest : bool, optional
@@ -831,10 +817,9 @@ class CandidateInvestigation:
         if footprint_mask is not None:
             self.footprint_mask, self.footprint_nest = np.asarray(footprint_mask, dtype=bool), nest
         elif self.footprint_mask is None:
-            ra, dec = catalog["ra"].to_numpy(), catalog["dec"].to_numpy()
-            nside = star_count_nside(ra, dec, DEFAULT_FOOTPRINT_NSIDE)  # coarser for a sparse catalog
-            self.footprint_mask = trim_footprint_edge(survey_footprint_healpix_mask(ra, dec, nside, nest=False),
-                                                      nest=False)  # the partly covered edge pixels left out
+            # coarser for a sparse catalog; the partly covered edge pixels left out
+            self.footprint_mask = footprint_mask_from_stars(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(),
+                                                            DEFAULT_FOOTPRINT_NSIDE)
             self.footprint_nest = False
         self._prepare_stars()
         return self
@@ -945,9 +930,8 @@ class CandidateInvestigation:
             self.footprint_mask, self.search.object_healpix_mask, nest=self.footprint_nest
         )
         stars = self.search.stars
-        pixels = hp.ang2pix(hp.npix2nside(self.excluded_healpix_mask.size), stars["ra"].to_numpy(),
-                            stars["dec"].to_numpy(), lonlat=True)
-        self.stars_not_excluded = ~self.excluded_healpix_mask[pixels]
+        self.stars_not_excluded = ~in_healpix_mask(stars["ra"].to_numpy(), stars["dec"].to_numpy(),
+                                                   self.excluded_healpix_mask, nest=False)
 
     def _endpoints_phi1_range(self) -> tuple[float, float]:
         """phi1 of endpoint_1 and endpoint_2 (deg): negative, then positive."""
@@ -1184,7 +1168,7 @@ class CandidateInvestigation:
         ``reference_band - color_bands[color_index]`` of the match filter and
         magnitude ``reference_band``; densities per deg² with the areas of
         ``define_regions``. The off diagram is the mean of those of the two
-        off regions (``mean_off_hess``).
+        off regions (``on_off_hess``, ``mean_off_hess``).
 
         Parameters
         ----------
@@ -1207,14 +1191,10 @@ class CandidateInvestigation:
         stars = self.search.stars
         on, below, above = self._region_star_masks()
         reference, *colors = match_filter_columns(self.search.match_filter)
-        kwargs = {"color_bins": color_bins, "mag_bins": mag_bins}
-        self.on_hess = hess_diagram(stars, (reference, colors[color_index]), mask=on, area_deg2=self.areas["on"],
-                                    **kwargs)
-        off_region_hess = [hess_diagram(stars, (reference, colors[color_index]), mask=mask,
-                                        area_deg2=self.areas[name] if self.areas[name] > 0 else None, **kwargs)
-                           for mask, name in ((below, "off_below"), (above, "off_above"))]
-        self.off_hess = mean_off_hess(*off_region_hess)
-        self.diff_hess = difference_hess(self.on_hess, self.off_hess)
+        self.on_hess, self.off_hess, self.diff_hess = on_off_hess(
+            stars, (reference, colors[color_index]), on, self.areas["on"], (below, above),
+            (self.areas["off_below"], self.areas["off_above"]), color_bins=color_bins, mag_bins=mag_bins,
+        )
         return self
 
     def compute_isochrone(

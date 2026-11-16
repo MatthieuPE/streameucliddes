@@ -98,18 +98,18 @@ def _snr(match_filter=DEFAULT_MATCH_FILTER, **kwargs):
 
 
 # ===================================================
-# Test _compute_SNR
+# Test compute_snr
 # ===================================================
 
 
 # SNR = number of stream stars / sqrt(number of background stars)
 def test_compute_snr():
-    assert injected_stream_snr._compute_SNR(2, 8) == pytest.approx(2 / np.sqrt(8))
-    assert injected_stream_snr._compute_SNR(0, 4) == 0
+    assert injected_stream_snr.compute_snr(2, 8) == pytest.approx(2 / np.sqrt(8))
+    assert injected_stream_snr.compute_snr(0, 4) == 0
     # No background left: infinite SNR rather than a division by zero
-    assert injected_stream_snr._compute_SNR(3, 0) == np.inf
+    assert injected_stream_snr.compute_snr(3, 0) == np.inf
     # Nothing selected at all: no detection, not an infinite SNR
-    assert injected_stream_snr._compute_SNR(0, 0) == 0
+    assert injected_stream_snr.compute_snr(0, 0) == 0
 
 
 # ===================================================

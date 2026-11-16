@@ -15,7 +15,8 @@ track, two endpoints); ``in_phi12_window`` selects stars in a window;
 ``phi12_window_outline`` gives its outline (to the sky with
 ``phi12_to_radec``); ``phi12_window_radec_box`` the (ra, dec) box of the
 stars to read. A stream candidate gets its frame from two (ra, dec) points
-along it (``stream_frame_from_endpoints``).
+along it (``stream_frame_from_endpoints``); a known object, a frame centred
+on it (``frame_centred_on_point``).
 """
 
 from __future__ import annotations
@@ -338,3 +339,33 @@ def stream_frame_from_endpoints(
     if separation < 1e-6 or separation > 180.0 - 1e-6:
         raise ValueError(f"Endpoints {endpoint_1} and {endpoint_2} are {separation:g} deg apart: no single great circle.")
     return gc.GreatCircleICRSFrame.from_endpoints(point_1, point_2)
+
+
+def frame_centred_on_point(
+    ra: float, dec: float, *, phi1_position_angle: float = 90.0
+) -> coord.BaseCoordinateFrame:
+    """Great-circle frame with a point at (phi1, phi2) = (0, 0), phi1 increasing towards a position angle.
+
+    ``stream_frame_from_endpoints`` of the two points 1 deg on each side of
+    the point along ``phi1_position_angle``: their midpoint, the point, is
+    the origin. By default phi1 increases to the east and phi2 to the north:
+    the coordinates of ``astropy.coordinates.SkyOffsetFrame`` around the
+    point (checked to 1e-4 deg); the maps, phi1 increasing to the left, are
+    then seen as the sky, north up and east left.
+
+    Parameters
+    ----------
+    ra, dec : float
+        The point (deg), e.g. a dwarf galaxy or a globular cluster.
+    phi1_position_angle : float, optional
+        Position angle of the phi1 axis at the point (deg, north to east),
+        e.g. the major axis of an object.
+
+    Returns
+    -------
+    frame : gala.coordinates.GreatCircleICRSFrame
+    """
+    centre = coord.SkyCoord(ra=ra * u.deg, dec=dec * u.deg)
+    before = centre.directional_offset_by((phi1_position_angle + 180.0) * u.deg, 1.0 * u.deg)
+    after = centre.directional_offset_by(phi1_position_angle * u.deg, 1.0 * u.deg)
+    return stream_frame_from_endpoints((before.ra.deg, before.dec.deg), (after.ra.deg, after.dec.deg))

@@ -415,6 +415,7 @@ def catalog_point_map(catalog, data_path=None):
 def _read_point_map(path):
     """HATS point map of a catalog, NESTED, read-only."""
     counts = hp.read_map(path, nest=True)
+    counts = counts.astype(counts.dtype.newbyteorder("="), copy=False)  # FITS: big-endian, pandas needs native
     counts.setflags(write=False)
     return counts
 

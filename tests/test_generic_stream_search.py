@@ -13,7 +13,7 @@ import pytest
 from streamobs.match_filter import is_in_match_filter
 
 from streameucliddes.analysis import catalog_preparation, generic_stream_search
-from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, objects_healpix_mask
+from streameucliddes.analysis.build_masks import mask_radius_scales, objects_healpix_mask
 from streameucliddes.catalogs import overlapped_objects
 from streameucliddes.catalogs import survey_footprint
 from streameucliddes.analysis.catalog_preparation import default_error_cuts
@@ -203,7 +203,8 @@ def test_prepare_object_mask(catalog, monkeypatch):
 
     disks = np.zeros(hp.nside2npix(NSIDE), dtype=bool)
     for object_type, object_table in objects.items():
-        disks |= objects_healpix_mask(object_table, NSIDE, nest=False, radius_scale=DEFAULT_RADIUS_SCALES[object_type])
+        disks |= objects_healpix_mask(object_table, NSIDE, nest=False,
+                                      radius_scale=mask_radius_scales(object_table, object_type))
     np.testing.assert_array_equal(masked.object_mask, disks)
     assert not plain.object_mask.any()
     np.testing.assert_array_equal(masked.footprint_mask, plain.footprint_mask | disks)

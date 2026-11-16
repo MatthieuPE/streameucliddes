@@ -35,6 +35,8 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
+from streameucliddes.unit_conversions import convert_FeH_to_z
+
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
@@ -90,6 +92,42 @@ def default_isochrone_grid(
         {"age": float(age), "metallicity": float(z)}
         for age, z in itertools.product(ages_gyr, metallicities)
     ]
+
+
+def isochrone_from_feh(
+    age: float | None = None, *, feh: float | None = None, metallicity: float | None = None
+) -> dict[str, float]:
+    """One isochrone ``{"age", "metallicity"}``, from [Fe/H] or Z, the defaults for what is unknown.
+
+    Parameters
+    ----------
+    age : float, optional
+        Age (Gyr). None or NaN: ``DEFAULT_AGES_GYR[0]``.
+    feh : float, optional
+        [Fe/H], converted to Z (``unit_conversions.convert_FeH_to_z``,
+        Marigo et al. 2017 scale). None or NaN: unknown.
+    metallicity : float, optional
+        Z, when [Fe/H] is not given. None or NaN, and no [Fe/H]:
+        ``DEFAULT_METALLICITIES[0]``.
+
+    Returns
+    -------
+    isochrone : dict
+        ``{"age": age (Gyr), "metallicity": Z}``.
+
+    Raises
+    ------
+    ValueError
+        Both ``feh`` and ``metallicity`` given.
+    """
+    known = [value is not None and np.isfinite(value) for value in (age, feh, metallicity)]
+    if known[1] and known[2]:
+        raise ValueError("Give metallicity (Z) or feh, not both.")
+    if known[1]:
+        z = float(convert_FeH_to_z(feh))
+    else:
+        z = float(metallicity) if known[2] else float(DEFAULT_METALLICITIES[0])
+    return {"age": float(age) if known[0] else float(DEFAULT_AGES_GYR[0]), "metallicity": z}
 
 
 def known_stream_isochrone_parameters(

@@ -20,7 +20,10 @@ from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.plotting import plot_cmd
 from streameucliddes.plotting.plot_style import COLORBAR_LABEL_SIZE
 from streameucliddes.plotting.plot_cmd import (
+    cmd_panel_axes,
     plot_hess,
+    plot_on_off_cmd,
+    plot_on_off_hess_per_color,
     plot_isochrone,
     plot_match_filter,
     plot_match_filter_polygon,
@@ -301,3 +304,51 @@ def test_plot_cmd_wrapper():
     assert ax.get_xlim() == pytest.approx((np.percentile(colour, 1), 1.0))
     plt.close(fig)
 
+
+# ===================================================
+# Test cmd_panel_axes, plot_on_off_cmd, plot_on_off_hess_per_color
+# ===================================================
+
+
+def test_cmd_panel_axes():
+    fig, axes = cmd_panel_axes(None, 3)
+    assert len(axes) == 3 and all(ax.figure is fig for ax in axes)
+    with pytest.raises(ValueError, match="2 axes for 3 panels"):
+        cmd_panel_axes(axes[:2], 3)
+    plt.close(fig)
+
+
+# The on stars and a fraction area_ratio of the off stars, one panel per colour band with the polygon and the
+# isochrone; or the given pairs, without them
+def test_plot_on_off_cmd(catalog):
+    on = np.arange(len(catalog)) % 4 == 0
+    off = ~on
+    fig, axes = plot_on_off_cmd(catalog, on, off, 0.25, DM, ISOCHRONE, VIS_H_J_MATCH_FILTER)
+    assert [ax.get_xlabel() for ax in axes] == ["VIS - H", "VIS - J"]
+    off_points, on_points = (collection.get_offsets() for collection in axes[0].collections)
+    assert len(on_points) == on.sum()
+    assert abs(len(off_points) - 0.25 * off.sum()) < 5 * np.sqrt(0.25 * off.sum())
+    assert all(any(line.get_label() == "Match filter" for line in ax.get_lines()) for ax in axes)
+    assert all(len(ax.get_lines()) == 2 for ax in axes)  # polygon and isochrone
+    plt.close(fig)
+    fig, axes = plot_on_off_cmd(catalog, on, off, 0.25, mag_cols=[(f"{H}_obs", f"{J}_obs")])
+    assert len(axes) == 1 and axes[0].get_xlabel() == "H - J" and not axes[0].get_lines()
+    plt.close(fig)
+
+
+# One row of on, off, on - off (and smoothed) per colour, with the polygon on every panel; or per given pair
+def test_plot_on_off_hess_per_color(catalog):
+    on = np.arange(len(catalog)) % 4 == 0
+    fig, axes = plot_on_off_hess_per_color(catalog, on, 1.0, [~on], [3.0], DM, ISOCHRONE, VIS_H_J_MATCH_FILTER)
+    assert [len(row) for row in axes] == [4, 4]
+    assert axes[1][0].get_xlabel() == "VIS - J"
+    assert all(any(line.get_label() == "Match filter" for line in ax.get_lines()) for row in axes for ax in row)
+    plt.close(fig)
+    fig, axes = plot_on_off_hess_per_color(catalog, on, 1.0, [~on], [3.0], mag_cols=[(f"{VIS}_obs", f"{H}_obs")],
+                                           smoothed_difference=False)
+    assert [len(row) for row in axes] == [3]
+    plt.close(fig)
+    with pytest.raises(ValueError, match="rows"):
+        plot_on_off_hess_per_color(catalog, on, 1.0, [~on], [3.0], DM, ISOCHRONE, VIS_H_J_MATCH_FILTER,
+                                   axes=[plt.subplots(1, 4)[1]])
+    plt.close("all")

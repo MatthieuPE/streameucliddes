@@ -13,12 +13,17 @@ import pytest
 from streameucliddes.analysis import catalog_preparation
 from streameucliddes.analysis.catalog_preparation import (
     DEFAULT_ERR_CUT,
+    catalog_match_filter_mask,
     check_columns,
     default_error_cuts,
     prepare_match_filter_catalog,
     star_healpix_pixels,
 )
-from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, DES_GR_MATCH_FILTER
+from streameucliddes.analysis.cmd_match_filter import (
+    DEFAULT_MATCH_FILTER,
+    DES_GR_MATCH_FILTER,
+    select_stars_in_match_filter,
+)
 from streameucliddes.stream_frames import radec_to_phi12
 
 pytestmark = pytest.mark.catalog_preparation
@@ -333,3 +338,24 @@ def test_star_healpix_pixels_memory(rng, monkeypatch):
     finally:
         tracemalloc.stop()
     assert peak < 4 * n + 60 * chunk_size < 8 * n
+
+
+# ===================================================
+# Test catalog_match_filter_mask
+# ===================================================
+
+
+# The selection of the searches (prepare_match_filter_catalog, then select_stars_in_match_filter), as a mask over
+# the catalog; a given mask restricts it
+def test_catalog_match_filter_mask(catalog):
+    cuts = {"euclid_q1_VIS_err": (None, 0.3)}
+    prepared = prepare_match_filter_catalog(catalog, DEFAULT_MATCH_FILTER, cuts=cuts)
+    expected = np.zeros(len(catalog), dtype=bool)
+    expected[catalog.index.get_indexer(prepared.index)] = select_stars_in_match_filter(prepared, 18.0, None,
+                                                                                        DEFAULT_MATCH_FILTER)
+    selected = catalog_match_filter_mask(catalog, 18.0, None, DEFAULT_MATCH_FILTER, cuts=cuts)
+    np.testing.assert_array_equal(selected, expected)
+    assert selected.sum() > 0
+    bright = (catalog["euclid_q1_VIS_obs"] < 22.0).to_numpy()
+    np.testing.assert_array_equal(
+        catalog_match_filter_mask(catalog, 18.0, None, DEFAULT_MATCH_FILTER, cuts=cuts, mask=bright), expected & bright)

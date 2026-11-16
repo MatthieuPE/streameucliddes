@@ -4,10 +4,14 @@ import numpy as np
 import pytest
 
 from streameucliddes.catalogs.isochrone_parameters import (
+    DEFAULT_AGES_GYR,
+    DEFAULT_METALLICITIES,
     default_isochrone_grid,
+    isochrone_from_feh,
     known_stream_isochrone_parameters,
     load_stream_population_table,
 )
+from streameucliddes.unit_conversions import convert_FeH_to_z
 
 pytestmark = pytest.mark.isochrone_parameters
 
@@ -138,3 +142,19 @@ def test_known_stream_isochrone_parameters_defaults():
     atlas = known_stream_isochrone_parameters("AAU-ATLAS")  # spectroscopic Z, default age
     assert atlas == [{"age": 13.0, "metallicity": table.loc["AAU-ATLAS", "z"]}]
     assert known_stream_isochrone_parameters("Unknown") == default_isochrone_grid()
+
+
+# ===================================================
+# Test isochrone_from_feh
+# ===================================================
+
+
+# Z from [Fe/H], else the given Z, else the default; the default age when unknown (None or NaN)
+def test_isochrone_from_feh():
+    assert isochrone_from_feh(11.0, feh=-2.0) == {"age": 11.0, "metallicity": pytest.approx(convert_FeH_to_z(-2.0))}
+    assert isochrone_from_feh(metallicity=0.0004) == {"age": DEFAULT_AGES_GYR[0], "metallicity": 0.0004}
+    default = {"age": DEFAULT_AGES_GYR[0], "metallicity": DEFAULT_METALLICITIES[0]}
+    assert isochrone_from_feh() == default
+    assert isochrone_from_feh(np.nan, feh=np.nan, metallicity=np.nan) == default
+    with pytest.raises(ValueError, match="not both"):
+        isochrone_from_feh(feh=-2.0, metallicity=0.0004)

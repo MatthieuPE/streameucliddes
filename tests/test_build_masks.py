@@ -8,10 +8,19 @@ import pytest
 from astropy.coordinates import SkyCoord
 
 from streameucliddes.analysis.build_masks import (
+    DEFAULT_RADIUS_SCALE,
     DEFAULT_RADIUS_SCALES,
+    GC_PROFILE_SLOPE,
+    GC_REFERENCE_RADIUS_SCALE,
+    GC_REFERENCE_SURFACE_BRIGHTNESS,
     OBJECT_TYPES,
+    ellipse_outline_radec,
+    elliptical_radius_deg,
     excluded_healpix_mask,
     galaxies_healpix_mask,
+    globular_cluster_radius_scales,
+    globular_clusters_healpix_mask,
+    mask_radius_scales,
     object_mask_nside,
     objects_healpix_mask,
     overlapped_objects_healpix_mask,
@@ -23,16 +32,16 @@ pytestmark = pytest.mark.build_masks
 NSIDE = 128  # pixels of 0.46 deg
 
 
-def _objects(ra, dec, radius_arcmin, ellipticity=np.nan, position_angle=np.nan):
+def _objects(ra, dec, radius_arcmin, ellipticity=np.nan, position_angle=np.nan, v_mag=np.nan):
     """Objects with the columns of catalogs.overlapped_objects."""
-    ra, dec, radius_arcmin, ellipticity, position_angle = (
-        np.atleast_1d(value).astype(float) for value in (ra, dec, radius_arcmin, ellipticity, position_angle)
+    ra, dec, radius_arcmin, ellipticity, position_angle, v_mag = (
+        np.atleast_1d(value).astype(float) for value in (ra, dec, radius_arcmin, ellipticity, position_angle, v_mag)
     )
     n = ra.size
     return pd.DataFrame({
         "key": [f"object_{i}" for i in range(n)], "name": "", "ra": ra, "dec": dec, "radius_arcmin": radius_arcmin,
         "ellipticity": np.broadcast_to(ellipticity, n), "position_angle": np.broadcast_to(position_angle, n),
-        "distance_kpc": 50.0,
+        "distance_kpc": 50.0, "apparent_magnitude_v": np.broadcast_to(v_mag, n),
     })
 
 
@@ -117,7 +126,8 @@ def mock_objects(monkeypatch):
     """Objects of each type, apart on the sky, instead of the LVDB and the atlas; galaxies: an elongated
     large one, and one smaller than a pixel."""
     objects = {"lmc": _objects(80.0, -69.0, 190.0, 0.16, 227.0), "smc": _objects(16.0, -72.0, 60.0),
-               "dwarfs": _objects(40.0, -34.0, 20.0), "gc": _objects(10.0, -10.0, 5.0),
+               "dwarfs": _objects(40.0, -34.0, 20.0),
+               "gc": _objects([10.0, 20.0], [-10.0, -10.0], [5.0, 5.0], v_mag=[6.0, 15.0]),
                "galaxies": _objects([120.0, 150.0], [20.0, 30.0], [15.0, 0.2], [0.75, 0.0], [30.0, 0.0])}
     monkeypatch.setattr(overlapped_objects, "get_lmc", lambda: objects["lmc"])
     monkeypatch.setattr(overlapped_objects, "get_smc", lambda: objects["smc"])
@@ -146,7 +156,7 @@ def test_galaxies_circles(mock_objects):
 
 # Each flag adds the mask of its type, with its default radius scale; none: nothing masked
 def test_union_of_types(mock_objects):
-    single = {object_type: _type_mask(object_type, objects, DEFAULT_RADIUS_SCALES[object_type])
+    single = {object_type: _type_mask(object_type, objects, mask_radius_scales(objects, object_type))
               for object_type, objects in mock_objects.items()}
     assert all(single[object_type].any() for object_type in OBJECT_TYPES)
     flags = {object_type: f"mask_{object_type}" for object_type in OBJECT_TYPES}
@@ -172,8 +182,12 @@ def test_radius_scale(mock_objects):
     per_type = overlapped_objects_healpix_mask(NSIDE, nest=False, radius_scale={"lmc": scale}, **flags)
     expected = _type_mask("lmc", mock_objects["lmc"], scale)
     for object_type in ("smc", "dwarfs", "gc", "galaxies"):
-        expected |= _type_mask(object_type, mock_objects[object_type], DEFAULT_RADIUS_SCALES[object_type])
+        objects = mock_objects[object_type]
+        expected |= _type_mask(object_type, objects, mask_radius_scales(objects, object_type))
     np.testing.assert_array_equal(per_type, expected)
+    # None: the default of the type
+    np.testing.assert_array_equal(
+        overlapped_objects_healpix_mask(NSIDE, nest=False, radius_scale={"gc": None, "lmc": scale}, **flags), per_type)
 
     with pytest.raises(ValueError, match="sagittarius"):
         overlapped_objects_healpix_mask(NSIDE, nest=False, radius_scale={"sagittarius": 1.0})
@@ -226,3 +240,67 @@ def test_excluded_mask_without_objects():
 def test_excluded_mask_rejects_coarser_objects():
     with pytest.raises(ValueError, match="coarser"):
         excluded_healpix_mask(_footprint(64, False), np.zeros(hp.nside2npix(16), dtype=bool), nest=False)
+
+
+# ===================================================
+# Test the scales of the globular clusters
+# ===================================================
+
+
+def _surface_brightness(v_mag, radius_arcmin):
+    """Mean surface brightness within the half-light radius (mag/arcmin**2)."""
+    return v_mag + 2.5 * np.log10(2 * np.pi * radius_arcmin**2)
+
+
+# The reference scale at the reference surface brightness; larger for brighter clusters, as a power law of slope
+# GC_PROFILE_SLOPE; at least DEFAULT_RADIUS_SCALE; DEFAULT_RADIUS_SCALE when V is unknown or not given
+def test_globular_cluster_radius_scales():
+    radius = 0.5
+    v_reference = GC_REFERENCE_SURFACE_BRIGHTNESS - 2.5 * np.log10(2 * np.pi * radius**2)
+    clusters = pd.DataFrame({"apparent_magnitude_v": [v_reference, v_reference - 1.0, 25.0, np.nan],
+                             "radius_arcmin": radius})
+    scales = globular_cluster_radius_scales(clusters)
+    assert scales[0] == pytest.approx(GC_REFERENCE_RADIUS_SCALE)
+    assert scales[1] / scales[0] == pytest.approx(10 ** (0.4 / GC_PROFILE_SLOPE))
+    assert scales[2:].tolist() == [DEFAULT_RADIUS_SCALE, DEFAULT_RADIUS_SCALE]
+    np.testing.assert_array_equal(globular_cluster_radius_scales(clusters[["radius_arcmin"]]), DEFAULT_RADIUS_SCALE)
+    # same V, larger cluster: fainter surface brightness, smaller scale (in half-light radii)
+    assert globular_cluster_radius_scales(clusters.assign(radius_arcmin=1.0))[0] < scales[0]
+    # an ellipse of half the area (b/a = 0.5): brighter by 2.5 log10(2), as the circle of V 0.75 mag brighter
+    flattened = globular_cluster_radius_scales(clusters.assign(ellipticity=0.5))[0]
+    circle = globular_cluster_radius_scales(clusters.assign(apparent_magnitude_v=v_reference - 2.5 * np.log10(2)))[0]
+    assert flattened == pytest.approx(circle)
+
+
+# One scale per object: the given one, the default of the type, or per cluster
+def test_mask_radius_scales():
+    clusters = _objects([10.0, 20.0], [-10.0, -10.0], [1.0, 1.0], v_mag=[6.0, 15.0])
+    np.testing.assert_array_equal(mask_radius_scales(clusters, "gc", 2.5), [2.5, 2.5])
+    np.testing.assert_array_equal(mask_radius_scales(clusters, "gc"), globular_cluster_radius_scales(clusters))
+    for object_type in ("lmc", "smc", "dwarfs", "galaxies"):
+        np.testing.assert_array_equal(mask_radius_scales(clusters, object_type), DEFAULT_RADIUS_SCALES[object_type])
+    with pytest.raises(ValueError, match="sagittarius"):
+        mask_radius_scales(clusters, "sagittarius")
+
+
+# The bright cluster is masked over its own scale, larger than DEFAULT_RADIUS_SCALE; the faint one over
+# DEFAULT_RADIUS_SCALE; a given scale for both
+def test_globular_clusters_mask(mock_objects):
+    clusters = mock_objects["gc"]
+    scales = globular_cluster_radius_scales(clusters)
+    assert scales[0] > DEFAULT_RADIUS_SCALE == scales[1]
+    expected = (_expected_mask(clusters.iloc[:1], NSIDE, scales[0])
+                | _expected_mask(clusters.iloc[1:], NSIDE, scales[1]))
+    np.testing.assert_array_equal(globular_clusters_healpix_mask(NSIDE, nest=False), expected)
+    np.testing.assert_array_equal(globular_clusters_healpix_mask(NSIDE, nest=False, radius_scale=3.0),
+                                  _expected_mask(clusters, NSIDE, 3.0))
+
+
+# The outline: every point at elliptical radius semi_major_deg; the major-axis ends at that separation
+@pytest.mark.parametrize("centre", [(60.0, -30.0), (0.1, 80.0)])
+def test_ellipse_outline_radec(centre):
+    ra, dec = ellipse_outline_radec(*centre, 2.0, 0.4, 30.0, n_points=72)
+    assert ra.size == 73 and ra[0] == pytest.approx(ra[-1]) and dec[0] == pytest.approx(dec[-1])
+    np.testing.assert_allclose(elliptical_radius_deg(ra, dec, *centre, 0.4, 30.0), 2.0, rtol=1e-9)
+    separation = SkyCoord(centre[0] * u.deg, centre[1] * u.deg).separation(SkyCoord(ra * u.deg, dec * u.deg)).deg
+    assert separation.max() == pytest.approx(2.0) and separation.min() == pytest.approx(2.0 * 0.6)

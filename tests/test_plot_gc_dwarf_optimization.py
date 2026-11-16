@@ -11,20 +11,18 @@ import numpy as np
 import pandas as pd
 import pytest
 from astropy.coordinates import SkyCoord
-from matplotlib.patches import Ellipse
 
+from streameucliddes.analysis.build_masks import elliptical_radius_deg
+from streameucliddes.analysis.catalog_preparation import catalog_match_filter_mask
 from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
-from streameucliddes.analysis.gc_dwarf_optimization import (
-    compare_selections,
-    object_regions,
-    stars_in_match_filter,
-)
+from streameucliddes.analysis.gc_dwarf_optimization import compare_selections, object_regions
 from streameucliddes.plotting.plot_gc_dwarf_optimization import (
     plot_object_cmd,
     plot_object_hess,
     plot_object_map,
     plot_selection_comparison,
 )
+from streameucliddes.stream_frames import phi12_to_radec
 
 pytestmark = pytest.mark.plot_gc_dwarf_optimization
 
@@ -33,7 +31,7 @@ ISOCHRONE = {"age": 12.0, "metallicity": 0.0003}
 VIS, H, J = "euclid_q1_VIS", "euclid_q1_H", "euclid_q1_J"
 VIS_H_J = {"name": "vis_h_j", "reference_band": ("euclid_q1", "VIS"),
            "color_bands": [("euclid_q1", "H"), ("euclid_q1", "J")]}
-OBJECT = pd.Series({"key": "dwarf_a", "name": "Dwarf A", "ra": 50.0, "dec": -30.0, "radius_arcmin": 6.0,
+OBJECT = pd.Series({"key": "dwarf_a", "name": "Dwarf_A", "ra": 50.0, "dec": -30.0, "radius_arcmin": 6.0,
                     "ellipticity": 0.4, "position_angle": 30.0, "distance_modulus": DM, "feh": -2.0})
 
 
@@ -70,53 +68,42 @@ def close_figures():
     plt.close("all")
 
 
-# The counts of the selected stars; the edges of the on and off regions; the SNR in the title
+# The map of the frame (phi1 east, to the left); the outlines of the regions on their ellipses; the SNR in the title
 def test_plot_object_map(catalog, regions):
-    selected = stars_in_match_filter(catalog, DM, ISOCHRONE, VIS_H_J)
-    fig, ax = plot_object_map(regions, selected, bin_arcmin=2.0)
-    image = ax.get_images()[0]
-    left, right, bottom, top = image.get_extent()
-    east, north = regions["offset_east_deg"] * 60.0, regions["offset_north_deg"] * 60.0
-    in_map = (east >= left) & (east < right) & (north >= bottom) & (north < top)
-    assert image.get_array().sum() == (selected & ~regions["excluded"] & in_map).sum()
-    ellipses = [patch for patch in ax.patches if isinstance(patch, Ellipse)]
-    assert len(ellipses) == 3  # on outer edge (inner 0 not drawn), off inner and outer
+    selected = catalog_match_filter_mask(catalog, DM, ISOCHRONE, VIS_H_J)
+    fig, ax = plot_object_map(regions, selected, bin_size_deg=0.05)
     assert ax.get_xlim()[0] > ax.get_xlim()[1]  # east to the left
-    assert "SNR" in ax.get_title()
+    outlines = {line.get_label(): line.get_xydata() for line in ax.get_lines() if line.get_label() in ("on", "off")}
+    assert set(outlines) == {"on", "off"}
+    for label, radius in (("on", 2.0), ("off", 10.0)):
+        ra, dec = phi12_to_radec(*outlines[label].T, regions["stream_frame"])
+        np.testing.assert_allclose(elliptical_radius_deg(ra, dec, 50.0, -30.0, 0.4, 30.0), radius * 0.1, rtol=1e-6)
+    assert len(ax.get_lines()) == 3  # on outer edge (inner 0 not drawn), off inner and outer
+    assert "SNR" in ax.get_title() and "Dwarf" in ax.get_title()
 
 
-# One panel per colour of the match filter, with the polygon; or one per given pair, without
+# One panel per colour of the match filter; the on stars of the regions
 def test_plot_object_cmd(catalog, regions):
     fig, axes = plot_object_cmd(catalog, regions, DM, ISOCHRONE, VIS_H_J)
-    assert len(axes) == 2
     assert [ax.get_xlabel() for ax in axes] == ["VIS - H", "VIS - J"]
-    assert all(any(line.get_label() == "Match filter" for line in ax.get_lines()) for ax in axes)
-    on_points = axes[0].collections[1].get_offsets()
-    assert len(on_points) == regions["on"].sum()
-
-    fig, axes = plot_object_cmd(catalog, regions, mag_cols=[(f"{H}_obs", f"{J}_obs")])
-    assert len(axes) == 1 and axes[0].get_xlabel() == "H - J"
-    assert not axes[0].get_lines()
+    assert len(axes[0].collections[1].get_offsets()) == regions["on"].sum()
+    shown = (catalog[f"{VIS}_obs"] < 22.0).to_numpy()
+    fig, axes = plot_object_cmd(catalog, regions, mag_cols=[(f"{H}_obs", f"{J}_obs")], stars=shown)
+    assert len(axes[0].collections[1].get_offsets()) == (regions["on"] & shown).sum()
 
 
-# One row of on, off, on - off (and smoothed) per colour
+# One row of on, off, on - off and smoothed per colour
 def test_plot_object_hess(catalog, regions):
     fig, axes = plot_object_hess(catalog, regions, DM, ISOCHRONE, VIS_H_J)
     assert [len(row) for row in axes] == [4, 4]
     assert axes[1][0].get_xlabel() == "VIS - J"
-    fig, axes = plot_object_hess(catalog, regions, mag_cols=[(f"{VIS}_obs", f"{H}_obs")], smoothed_difference=False)
-    assert [len(row) for row in axes] == [3]
-    with pytest.raises(ValueError, match="rows"):
-        plot_object_hess(catalog, regions, DM, ISOCHRONE, VIS_H_J, axes=[plt.subplots(1, 4)[1]])
 
 
+# One bar per selection, its length the SNR; labels with < drawn by mathtext (no such glyph in the font)
 def test_plot_selection_comparison(catalog, regions):
     selections = {"all": np.ones(len(catalog), dtype=bool),
-                  "VIS-H-J": stars_in_match_filter(catalog, DM, ISOCHRONE, VIS_H_J)}
+                  "VIS < 24_b": catalog_match_filter_mask(catalog, DM, ISOCHRONE, VIS_H_J)}
     table = compare_selections(regions, selections)
     fig, ax = plot_selection_comparison(table)
-    widths = [patch.get_width() for patch in ax.patches]
-    np.testing.assert_allclose(widths, table["snr"].to_numpy())
-    assert [label.get_text() for label in ax.get_yticklabels()] == ["all", "VIS-H-J"]
-    _, ax = plot_selection_comparison(table.rename(index={"all": "VIS < 24_b"}))
-    assert ax.get_yticklabels()[0].get_text() == r"VIS $<$ 24$\_$b"  # no such glyphs in the font
+    np.testing.assert_allclose([patch.get_width() for patch in ax.patches], table["snr"].to_numpy())
+    assert [label.get_text() for label in ax.get_yticklabels()] == ["all", r"VIS $<$ 24$\_$b"]

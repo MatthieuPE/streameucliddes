@@ -59,6 +59,8 @@ DEFAULT_COLOR_BIN = 0.04
 DEFAULT_MAG_BIN = 1 / 6
 DEFAULT_COLOR_RANGE = (-1.0, 1.5)
 DEFAULT_MAG_RANGE = (17.0, 27.0)
+# CMDs of a match filter: the extent of its polygons plus this margin (mag)
+DEFAULT_CMD_MARGIN_MAG = 0.5
 
 
 @functools.lru_cache(maxsize=1024)
@@ -100,6 +102,47 @@ def match_filter_columns(match_filter: Mapping[str, Any] | None = None) -> list[
     match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
     bands = [match_filter["reference_band"], *match_filter["color_bands"]]
     return [f"{namespace}_{band}_obs" for namespace, band in bands]
+
+
+def match_filter_cmd_columns(match_filter: Mapping[str, Any] | None = None) -> list[tuple[str, str]]:
+    """Magnitude columns of the CMDs of a match filter: (reference band, colour band), one per colour band.
+
+    Colour ``reference - colour band``, magnitude ``reference``: the
+    convention of the polygons, and the ``mag_cols`` of ``hess_diagram``.
+
+    Parameters
+    ----------
+    match_filter : mapping, optional
+        Default: ``DEFAULT_MATCH_FILTER``.
+
+    Returns
+    -------
+    pairs : list of tuple of str
+    """
+    reference_column, *color_columns = match_filter_columns(match_filter)
+    return [(reference_column, color_column) for color_column in color_columns]
+
+
+def match_filter_cmd_limits(
+    distance_modulus: float,
+    isochrone: Mapping[str, float] | None = None,
+    match_filter: Mapping[str, Any] | None = None,
+    *,
+    margin_mag: float = DEFAULT_CMD_MARGIN_MAG,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Colour and magnitude ranges of the CMDs of a match filter: the extent of each polygon plus ``margin_mag``.
+
+    Returns
+    -------
+    limits : list of ((color_min, color_max), (mag_bright, mag_faint))
+        One per colour band (``match_filter_polygons``).
+    """
+    limits = []
+    for polygon in match_filter_polygons(distance_modulus, isochrone, match_filter):
+        color, mag = polygon[:, 0], polygon[:, 1]
+        limits.append(((float(color.min() - margin_mag), float(color.max() + margin_mag)),
+                       (float(mag.min() - margin_mag), float(mag.max() + margin_mag))))
+    return limits
 
 
 def match_filter_polygons(
@@ -351,6 +394,62 @@ def hess_diagram(
         "n_stars": int(counts.sum()),
         "color_label": f"{_band_name(mag_column)} - {_band_name(color_column)}", "mag_label": _band_name(mag_column),
     }
+
+
+def on_off_hess(
+    stars: pd.DataFrame,
+    mag_cols: Sequence[str],
+    on_mask: ArrayLike,
+    on_area_deg2: float,
+    off_masks: Sequence[ArrayLike],
+    off_areas_deg2: Sequence[float],
+    *,
+    color_bins: ArrayLike | None = None,
+    mag_bins: ArrayLike | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """On, off and on - off Hess diagrams of one region against one or two off regions.
+
+    ``hess_diagram`` of the stars of each region over its area. With two off
+    regions (e.g. below and above a stream track), the off diagram is the
+    mean of theirs (``mean_off_hess``; one with no area is left out); with
+    one (e.g. an annulus around an object), its own. Then ``difference_hess``.
+
+    Parameters
+    ----------
+    stars : pandas.DataFrame
+        Stars, with the ``mag_cols`` columns. Not copied.
+    mag_cols : sequence of two str
+        Colour ``mag_cols[0] - mag_cols[1]``, magnitude ``mag_cols[0]``.
+    on_mask : array_like of bool
+        Stars of the on region (and of any selection).
+    on_area_deg2 : float
+        Its area (deg²).
+    off_masks : sequence of array_like of bool
+        Stars of each off region: one or two.
+    off_areas_deg2 : sequence of float
+        Their areas (deg²).
+    color_bins, mag_bins : array_like, optional
+        Bin edges, the same for every diagram. Default: those of ``hess_diagram``.
+
+    Returns
+    -------
+    on_hess, off_hess, difference : dict
+        See ``hess_diagram``, ``mean_off_hess`` and ``difference_hess``.
+
+    Raises
+    ------
+    ValueError
+        Not one or two off regions.
+    """
+    if len(off_masks) not in (1, 2) or len(off_masks) != len(off_areas_deg2):
+        raise ValueError(f"One or two off regions, each with its area: {len(off_masks)} masks, "
+                         f"{len(off_areas_deg2)} areas.")
+    bins = {"color_bins": color_bins, "mag_bins": mag_bins}
+    on_hess = hess_diagram(stars, mag_cols, mask=on_mask, area_deg2=on_area_deg2, **bins)
+    off_hess = [hess_diagram(stars, mag_cols, mask=mask, area_deg2=area if area > 0 else None, **bins)
+                for mask, area in zip(off_masks, off_areas_deg2)]
+    off_hess = off_hess[0] if len(off_hess) == 1 else mean_off_hess(*off_hess)
+    return on_hess, off_hess, difference_hess(on_hess, off_hess)
 
 
 def mean_off_density(
