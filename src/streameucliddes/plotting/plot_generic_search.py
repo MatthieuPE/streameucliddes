@@ -9,13 +9,14 @@ import matplotlib.pyplot as plt
 import numpy as np
 
 from streameucliddes.plotting.plot_cmd import plot_match_filter
-from streameucliddes.plotting.plot_known_stream_search import (
+from streameucliddes.plotting.plot_stream_frame_search import (
     DENSITY_PERCENTILES,
     TRACK_COLOR,
     _label_tracks,
-    _split_at_map_edge,
+    draw_stream_track_on_sky,
 )
 from streameucliddes.plotting.plot_sky_density import plot_2D_density_from_hp
+from streameucliddes.plotting.plot_style import format_distance_modulus
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -140,6 +141,7 @@ def plot_generic_search_residual_map(
     lat_range: tuple[float, float] | None = None,
     cmap: str = "gray_r",
     title: str | None = None,
+    ax: Axes | None = None,
 ) -> tuple[Figure, Axes]:
     """Corrected map of a generic search, with the known stream tracks over it.
 
@@ -168,6 +170,10 @@ def plot_generic_search_residual_map(
         Colour map.
     title : str, optional
         Default: the distance modulus and distance, and the isochrone.
+    ax : matplotlib.axes.Axes, optional
+        A plain axes of an existing figure, turned into the sky map (e.g. one
+        panel of several); the title is then that of the panel. Default: a
+        new figure, the title above it.
 
     Returns
     -------
@@ -181,7 +187,8 @@ def plot_generic_search_residual_map(
         lon_range = default_lon if lon_range is None else lon_range
         lat_range = default_lat if lat_range is None else lat_range
 
-    fig, ax = plt.subplots(figsize=(10.0, 7.0))
+    in_panel = ax is not None
+    fig, ax = (ax.figure, ax) if in_panel else plt.subplots(figsize=(10.0, 7.0))
     values = np.ma.compressed(result["residual"])
     vmin, vmax = tuple(np.percentile(values, DENSITY_PERCENTILES)) if values.size else (None, None)
     fig, ax = plot_2D_density_from_hp(
@@ -190,21 +197,23 @@ def plot_generic_search_residual_map(
         cmap=cmap, vmin=vmin, vmax=vmax, label_fontsize=11, title_fontsize=12, tick_labelsize=9,
     )
     ax.gridlines.set_alpha(grid_alpha)  # skyproj's grid, a LineCollection
-    lon_0 = ax.projection.proj4_params["lon_0"]  # the map edge is at lon_0 + 180
     for _, ra, dec in tracks:
-        for ra_part, dec_part in _split_at_map_edge(np.asarray(ra, dtype=float), np.asarray(dec, dtype=float), lon_0):
-            ax.plot(ra_part, dec_part, **KNOWN_TRACK_STYLE)
+        draw_stream_track_on_sky(ax, ra, dec, **KNOWN_TRACK_STYLE)
     if label_tracks:
         _label_tracks(ax, tracks, footprint_mask, nest=result["nest"], alpha=KNOWN_TRACK_LABEL_ALPHA)
 
-    fig.suptitle(_title(result) if title is None else title)
+    title = _title(result) if title is None else title
+    if in_panel:
+        ax.set_title(title, pad=20)
+    else:
+        fig.suptitle(title)
     return fig, ax
 
 
 def _title(result: Mapping[str, Any]) -> str:
     """Distance modulus and distance, and isochrone of a map."""
     isochrone = result["isochrone"]
-    return (f"dm {result['distance_modulus']:.1f} ({result['distance_kpc']:.1f} kpc), "
+    return (f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.1f} kpc), "
             f"{isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}")
 
 

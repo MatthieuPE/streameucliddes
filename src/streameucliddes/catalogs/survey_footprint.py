@@ -1,4 +1,4 @@
-"""Survey footprint: HEALPix mask, and its projection on a phi1/phi2 grid.
+"""Survey footprint: HEALPix mask, its projection on a phi1/phi2 grid, and areas outside a mask.
 
 As in ``analysis.star_density_maps.star_density_healpix`` and
 ``analysis.background_polynomial_fit.process_data``, a mask is True outside
@@ -31,6 +31,8 @@ LOGGER = logging.getLogger(__name__)
 FOOTPRINT_DIR = Path(__file__).resolve().parents[3] / "data" / "footprints"
 # Stars per chunk of the star counts: bounds their temporary arrays, whatever the catalog size
 CHUNK_SIZE = 500_000
+# Mean stars per pixel with stars of a footprint from the star counts (star_count_nside)
+MIN_MEAN_STARS_PER_PIXEL = 10.0
 
 
 def survey_footprint_healpix_mask(
@@ -94,6 +96,73 @@ def survey_footprint_healpix_mask(
         pixels = hp.ang2pix(nside, chunk_ra[valid], chunk_dec[valid], lonlat=True, nest=nest)
         counts += np.bincount(pixels, minlength=counts.size)
     return counts < min_count
+
+
+def star_count_nside(
+    ra: ArrayLike, dec: ArrayLike, max_nside: int, *, min_mean_count: float = MIN_MEAN_STARS_PER_PIXEL
+) -> int:
+    """Finest nside, from ``max_nside`` down by halves, at which the pixels with stars hold ``min_mean_count`` stars on average.
+
+    A footprint from the star counts (``survey_footprint_healpix_mask``)
+    needs well-filled pixels: with a few stars per pixel, many pixels inside
+    the survey are empty by chance and left out of the footprint (and
+    ``trim_footprint_edge`` would leave out their neighbours too). Stops at
+    nside 1.
+
+    Parameters
+    ----------
+    ra, dec : array_like
+        Stars (deg); non-finite positions left out.
+    max_nside : int
+        Finest nside allowed.
+    min_mean_count : float, optional
+        Minimum mean number of stars per pixel with stars.
+
+    Returns
+    -------
+    nside : int
+    """
+    ra = np.asarray(ra, dtype=float)
+    dec = np.asarray(dec, dtype=float)
+    nside = int(max_nside)
+    while nside > 1:
+        n_pixels_with_stars = np.count_nonzero(~survey_footprint_healpix_mask(ra, dec, nside, nest=False))
+        n_stars = np.count_nonzero(np.isfinite(ra) & np.isfinite(dec))
+        if n_pixels_with_stars and n_stars / n_pixels_with_stars >= min_mean_count:
+            break
+        nside //= 2
+    return nside
+
+
+def trim_footprint_edge(footprint_mask: NDArray[np.bool_], *, nest: bool) -> NDArray[np.bool_]:
+    """The footprint less its edge pixels: those with a neighbour outside it (``healpy.get_all_neighbours``).
+
+    A footprint computed from the star counts keeps every pixel with a star,
+    also those only partly covered (survey or tile edge, edge of a loaded
+    box): their area counts in full, so the density near the edges is too
+    low. Trimming one pixel leaves out the partly covered pixels; their stars
+    must then be left out too (e.g. ``CandidateInvestigation.stars_not_excluded``).
+
+    Parameters
+    ----------
+    footprint_mask : numpy.ndarray of bool
+        True outside the footprint.
+    nest : bool
+        Its HEALPix ordering.
+
+    Returns
+    -------
+    mask : numpy.ndarray of bool
+        True outside the footprint or on its edge; a new array.
+    """
+    footprint_mask = np.asarray(footprint_mask, dtype=bool)
+    nside = hp.npix2nside(footprint_mask.size)
+    inside = np.flatnonzero(~footprint_mask)  # only these: light at any nside
+    neighbours = hp.get_all_neighbours(nside, inside, nest=nest)  # (8, n), -1 where there is none
+    outside_neighbour = (footprint_mask[neighbours] & (neighbours >= 0)).any(axis=0)
+    trimmed = footprint_mask.copy()
+    trimmed[inside[outside_neighbour]] = True
+    return trimmed
 
 
 def convert_footprint_healpix_mask(
@@ -195,10 +264,78 @@ def survey_footprint_phi12_mask(
     are taken to ICRS (``stream_frames.phi12_to_radec``), then to HEALPix
     pixels.
     """
-    footprint_mask = np.asarray(footprint_mask, dtype=bool)
-    nside = hp.npix2nside(footprint_mask.size)
     phi1_centres, phi2_centres = phi12_bin_centres(window, bin_size_deg)
     phi1, phi2 = np.meshgrid(phi1_centres, phi2_centres, indexing="ij")
+    return _mask_at_phi12(footprint_mask, phi1, phi2, stream_frame, nest=nest)
+
+
+def _mask_at_phi12(
+    healpix_mask: ArrayLike, phi1: ArrayLike, phi2: ArrayLike, stream_frame: coord.BaseCoordinateFrame, *, nest: bool
+) -> NDArray[np.bool_]:
+    """Value of a HEALPix mask at phi1/phi2 points (nside from its length)."""
+    healpix_mask = np.asarray(healpix_mask, dtype=bool)
     ra, dec = phi12_to_radec(phi1, phi2, stream_frame)
-    pixels = hp.ang2pix(nside, ra, dec, lonlat=True, nest=nest)
-    return footprint_mask[pixels]
+    return healpix_mask[hp.ang2pix(hp.npix2nside(healpix_mask.size), ra, dec, lonlat=True, nest=nest)]
+
+
+def unmasked_area_deg2(
+    stream_frame: coord.BaseCoordinateFrame,
+    phi1_edges: ArrayLike,
+    phi2_edges: ArrayLike,
+    excluded_healpix_mask: NDArray[np.bool_] | None,
+    *,
+    step_deg: float = 0.01,
+) -> NDArray[np.float64]:
+    """Area of each phi1/phi2 cell outside a HEALPix mask.
+
+    Each cell is cut into a fine grid of about ``step_deg``; each piece
+    weighs its exact solid angle, ``dphi1 (sin phi2_top - sin phi2_bottom)``,
+    and is kept when the HEALPix pixel of its centre is not masked: the same
+    look-up as ``survey_footprint_phi12_mask``, at the pieces instead of the
+    bin centres. The area is exact without a mask; with a mask, its error
+    comes from the pieces across a pixel edge (``step_deg`` well below the
+    pixel size). A window is one cell: ``phi1_edges = (phi1_min, phi1_max)``,
+    ``phi2_edges = (phi2_min, phi2_max)``; a cell of zero width has zero area.
+
+    Parameters
+    ----------
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Frame of the cells.
+    phi1_edges, phi2_edges : array_like
+        Edges of the cells along each axis (deg), increasing.
+    excluded_healpix_mask : numpy.ndarray of bool or None
+        True where excluded (outside the footprint, on a masked object),
+        RING, e.g. from ``analysis.build_masks.excluded_healpix_mask``; nside
+        from its length. None: nothing excluded.
+    step_deg : float, optional
+        Step of the fine grid (deg).
+
+    Returns
+    -------
+    area_deg2 : numpy.ndarray
+        Shape (len(phi1_edges) - 1, len(phi2_edges) - 1) (deg²).
+    """
+    phi1, cell_1, width_1 = _fine_pieces(phi1_edges, step_deg)
+    phi2, cell_2, width_2 = _fine_pieces(phi2_edges, step_deg)
+    half = np.radians(width_2) / 2
+    strip = np.sin(np.radians(phi2) + half) - np.sin(np.radians(phi2) - half)  # solid angle per radian of phi1
+    weight = np.outer(np.radians(width_1), strip) * np.degrees(1.0) ** 2  # deg²
+    if excluded_healpix_mask is not None:
+        grid_1, grid_2 = np.meshgrid(phi1, phi2, indexing="ij")
+        weight = np.where(_mask_at_phi12(excluded_healpix_mask, grid_1, grid_2, stream_frame, nest=False), 0.0, weight)
+    n_1, n_2 = np.size(phi1_edges) - 1, np.size(phi2_edges) - 1
+    cells = (cell_1[:, None] * n_2 + cell_2[None, :]).ravel()
+    return np.bincount(cells, weights=weight.ravel(), minlength=n_1 * n_2).reshape(n_1, n_2)
+
+
+def _fine_pieces(edges: ArrayLike, step_deg: float) -> tuple[NDArray[np.float64], NDArray[np.int64], NDArray[np.float64]]:
+    """Centres, cell indices and widths of the pieces of about ``step_deg`` cutting each cell between edges."""
+    edges = np.asarray(edges, dtype=float)
+    widths = np.diff(edges)
+    if np.any(widths < 0):
+        raise ValueError("Edges must be increasing.")
+    n_pieces = np.maximum(np.ceil(widths / step_deg).astype(int), 1)
+    cell = np.repeat(np.arange(widths.size), n_pieces)
+    width = np.repeat(widths / n_pieces, n_pieces)
+    rank = np.arange(cell.size) - np.repeat(np.cumsum(n_pieces) - n_pieces, n_pieces)  # rank of the piece in its cell
+    return edges[cell] + (rank + 0.5) * width, cell, width

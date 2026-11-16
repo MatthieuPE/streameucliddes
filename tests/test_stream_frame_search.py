@@ -1,4 +1,4 @@
-"""Tests of analysis/known_stream_search.py, with a mock stream on a uniform background.
+"""Tests of analysis/stream_frame_search.py, with a mock stream on a uniform background.
 
 The background is uniform in the window and in colour-magnitude space (Euclid VIS and
 H, the bands of the default match filter); the stream stars are at phi2 = 0, inside
@@ -23,12 +23,13 @@ from streameucliddes.analysis.cmd_match_filter import (
     build_match_filter_polygon,
     select_stars_in_match_filter,
 )
-from streameucliddes.analysis.known_stream_search import (
+from streameucliddes.analysis import stream_frame_search as stream_frame_search_module
+from streameucliddes.analysis.stream_frame_search import (
     DEFAULT_DISTANCE_MODULI,
     PreparedSearch,
-    known_stream_search_dm_along_track,
-    known_stream_search_dm_scan,
-    known_stream_search_single_dm,
+    stream_frame_search_dm_along_track,
+    stream_frame_search_dm_scan,
+    stream_frame_search_single_dm,
     prepare_search,
 )
 from streameucliddes.analysis.star_density_maps import star_density_phi12
@@ -43,7 +44,7 @@ from streameucliddes.catalogs.survey_footprint import survey_footprint_phi12_mas
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
 from streameucliddes.unit_conversions import convert_DM_to_kpc
 
-pytestmark = pytest.mark.known_stream_search
+pytestmark = pytest.mark.stream_frame_search
 
 WINDOW = (-10.0, 10.0, -3.0, 3.0)
 BIN = 0.2
@@ -152,13 +153,13 @@ def _stream_contrast(result):
 
 
 # ===================================================
-# Test known_stream_search_single_dm
+# Test stream_frame_search_single_dm
 # ===================================================
 
 
 # The map is the shared preparation, selection and density map, with its metadata
 def test_single_dm_is_the_pipeline(stream_catalog, gc_frame):
-    result = known_stream_search_single_dm(
+    result = stream_frame_search_single_dm(
         stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN, smoothing_deg=SMOOTHING
     )
     stars = prepare_match_filter_catalog(stream_catalog, stream_frame=gc_frame, window=WINDOW)
@@ -178,7 +179,7 @@ def test_single_dm_is_the_pipeline(stream_catalog, gc_frame):
 
 # The stream stands out at its distance modulus
 def test_single_dm_finds_the_stream(stream_catalog, gc_frame):
-    result = known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN)
+    result = stream_frame_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN)
     assert _stream_contrast(result) > 3.0
 
 
@@ -186,24 +187,24 @@ def test_single_dm_finds_the_stream(stream_catalog, gc_frame):
 # and a window with the catalog
 def test_single_dm_prepared_stars(stream_catalog, gc_frame):
     stars = prepare_match_filter_catalog(stream_catalog, stream_frame=gc_frame, window=WINDOW)
-    from_catalog = known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM)
-    from_stars = known_stream_search_single_dm(None, None, WINDOW, STREAM_DM, stars=stars)
+    from_catalog = stream_frame_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM)
+    from_stars = stream_frame_search_single_dm(None, None, WINDOW, STREAM_DM, stars=stars)
     np.testing.assert_array_equal(from_stars["density"], from_catalog["density"])
     with pytest.raises(ValueError, match="prepared stars"):
-        known_stream_search_single_dm(None, gc_frame, WINDOW, STREAM_DM)
+        stream_frame_search_single_dm(None, gc_frame, WINDOW, STREAM_DM)
     with pytest.raises(ValueError, match="stream_frame"):
-        known_stream_search_single_dm(stream_catalog, None, WINDOW, STREAM_DM)
+        stream_frame_search_single_dm(stream_catalog, None, WINDOW, STREAM_DM)
     with pytest.raises(ValueError, match="window"):
-        known_stream_search_single_dm(stream_catalog, gc_frame, None, STREAM_DM)
+        stream_frame_search_single_dm(stream_catalog, gc_frame, None, STREAM_DM)
     with pytest.raises(ValueError, match="distance_modulus"):
-        known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW)
+        stream_frame_search_single_dm(stream_catalog, gc_frame, WINDOW)
 
 
 # Bins outside the footprint are masked; a HEALPix footprint is put on the grid
 def test_single_dm_footprint(stream_catalog, gc_frame):
     phi1_centres, phi2_centres = phi12_bin_centres(WINDOW, BIN)
     footprint_mask = np.broadcast_to(phi1_centres[:, None] > 5.0, (phi1_centres.size, phi2_centres.size))
-    result = known_stream_search_single_dm(
+    result = stream_frame_search_single_dm(
         stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN, footprint_mask=footprint_mask
     )
     np.testing.assert_array_equal(result["density"].mask, footprint_mask)
@@ -211,14 +212,14 @@ def test_single_dm_footprint(stream_catalog, gc_frame):
     nside = 64
     _, dec = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
     healpix_mask = dec < -25.0  # True outside
-    result = known_stream_search_single_dm(
+    result = stream_frame_search_single_dm(
         stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN, footprint_mask=healpix_mask, nest=False
     )
     expected = survey_footprint_phi12_mask(healpix_mask, gc_frame, WINDOW, BIN, nest=False)
     assert 0 < expected.sum() < expected.size
     np.testing.assert_array_equal(result["density"].mask, expected)
     with pytest.raises(ValueError, match="nest"):
-        known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, footprint_mask=healpix_mask)
+        stream_frame_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, footprint_mask=healpix_mask)
 
 
 def _objects(frame, phi1, phi2, radius_arcmin):
@@ -251,14 +252,19 @@ def test_prepare_search_object_masks(stream_catalog, gc_frame, monkeypatch):
     assert 0 < expected.sum() < expected.size / 4
     np.testing.assert_array_equal(masked.object_mask, expected)
     np.testing.assert_array_equal(masked.footprint_mask, expected)
+    # the HEALPix mask the stars are dropped with, kept (RING, object nside); none without masks
+    assert plain.object_healpix_mask is None
+    assert masked.object_healpix_mask.size == healpix.size and not (healpix & ~masked.object_healpix_mask).any()
+    np.testing.assert_array_equal(
+        survey_footprint_phi12_mask(masked.object_healpix_mask, gc_frame, WINDOW, BIN, nest=False), expected)
 
     on_object = healpix[hp.ang2pix(nside, plain.stars["ra"], plain.stars["dec"], lonlat=True)]
     assert on_object.sum() > 100
     assert masked.stars.index.equals(plain.stars.index[~on_object])
 
-    result = known_stream_search_single_dm(search=masked, distance_modulus=STREAM_DM)
+    result = stream_frame_search_single_dm(search=masked, distance_modulus=STREAM_DM)
     np.testing.assert_array_equal(result["density"].mask, expected)
-    assert result["n_selected"] < known_stream_search_single_dm(search=plain, distance_modulus=STREAM_DM)["n_selected"]
+    assert result["n_selected"] < stream_frame_search_single_dm(search=plain, distance_modulus=STREAM_DM)["n_selected"]
 
     phi1_centres, phi2_centres = phi12_bin_centres(WINDOW, BIN)
     footprint = np.broadcast_to(phi1_centres[:, None] > 5.0, (phi1_centres.size, phi2_centres.size))
@@ -271,8 +277,30 @@ def test_prepare_search_object_masks(stream_catalog, gc_frame, monkeypatch):
         objects_healpix_mask(objects["gc"], nside, nest=False), gc_frame, WINDOW, BIN, nest=False))
 
 
+# An object mask already built: used as it is, not built again (same stars and masked bins); it
+# needs a stream frame
+def test_prepare_search_given_object_mask(stream_catalog, gc_frame, monkeypatch):
+    nside = object_mask_nside(BIN)
+    objects = np.zeros(hp.nside2npix(nside), dtype=bool)
+    centre_ra, centre_dec = phi12_to_radec(0.0, 0.0, gc_frame)
+    objects[hp.query_disc(nside, hp.ang2vec(centre_ra, centre_dec, lonlat=True), np.radians(1.0))] = True
+
+    def not_again(*args, **kwargs):
+        raise AssertionError("the object mask is built again")
+
+    monkeypatch.setattr(stream_frame_search_module, "overlapped_objects_healpix_mask", not_again)
+    search = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN, object_healpix_mask=objects)
+    assert search.object_healpix_mask is objects
+    on_object = objects[hp.ang2pix(nside, search.stars["ra"], search.stars["dec"], lonlat=True)]
+    assert not on_object.any() and len(search.stars) < len(stream_catalog)
+    np.testing.assert_array_equal(search.object_mask,
+                                  survey_footprint_phi12_mask(objects, gc_frame, WINDOW, BIN, nest=False))
+    with pytest.raises(ValueError, match="needs a stream_frame"):
+        prepare_search(stars=search.stars, window=WINDOW, bin_size_deg=BIN, object_healpix_mask=objects)
+
+
 # ===================================================
-# Test known_stream_search_dm_scan
+# Test stream_frame_search_dm_scan
 # ===================================================
 
 
@@ -280,10 +308,10 @@ def test_prepare_search_object_masks(stream_catalog, gc_frame, monkeypatch):
 # most at its distance modulus
 def test_dm_scan(stream_catalog, gc_frame):
     distance_moduli = [14.5, 17.0, 20.0]
-    results = list(known_stream_search_dm_scan(stream_catalog, gc_frame, WINDOW, distance_moduli, bin_size_deg=BIN))
+    results = list(stream_frame_search_dm_scan(stream_catalog, gc_frame, WINDOW, distance_moduli, bin_size_deg=BIN))
     assert [dm for dm, _ in results] == distance_moduli
     for dm, result in results:
-        single = known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW, dm, bin_size_deg=BIN)
+        single = stream_frame_search_single_dm(stream_catalog, gc_frame, WINDOW, dm, bin_size_deg=BIN)
         assert result.keys() == single.keys()
         np.testing.assert_array_equal(result["density"], single["density"])
     contrasts = [_stream_contrast(result) for _, result in results]
@@ -293,8 +321,8 @@ def test_dm_scan(stream_catalog, gc_frame):
 # Processes give the same maps, in the same order
 def test_dm_scan_workers(stream_catalog, gc_frame):
     distance_moduli = [17.0, 15.0, 19.0]
-    serial = list(known_stream_search_dm_scan(stream_catalog, gc_frame, WINDOW, distance_moduli))
-    parallel = list(known_stream_search_dm_scan(stream_catalog, gc_frame, WINDOW, distance_moduli, n_workers=2))
+    serial = list(stream_frame_search_dm_scan(stream_catalog, gc_frame, WINDOW, distance_moduli))
+    parallel = list(stream_frame_search_dm_scan(stream_catalog, gc_frame, WINDOW, distance_moduli, n_workers=2))
     assert [dm for dm, _ in parallel] == distance_moduli
     for (_, expected), (_, result) in zip(serial, parallel):
         np.testing.assert_array_equal(result["density"], expected["density"])
@@ -310,7 +338,7 @@ def test_dm_scan_workers(stream_catalog, gc_frame):
 # distance moduli (track +- 1 mag), the population table the isochrones
 def test_dm_scan_stream_name(stream_catalog, gc_frame, mock_mws):
     population_table = _population_table(age_gyr=12.0, z=0.0001)
-    results = list(known_stream_search_dm_scan(
+    results = list(stream_frame_search_dm_scan(
         stream_catalog, stream_name="Mock", mws=mock_mws, population_table=population_table, bin_size_deg=BIN
     ))
     track = mock_mws["Mock-T00"]
@@ -319,7 +347,7 @@ def test_dm_scan_stream_name(stream_catalog, gc_frame, mock_mws):
     assert result["window"] == galstreams_phi12_window(track)
     assert result["isochrone"] == {"age": 12.0, "metallicity": 0.0001}
     assert result["track_name"] == "Mock-T00"
-    explicit = known_stream_search_single_dm(
+    explicit = stream_frame_search_single_dm(
         stream_catalog, gc_frame, galstreams_phi12_window(track), 17.0, {"age": 12.0, "metallicity": 0.0001},
         bin_size_deg=BIN,
     )
@@ -337,7 +365,7 @@ def test_dm_scan_stream_name_footprint(stream_catalog, gc_frame):
     pixel_phi1 = coord.SkyCoord(ra=ra * u.deg, dec=dec * u.deg).transform_to(gc_frame).phi1.deg
     footprint_mask = pixel_phi1 > 0.0  # True outside: only phi1 < 0, distance moduli 16.4 to 17.0
 
-    results = list(known_stream_search_dm_scan(
+    results = list(stream_frame_search_dm_scan(
         stream_catalog, stream_name="Mock", mws=mws, population_table=_population_table(),
         footprint_mask=footprint_mask, nest=False, bin_size_deg=1.0, smoothing_deg=0.0,
     ))
@@ -353,7 +381,7 @@ def test_dm_scan_stream_name_footprint(stream_catalog, gc_frame):
     assert distance_moduli[0] == 15.4 and distance_moduli[-1] <= 18.1  # not 18.6: the half outside is left out
 
     with pytest.raises(ValueError, match="not selected by select_galstreams_in_footprint"):
-        known_stream_search_single_dm(
+        stream_frame_search_single_dm(
             stream_catalog, stream_name="Mock", mws=mws, footprint_mask=np.ones(hp.nside2npix(nside), dtype=bool),
             nest=False,
         )
@@ -361,7 +389,7 @@ def test_dm_scan_stream_name_footprint(stream_catalog, gc_frame):
 
 # The given values are kept: window, distance moduli, isochrone
 def test_dm_scan_stream_name_given_values(stream_catalog, mock_mws):
-    results = list(known_stream_search_dm_scan(
+    results = list(stream_frame_search_dm_scan(
         stream_catalog, window=WINDOW, distance_moduli=[16.5, 17.5], isochrone=ISOCHRONE,
         stream_name="Mock", mws=mock_mws, population_table=_population_table(12.0, 0.0001), bin_size_deg=BIN,
     ))
@@ -372,7 +400,7 @@ def test_dm_scan_stream_name_given_values(stream_catalog, mock_mws):
 # Every isochrone of the stream: every distance modulus for the first, then the next
 def test_dm_scan_stream_name_isochrones(stream_catalog, mock_mws, monkeypatch):
     monkeypatch.setattr(isochrone_parameters, "DEFAULT_AGES_GYR", (11.0, 13.0))
-    results = list(known_stream_search_dm_scan(
+    results = list(stream_frame_search_dm_scan(
         stream_catalog, distance_moduli=[16.5, 17.5], stream_name="Mock", mws=mock_mws,
         population_table=_population_table(z=0.0001), bin_size_deg=BIN,  # age unknown: the default ages
     ))
@@ -399,25 +427,25 @@ def test_prepare_search_default_grid(stream_catalog, gc_frame, mock_mws):
 # (single_dm: the middle of the distance moduli of the track)
 def test_stream_name_resolution(stream_catalog, mock_mws):
     kwargs = {"mws": mock_mws, "population_table": _population_table(), "bin_size_deg": BIN}
-    assert known_stream_search_single_dm(stream_catalog, stream_name="Mock", **kwargs)["track_name"] == "Mock-T00"
-    by_track = known_stream_search_single_dm(stream_catalog, stream_name="Mock-T01", **kwargs)
+    assert stream_frame_search_single_dm(stream_catalog, stream_name="Mock", **kwargs)["track_name"] == "Mock-T00"
+    by_track = stream_frame_search_single_dm(stream_catalog, stream_name="Mock-T01", **kwargs)
     assert by_track["track_name"] == "Mock-T01" and by_track["distance_modulus"] == 18.0  # its median distance
-    assert known_stream_search_single_dm(stream_catalog, stream_name="MockTwo", **kwargs)["distance_modulus"] == 15.0
+    assert stream_frame_search_single_dm(stream_catalog, stream_name="MockTwo", **kwargs)["distance_modulus"] == 15.0
 
 
 # A stream not in galstreams: with its frame and window, the default isochrones; else an error
 def test_stream_name_not_in_galstreams(stream_catalog, gc_frame, mock_mws):
-    result = known_stream_search_single_dm(
+    result = stream_frame_search_single_dm(
         stream_catalog, gc_frame, WINDOW, STREAM_DM, stream_name="NewStream", mws=mock_mws, bin_size_deg=BIN
     )
     assert result["track_name"] is None and result["isochrone"] == ISOCHRONE
     with pytest.raises(ValueError, match="not in galstreams"):
-        known_stream_search_single_dm(stream_catalog, stream_name="NewStream", mws=mock_mws)
+        stream_frame_search_single_dm(stream_catalog, stream_name="NewStream", mws=mock_mws)
 
 
 # A track without distance (Ibata et al. 2024): the default grid of distance moduli, 15 to 22
 def test_dm_scan_stream_name_no_distance(stream_catalog, mock_mws):
-    distance_moduli = [dm for dm, _ in known_stream_search_dm_scan(
+    distance_moduli = [dm for dm, _ in stream_frame_search_dm_scan(
         stream_catalog, stream_name="NoDistance", mws=mock_mws, bin_size_deg=1.0, smoothing_deg=0.0,
         add_ibata2024=True,  # select_galstreams_in_footprint leaves them out by default
     )]
@@ -451,15 +479,15 @@ def test_prepare_search(stream_catalog, gc_frame, mock_mws):
 # A prepared search gives the same maps; preparation arguments with it are refused
 def test_prepared_search_reused(stream_catalog, gc_frame):
     search = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN)
-    from_search = known_stream_search_single_dm(distance_modulus=STREAM_DM, search=search)
-    direct = known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN)
+    from_search = stream_frame_search_single_dm(distance_modulus=STREAM_DM, search=search)
+    direct = stream_frame_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN)
     np.testing.assert_array_equal(from_search["density"], direct["density"])
-    (_, scanned), = known_stream_search_dm_scan(distance_moduli=[STREAM_DM], search=search)
+    (_, scanned), = stream_frame_search_dm_scan(distance_moduli=[STREAM_DM], search=search)
     np.testing.assert_array_equal(scanned["density"], direct["density"])
     with pytest.raises(ValueError, match="Already in the search"):
-        known_stream_search_single_dm(stream_catalog, distance_modulus=STREAM_DM, search=search)
+        stream_frame_search_single_dm(stream_catalog, distance_modulus=STREAM_DM, search=search)
     with pytest.raises(ValueError, match="Already in the search"):
-        known_stream_search_single_dm(distance_modulus=STREAM_DM, search=search, bin_size_deg=0.5)
+        stream_frame_search_single_dm(distance_modulus=STREAM_DM, search=search, bin_size_deg=0.5)
 
 
 # The arguments of select_galstreams_in_footprint are passed on only when given: its
@@ -488,15 +516,15 @@ def test_prepare_search_ibata2024(stream_catalog, mock_mws):
 
 
 # ===================================================
-# Test known_stream_search_dm_along_track
+# Test stream_frame_search_dm_along_track
 # ===================================================
 
 
 # A track at one distance: the map of single_dm at that distance (offset 0)
 def test_dm_along_track_constant(stream_catalog, gc_frame):
     track = _track(gc_frame, lambda phi1: np.full(np.shape(phi1), STREAM_DM))
-    (dm_offset, result), = known_stream_search_dm_along_track(stream_catalog, track, None, WINDOW, bin_size_deg=BIN)
-    single = known_stream_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN)
+    (dm_offset, result), = stream_frame_search_dm_along_track(stream_catalog, track, None, WINDOW, bin_size_deg=BIN)
+    single = stream_frame_search_single_dm(stream_catalog, gc_frame, WINDOW, STREAM_DM, bin_size_deg=BIN)
     assert dm_offset == 0.0
     np.testing.assert_allclose(result["dm_along_phi1"], STREAM_DM)
     np.testing.assert_array_equal(result["density"], single["density"])
@@ -505,10 +533,10 @@ def test_dm_along_track_constant(stream_catalog, gc_frame):
 
 # The track of a galstreams stream name, as the track itself
 def test_dm_along_track_stream_name(stream_catalog, mock_mws):
-    (_, by_name), = known_stream_search_dm_along_track(
+    (_, by_name), = stream_frame_search_dm_along_track(
         stream_catalog, stream_name="Mock", mws=mock_mws, population_table=_population_table(), bin_size_deg=BIN
     )
-    (_, by_track), = known_stream_search_dm_along_track(
+    (_, by_track), = stream_frame_search_dm_along_track(
         stream_catalog, mock_mws["Mock-T00"], population_table=_population_table(), bin_size_deg=BIN
     )
     np.testing.assert_array_equal(by_name["density"], by_track["density"])
@@ -520,7 +548,7 @@ def test_dm_along_track_stream_name(stream_catalog, mock_mws):
 def test_dm_along_track_distance_moduli(stream_catalog, gc_frame):
     track = _track(gc_frame, lambda phi1: 17.0 + 0.1 * phi1)  # 16.4 to 17.6 from phi1 -6 to 6
     offsets = (-0.5, 0.0, 0.5)
-    results = list(known_stream_search_dm_along_track(
+    results = list(stream_frame_search_dm_along_track(
         stream_catalog, track, None, WINDOW, dm_offsets=offsets, dm_step=0.1, bin_size_deg=BIN,
         population_table=_population_table(),
     ))
@@ -538,10 +566,10 @@ def test_dm_along_track_follows_the_stream(gc_frame):
     dm_of_phi1 = lambda phi1: 17.0 + 0.2 * np.asarray(phi1)  # 15.4 to 18.6 along the stream
     catalog = _catalog(np.random.default_rng(2), gc_frame, dm_of_phi1)
     track = _track(gc_frame, dm_of_phi1, phi1_range=(-8.0, 8.0))
-    (_, along), = known_stream_search_dm_along_track(
+    (_, along), = stream_frame_search_dm_along_track(
         catalog, track, None, WINDOW, bin_size_deg=BIN, population_table=_population_table()
     )
-    fixed = known_stream_search_single_dm(catalog, gc_frame, WINDOW, 17.0, bin_size_deg=BIN)
+    fixed = stream_frame_search_single_dm(catalog, gc_frame, WINDOW, 17.0, bin_size_deg=BIN)
 
     stars = prepare_match_filter_catalog(catalog, stream_frame=gc_frame, window=WINDOW)
     n_stream = catalog.loc[stars.index, "is_stream"].sum()
@@ -555,7 +583,7 @@ def test_dm_along_track_extension(gc_frame):
     dm_of_phi1 = lambda phi1: 17.0 + 0.2 * np.asarray(phi1)
     catalog = _catalog(np.random.default_rng(3), gc_frame, dm_of_phi1)
     track = _track(gc_frame, dm_of_phi1, phi1_range=(-3.0, 3.0))
-    (_, result), = known_stream_search_dm_along_track(
+    (_, result), = stream_frame_search_dm_along_track(
         catalog, track, window=WINDOW, bin_size_deg=BIN, population_table=_population_table()
     )
     phi1, phi2 = np.meshgrid(result["phi1_centres"], result["phi2_centres"], indexing="ij")
@@ -567,7 +595,7 @@ def test_dm_along_track_extension(gc_frame):
 # No track, or a track without distance: nothing to follow
 def test_dm_along_track_errors(stream_catalog, gc_frame, mock_mws):
     with pytest.raises(ValueError, match="track"):
-        next(known_stream_search_dm_along_track(stream_catalog, None, gc_frame, WINDOW))
+        next(stream_frame_search_dm_along_track(stream_catalog, None, gc_frame, WINDOW))
     with pytest.raises(ValueError, match="no distance"):
-        next(known_stream_search_dm_along_track(stream_catalog, stream_name="NoDistance", mws=mock_mws,
+        next(stream_frame_search_dm_along_track(stream_catalog, stream_name="NoDistance", mws=mock_mws,
                                                 add_ibata2024=True))

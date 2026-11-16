@@ -14,6 +14,7 @@ CATEGORICAL_COLORS = [
     "#000000",
 ]
 N_SERIES_MAX = 6
+COLORBAR_LABEL_SIZE = 11  # colour-bar labels: larger than the axis labels, their units in mathtext read small
 
 plt_params = {
     "figure.figsize": [3.5, 2.625],  # Single column width, 4:3 aspect ratio
@@ -21,6 +22,9 @@ plt_params = {
     "text.usetex": False,
     "font.family": "serif",
     "font.serif": ["cmr10"],
+    # cmr10 has no Unicode minus: plain-text labels (e.g. the WCS axes of astropy) need the ASCII one; tick labels in
+    # mathtext still show a proper minus
+    "axes.unicode_minus": False,
     "axes.labelsize": 9,
     "axes.titlesize": 10,
     "xtick.labelsize": 8,
@@ -58,3 +62,14 @@ plt_params = {
 
 
 plt.rcParams.update(plt_params)
+
+
+def escape_underscores(text: str) -> str:
+    """Text as displayed: the serif font (cmr10) has no underscore glyph, so each ``_`` is drawn by mathtext."""
+    return text.replace("_", r"$\_$")
+
+
+def format_distance_modulus(distance_modulus: float) -> str:
+    """Distance modulus for titles: one decimal, two when needed (17.0, 17.25)."""
+    text = f"{distance_modulus:.2f}"
+    return text[:-1] if text.endswith("0") else text

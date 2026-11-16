@@ -6,7 +6,7 @@ from matplotlib.colors import LogNorm
 from matplotlib.lines import Line2D
 from matplotlib.patches import Patch, Rectangle
 
-from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, N_SERIES_MAX
+from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, N_SERIES_MAX, escape_underscores
 
 SNR_AXIS_LABELS = {
     "surface_brightness": r"Surface brightness [mag arcsec$^{-2}$]",
@@ -49,11 +49,6 @@ def _isolated_point(vertices, other_vertices, x_range, y_range, margin=0.06):
         others = to_axes(other_vertices)
         distance = np.min(np.linalg.norm(points[:, None] - others[None], axis=2), axis=1)
     return vertices[np.argmax(np.where(inside, distance, -1))]
-
-
-def _label(name):
-    """Match filter name as displayed (the serif font has no underscore glyph)."""
-    return name.replace("_", r"$\_$")
 
 
 def _format_snr_axes(ax, x_name, y_name):
@@ -120,7 +115,7 @@ def plot_snr_contours(results, snr_level=5, ax=None, colors=None, label_on_conto
             x, y, _defined_snr(grid["snr"]), levels=[snr_level],
             colors=[colors[name]], linewidths=2,
         )
-        handles.append(Line2D([], [], color=colors[name], lw=2, label=_label(name)))
+        handles.append(Line2D([], [], color=colors[name], lw=2, label=escape_underscores(name)))
 
     if label_on_contours:
         # Each label where its contour is farthest from the others
@@ -133,7 +128,7 @@ def plot_snr_contours(results, snr_level=5, ax=None, colors=None, label_on_conto
                 vertices[name], np.concatenate(others) if others else [], (x[0], x[-1]), (y[0], y[-1])
             )
             ax.clabel(
-                contour, fmt={snr_level: _label(name)}, manual=[position],
+                contour, fmt={snr_level: escape_underscores(name)}, manual=[position],
                 fontsize=7, colors=INK, inline_spacing=2,
             )
 
@@ -179,7 +174,7 @@ def plot_snr_maps(results, snr_level=5, cmap="Blues", vmin=1.0, vmax=None):
                 fill=False, hatch=NO_BACKGROUND_HATCH, edgecolor="0.6", linewidth=0,
             ))
         ax.contour(x, y, _defined_snr(snr), levels=[snr_level], colors=INK, linewidths=1.5)
-        ax.set_title(_label(name))
+        ax.set_title(escape_underscores(name))
         _format_snr_axes(ax, x_name, y_name)
         if ax is not axes[0]:
             ax.set_ylabel("")

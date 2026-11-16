@@ -8,18 +8,12 @@ import numpy as np
 import pandas as pd
 from numpy.polynomial import polynomial
 
-try:
-    from scipy.optimize import minimize
-except Exception:  # pragma: no cover - optional dependency at runtime
-    minimize = None
-
-
 LOGGER = logging.getLogger(__name__)
 
 class SimpleLonLatProj:
     """Trivial "projection" that treats (lon, lat) as flat (x, y), in degrees.
 
-    Used as the `proj` argument of fit_background_model(method="polyfit2d").
+    Used as the `proj` argument of fit_background_model_polyfit2d.
     """
 
     def ang2xy(self, lon, lat, lonlat=True):
@@ -27,18 +21,6 @@ class SimpleLonLatProj:
 
     def get_extent(self):
         return (0.0, 360.0, -90.0, 90.0)
-
-def fit_background_model(
-    data, method="likelihood", model_type={"polynomial": {"degree": 5}}, **kwargs
-):
-    """
-    Fit background with either Poisson likelihood (default) or polyfit2d least-squares.
-    """
-    method_norm = str(method).lower()
-    if method_norm in {"polyfit2d", "least-squares", "least_squares", "polyfit"}:
-        return fit_background_model_polyfit2d(data, model_type=model_type, **kwargs)
-    raise ValueError("Unknown method. Use 'likelihood' or 'polyfit2d'.")
-
 
 ############################################################################################################
 ################################# Fitting method as in DEs paper ###########################################
@@ -322,7 +304,7 @@ def process_data(data, **kwargs):
     }
 
 
-def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **kwargs):
+def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, **kwargs):
     """
     Prepare projected coordinates and values for polyfit2d from a HEALPix map.
 
@@ -391,20 +373,10 @@ def process_data_polyfit2d(data, proj, sigma=0.0, percent=None, debug=False, **k
         extent_count = int(np.count_nonzero(extent_mask))
         sel2 &= extent_mask
 
-    if debug:
-        print("[process_data_polyfit2d debug] sel_count:", int(eval_idx.size))
-        print(
-            "[process_data_polyfit2d debug] proj finite x/y:",
-            int(np.count_nonzero(np.isfinite(x_sel))),
-            int(np.count_nonzero(np.isfinite(y_sel))),
-        )
-        print(
-            "[process_data_polyfit2d debug] v_sel finite:",
-            int(np.count_nonzero(np.isfinite(v_sel))),
-        )
-        if extent_count is not None:
-            print("[process_data_polyfit2d debug] extent_count:", extent_count)
-        print("[process_data_polyfit2d debug] sel2_count:", int(np.count_nonzero(sel2)))
+    LOGGER.debug("process_data_polyfit2d: %d selected pixels, %d/%d finite x/y, %d finite values, %s in the "
+                 "extent, %d fitted", eval_idx.size, np.count_nonzero(np.isfinite(x_sel)),
+                 np.count_nonzero(np.isfinite(y_sel)), np.count_nonzero(np.isfinite(v_sel)), extent_count,
+                 np.count_nonzero(sel2))
 
     x_fit = x_sel[sel2]
     y_fit = y_sel[sel2]

@@ -26,7 +26,7 @@ import numpy as np
 
 from streameucliddes.analysis import build_masks, generic_stream_search
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER
-from streameucliddes.analysis.known_stream_search import (
+from streameucliddes.analysis.stream_frame_search import (
     DEFAULT_BIN_SIZE_DEG,
     DEFAULT_SMOOTHING_DEG,
     SELECTION_ARGUMENTS,
@@ -81,7 +81,7 @@ GENERIC_SEARCH_CONFIG = {
     "cuts": None,
     # None: catalogs.isochrone_parameters.default_isochrone_grid(): one set of maps per isochrone
     "default_grid": None,
-    # None: 15 to 22 every 0.1 (known_stream_search.DEFAULT_DISTANCE_MODULI)
+    # None: 15 to 22 every 0.1 (stream_frame_search.DEFAULT_DISTANCE_MODULI)
     "distance_moduli": None,
     "nside": generic_stream_search.DEFAULT_NSIDE,
     # Objects masked (analysis.build_masks): LMC, SMC, dwarf galaxies, globular clusters (LVDB), bright galaxies (SGA)

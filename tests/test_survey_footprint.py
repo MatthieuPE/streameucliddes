@@ -15,8 +15,11 @@ import pytest
 from streameucliddes.catalogs import survey_footprint
 from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
+    star_count_nside,
     survey_footprint_healpix_mask,
     survey_footprint_phi12_mask,
+    trim_footprint_edge,
+    unmasked_area_deg2,
 )
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
 
@@ -273,3 +276,68 @@ def test_phi12_footprint_from_uniform_stars(rng, gc_frame):
     assert mask.shape == in_box.shape == (30, 10)
     assert mask[~in_box].all()
     assert np.mean(mask[in_box]) < 0.01
+
+
+# ===================================================
+# Test unmasked_area_deg2
+# ===================================================
+
+
+def _band_area_deg2(phi1_range, phi2_range):
+    """Area of a phi1/phi2 window (deg²): dphi1 (sin phi2_max - sin phi2_min) (180/pi)²."""
+    sin_band = np.sin(np.radians(phi2_range[1])) - np.sin(np.radians(phi2_range[0]))
+    return np.radians(phi1_range[1] - phi1_range[0]) * sin_band * np.degrees(1.0) ** 2
+
+
+# No mask: the exact area of each cell, whatever the step; a zero-width cell has none
+def test_unmasked_area_matches_analytic(icrs_frame):
+    area = unmasked_area_deg2(icrs_frame, [-8.0, 0.0, 8.0], [20.0, 40.0, 60.0], None, step_deg=0.3)
+    assert area.shape == (2, 2)
+    np.testing.assert_allclose(area[:, 0], _band_area_deg2((0.0, 8.0), (20.0, 40.0)), rtol=1e-10)
+    np.testing.assert_allclose(area[:, 1], _band_area_deg2((0.0, 8.0), (40.0, 60.0)), rtol=1e-10)
+    assert unmasked_area_deg2(icrs_frame, [1.0, 1.0, 2.0], [0.0, 1.0], None)[0, 0] == 0.0
+
+
+# Half of the window masked (ra < 10 deg in the icrs frame, phi1 = ra): about half the area;
+# the cells add up to the whole window
+def test_unmasked_area_half_masked(icrs_frame):
+    nside = 256
+    ra, _ = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    mask = ra < 10.0
+    whole = unmasked_area_deg2(icrs_frame, [5.0, 15.0], [-5.0, 5.0], None)[0, 0]
+    masked = unmasked_area_deg2(icrs_frame, [5.0, 15.0], [-5.0, 5.0], mask)[0, 0]
+    assert masked == pytest.approx(whole / 2, rel=0.02)
+    cells = unmasked_area_deg2(icrs_frame, np.linspace(5.0, 15.0, 11), np.linspace(-5.0, 5.0, 6), mask)
+    assert cells.sum() == pytest.approx(masked, rel=1e-3)
+    assert cells[:5].sum() < 0.05 * cells.sum()  # phi1 = ra < 10: masked
+
+
+# A disc: the pixels left are those whose 8 neighbours are all in the disc, the pixels removed each have one
+# outside; nothing removed without an edge (whole sky); both orderings; the input is not changed
+@pytest.mark.parametrize("nest", [False, True])
+def test_trim_footprint_edge(nest):
+    nside = 64
+    disc = hp.query_disc(nside, hp.ang2vec(40.0, -30.0, lonlat=True), np.radians(5.0), nest=nest)
+    mask = np.ones(hp.nside2npix(nside), dtype=bool)
+    mask[disc] = False
+    before = mask.copy()
+    trimmed = trim_footprint_edge(mask, nest=nest)
+    np.testing.assert_array_equal(mask, before)
+    assert np.all(trimmed[mask])  # nothing added
+    kept, removed = np.flatnonzero(~trimmed), np.flatnonzero(trimmed & ~mask)
+    assert removed.size > 0 and kept.size > 0
+    assert not mask[hp.get_all_neighbours(nside, kept, nest=nest)].any()
+    assert mask[hp.get_all_neighbours(nside, removed, nest=nest)].any(axis=0).all()
+    assert not trim_footprint_edge(np.zeros(hp.nside2npix(nside), dtype=bool), nest=nest).any()
+
+
+# Dense stars: max_nside kept; sparse: halved until the pixels with stars hold min_mean_count on average
+def test_star_count_nside(rng):
+    ra, dec = _uniform_on_sphere(rng, 200_000, (30.0, 50.0), (-40.0, -20.0))  # ~ 500 stars/deg²
+    assert star_count_nside(ra, dec, 64, min_mean_count=10) == 64  # 64: 0.84 deg² pixels
+    nside = star_count_nside(ra, dec, 1024, min_mean_count=10)
+    assert nside < 1024
+    for value, expected in ((nside, True), (2 * nside, False)):
+        n_pixels = np.count_nonzero(~survey_footprint_healpix_mask(ra, dec, value, nest=False))
+        assert (ra.size / n_pixels >= 10) == expected
+

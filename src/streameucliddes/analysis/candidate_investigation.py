@@ -1,0 +1,1407 @@
+"""Investigation of one stream candidate: its regions and width, and one object holding every step.
+
+Two layers, in this module:
+
+- plain functions returning plain dicts, each callable alone and tunable:
+  the on and off regions (``stream_regions``, ``region_windows``,
+  ``region_area_deg2``), the densities (``phi12_density_map``,
+  ``phi12_density_profile``, ``on_off_phi1_profile``); the width fit is in
+  ``analysis.fit_stream`` (``fit_stream_width``, ``stream_width_model``);
+- ``CandidateInvestigation``, which holds the inputs (two endpoints, the
+  isochrone, the distance modulus, the region sizes) and the result of each
+  step, and calls the functions in order. It adds no science: each method
+  calls one or two functions of this module, ``stream_frames``,
+  ``catalogs.survey_footprint``, ``analysis.fit_stream``, ``analysis.generic_stream_search``,
+  ``analysis.stream_frame_search``, ``analysis.build_masks`` and
+  ``analysis.cmd_match_filter``, stores the result and returns the object,
+  so that calls can be chained. A function can also be called alone and its
+  result put back in the object (e.g. ``cand.regions = stream_regions(...)``).
+
+The track is straight for now: phi2 = ``phi2_centre`` over ``phi1_range``.
+Its width is the sigma of a Gaussian plus a background (a constant by
+default, a polynomial of higher degree if needed), fitted to the phi2
+density profile of the stars in the match filter, near the track
+(``analysis.fit_stream.DEFAULT_FIT_HALF_WIDTH_DEG``). The on region is
+``|phi2 - phi2_centre| <= on_n_sigma * sigma``; there are two off regions,
+one below and one above the track, from ``off_n_sigma[0] * sigma`` to
+``off_n_sigma[1] * sigma``; all over ``phi1_range``. The off density is the
+mean of the densities of the two off regions (``mean_off_density``), so that
+a linear field gradient across the track cancels even where the masks cut
+one more than the other. Each region is a phi1/phi2 window
+(``region_windows``), so the window functions of ``stream_frames`` select
+their stars, draw them and, with ``catalogs.survey_footprint.unmasked_area_deg2``,
+give their areas. Areas and densities are outside the excluded mask
+(footprint OR masked objects, ``analysis.build_masks.excluded_healpix_mask``),
+so that the stars, the maps and the areas see the same masks.
+
+Steps of ``CandidateInvestigation``, in order:
+
+1. frame, window and (ra, dec) box, at construction (``__post_init__``);
+2. ``compute_sky_map``: matched-filter map of the loaded box, once;
+3. ``prepare`` and ``compute_zoom_map``; ``set_endpoints`` to move the
+   endpoints by hand until the frame follows the stream;
+4. ``scan_distance_moduli``: maps in the frame over distance moduli; the
+   user then sets ``distance_modulus`` by eye;
+5. ``fit_width``: phi2 density profile and Gaussian width;
+6. ``define_regions``: on and off regions, their areas, phi1 profile;
+7. ``compute_hess``: on, off and on - off Hess diagrams;
+8. ``compute_isochrone``: isochrone track over the Hess diagrams.
+
+``run_all_steps`` does them all. The figures take the object
+(``plotting.plot_candidate_investigation``).
+
+References
+----------
+Shipp et al. 2018, ApJ 862, 114 (Gaussian width with a constant background;
+on - off Hess diagrams). On region 1.4 sigma, off regions 3.5 to 6 sigma: user
+choices, no reference.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+from pathlib import Path
+from typing import TYPE_CHECKING, Any
+
+import healpy as hp
+import numpy as np
+
+from streameucliddes.analysis.build_masks import excluded_healpix_mask
+from streameucliddes.analysis.cmd_match_filter import (
+    difference_hess,
+    hess_diagram,
+    isochrone_cmd_track,
+    match_filter_columns,
+    mean_off_density,
+    mean_off_hess,
+    select_stars_in_match_filter,
+)
+from streameucliddes.analysis.fit_stream import DEFAULT_SIGMA_GUESS_DEG, fit_stream_width
+from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
+from streameucliddes.analysis.stream_frame_search import (
+    prepare_search,
+    stream_frame_search_dm_scan,
+    stream_frame_search_single_dm,
+)
+from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, DEFAULT_METALLICITIES
+from streameucliddes.catalogs.stream_candidates import DEFAULT_CANDIDATES_PATH, candidate_endpoints, get_candidate
+from streameucliddes.catalogs.survey_footprint import (
+    star_count_nside,
+    survey_footprint_healpix_mask,
+    trim_footprint_edge,
+    unmasked_area_deg2,
+)
+from streameucliddes.stream_frames import (
+    DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
+    DEFAULT_PADDING_PHI1_DEG,
+    DEFAULT_PADDING_PHI2_DEG,
+    in_phi12_window,
+    phi12_to_radec,
+    phi12_window_around,
+    phi12_window_radec_box,
+    radec_to_phi12,
+    stream_frame_from_endpoints,
+)
+from streameucliddes.unit_conversions import convert_DM_to_kpc, convert_FeH_to_z
+
+if TYPE_CHECKING:
+    from collections.abc import Mapping, Sequence
+
+    import astropy.coordinates as coord
+    import pandas as pd
+    from numpy.typing import ArrayLike, NDArray
+
+    from streameucliddes.analysis.stream_frame_search import PreparedSearch
+
+DEFAULT_ON_N_SIGMA = 1.4  # user choice
+DEFAULT_OFF_N_SIGMA = (3.5, 6)  # user choice
+DEFAULT_PHI2_BIN_DEG = 0.05  # bins of the phi2 profile
+DEFAULT_PHI1_BIN_DEG = 0.5  # bins of the phi1 profile
+DEFAULT_WIDTH_MAP_BINS_DEG = (0.5, 0.2)  # (phi1, phi2) cells of the 2D map of the width fit
+DEFAULT_FOOTPRINT_NSIDE = 512  # footprint from the stars (finest nside; coarser for sparse stars)
+DEFAULT_TRACK_POINTS = 100
+# Figures of the candidates: figures/outputs/ of the repository (gitignored), one folder per candidate,
+# "unnamed" for one given by its endpoints, its id for one of the list (from_candidate_id)
+CANDIDATE_FIGURES_DIR = Path(__file__).resolve().parents[3] / "figures" / "outputs" / "candidates"
+UNNAMED_FIGURE_FOLDER = "unnamed"
+CATALOG_EDGE_TOLERANCE_DEG = 0.1  # window outline beyond the outermost stars by less than this: still inside
+# Steps of run_all_steps that take step_kwargs, in order (prepare, between compute_sky_map and compute_zoom_map, takes
+# footprint_mask, nest and the prepare_kwargs of the object)
+RUN_ALL_STEPS = ("compute_sky_map", "compute_zoom_map", "scan_distance_moduli", "fit_width", "define_regions",
+                 "compute_hess", "compute_isochrone")
+WINDOW_FIELDS = ("padding_phi1_deg", "padding_phi2_deg", "min_phi2_half_width_deg")
+# Results that depend on the frame: cleared by prepare and set_endpoints (not sky_map nor isochrone_track)
+FRAME_RESULTS = ("search", "excluded_healpix_mask", "stars_not_excluded", "zoom_map", "maps", "phi2_profile", "width_fit", "width_map",
+                 "regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
+# Results computed from the distance modulus (the stars in the match filter, from fit_width on)
+DISTANCE_MODULUS_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "areas", "phi1_profile", "on_hess",
+                            "off_hess", "diff_hess", "isochrone_track")
+REGION_RESULTS = ("regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
+# Results cleared when an input changes after a step: those computed from it (the maps and the zoom map carry their
+# own distance modulus; prepare_search keeps the isochrone only as a default the candidate never uses)
+INPUT_RESULTS = {
+    "distance_modulus": DISTANCE_MODULUS_RESULTS,
+    **dict.fromkeys(("age", "metallicity", "feh"), ("sky_map", "zoom_map", "maps", *DISTANCE_MODULUS_RESULTS)),
+    "match_filter": ("sky_map", *FRAME_RESULTS, "isochrone_track"),
+    "prepare_kwargs": FRAME_RESULTS,
+    **dict.fromkeys(("on_n_sigma", "off_n_sigma"), REGION_RESULTS),
+}
+
+
+# ===================================================
+# Regions
+# ===================================================
+
+
+def stream_regions(
+    phi1_range: tuple[float, float],
+    phi2_centre: float = 0.0,
+    sigma: float = DEFAULT_SIGMA_GUESS_DEG,
+    *,
+    on_n_sigma: float = DEFAULT_ON_N_SIGMA,
+    off_n_sigma: tuple[float, float] = DEFAULT_OFF_N_SIGMA,
+    on_phi2_offset_deg: float = 0.0,
+    off_phi2_offsets_deg: tuple[float, float] = (0.0, 0.0),
+) -> dict[str, Any]:
+    """On and off regions of a stream, as a plain dict to edit by hand.
+
+    Parameters
+    ----------
+    phi1_range : tuple of float
+        ``(phi1_min, phi1_max)`` of the regions (deg).
+    phi2_centre : float, optional
+        phi2 of the track (deg).
+    sigma : float, optional
+        Gaussian width of the stream in phi2 (deg), e.g. from ``fit_stream_width``.
+    on_n_sigma : float, optional
+        Half-width of the on region, in units of ``sigma``.
+    off_n_sigma : tuple of float, optional
+        Inner and outer distances of the off regions to ``phi2_centre``, in
+        units of ``sigma``.
+    on_phi2_offset_deg : float, optional
+        phi2 shift of the on region (deg), e.g. to move it off the stream as
+        a null test.
+    off_phi2_offsets_deg : tuple of float, optional
+        phi2 shifts of the off region below and of the off region above (deg).
+
+    Returns
+    -------
+    regions : dict
+        ``{"phi1_range", "phi2_centre", "sigma", "on_n_sigma", "off_n_sigma",
+        "on_phi2_offset_deg", "off_phi2_offsets_deg"}``.
+
+    Raises
+    ------
+    ValueError
+        An off region overlaps the on region, or ``off_n_sigma[1] <=
+        off_n_sigma[0]``, or ``sigma <= 0``, or ``phi1_range`` not increasing.
+    """
+    if sigma <= 0:
+        raise ValueError(f"sigma must be > 0, not {sigma}.")
+    if not off_n_sigma[1] > off_n_sigma[0]:
+        raise ValueError(f"off_n_sigma must be increasing, not {off_n_sigma}.")
+    if not phi1_range[1] > phi1_range[0]:
+        raise ValueError(f"phi1_range must be increasing, not {phi1_range}.")
+    regions = {
+        "phi1_range": (float(phi1_range[0]), float(phi1_range[1])), "phi2_centre": float(phi2_centre),
+        "sigma": float(sigma), "on_n_sigma": float(on_n_sigma),
+        "off_n_sigma": (float(off_n_sigma[0]), float(off_n_sigma[1])),
+        "on_phi2_offset_deg": float(on_phi2_offset_deg),
+        "off_phi2_offsets_deg": (float(off_phi2_offsets_deg[0]), float(off_phi2_offsets_deg[1])),
+    }
+    windows = region_windows(regions)
+    on_min, on_max = windows["on"][2:]
+    for off_min, off_max in (window[2:] for window in windows["off"]):
+        if off_min < on_max and on_min < off_max:
+            raise ValueError(f"An off region (phi2 {off_min:.2f} to {off_max:.2f} deg) overlaps the on region "
+                             f"(phi2 {on_min:.2f} to {on_max:.2f} deg).")
+    return regions
+
+
+def region_windows(regions: dict[str, Any]) -> dict[str, Any]:
+    """phi1/phi2 windows of the on region and of the two off regions.
+
+    Computed from the regions each time, so that a region edited by hand
+    stays consistent. Each window is shifted in phi2 by its offset
+    (``on_phi2_offset_deg``, ``off_phi2_offsets_deg``; 0 when absent).
+
+    Parameters
+    ----------
+    regions : dict
+        From ``stream_regions``.
+
+    Returns
+    -------
+    windows : dict
+        ``{"on": window, "off": (window_below, window_above)}``, each
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg). Stars:
+        ``stream_frames.in_phi12_window``; outlines:
+        ``stream_frames.phi12_window_outline``.
+    """
+    phi1_min, phi1_max = regions["phi1_range"]
+    centre, sigma = regions["phi2_centre"], regions["sigma"]
+    on_half = regions["on_n_sigma"] * sigma
+    off_inner, off_outer = (n_sigma * sigma for n_sigma in regions["off_n_sigma"])
+    on_offset = regions.get("on_phi2_offset_deg", 0.0)
+    below_offset, above_offset = regions.get("off_phi2_offsets_deg", (0.0, 0.0))
+    return {
+        "on": (phi1_min, phi1_max, centre - on_half + on_offset, centre + on_half + on_offset),
+        "off": ((phi1_min, phi1_max, centre - off_outer + below_offset, centre - off_inner + below_offset),
+                (phi1_min, phi1_max, centre + off_inner + above_offset, centre + off_outer + above_offset)),
+    }
+
+
+def region_area_deg2(
+    regions: dict[str, Any],
+    stream_frame: coord.BaseCoordinateFrame,
+    excluded_healpix_mask: NDArray[np.bool_] | None,
+) -> dict[str, float]:
+    """Areas of the on and off regions outside an excluded HEALPix mask.
+
+    ``catalogs.survey_footprint.unmasked_area_deg2`` of each window of
+    ``region_windows``.
+
+    Parameters
+    ----------
+    regions : dict
+        From ``stream_regions``.
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Frame of the regions.
+    excluded_healpix_mask : numpy.ndarray of bool or None
+        True where excluded, RING. None: nothing excluded.
+
+    Returns
+    -------
+    areas : dict
+        ``{"on", "off_below", "off_above", "off"}`` (deg²); ``"off"`` is the
+        sum of the two off regions.
+    """
+    windows = region_windows(regions)
+    on, below, above = (float(unmasked_area_deg2(stream_frame, window[:2], window[2:], excluded_healpix_mask)[0, 0])
+                        for window in (windows["on"], *windows["off"]))
+    return {"on": on, "off_below": below, "off_above": above, "off": below + above}
+
+
+# ===================================================
+# Profiles and width
+# ===================================================
+
+
+def phi12_density_profile(
+    phi1: ArrayLike,
+    phi2: ArrayLike,
+    windows: Sequence[tuple[float, float, float, float]],
+    stream_frame: coord.BaseCoordinateFrame,
+    excluded_healpix_mask: NDArray[np.bool_] | None,
+    *,
+    axis: str,
+    bin_deg: float,
+    axis_range: tuple[float, float] | None = None,
+) -> dict[str, Any]:
+    """Density of stars along phi1 or phi2, over one or more windows.
+
+    The stars in the windows (e.g. those in the match filter;
+    ``stream_frames.in_phi12_window``) are counted in bins of ``bin_deg``
+    along ``axis``; each bin is divided by its area inside the windows and
+    outside the excluded mask (``catalogs.survey_footprint.unmasked_area_deg2``),
+    so that tile edges and masked objects make no dips. One function for
+    both profiles: along phi2 over the window of the maps (width), along
+    phi1 over the on region or the two off regions (``on_off_phi1_profile``).
+
+    Parameters
+    ----------
+    phi1, phi2 : array_like
+        Coordinates of the stars in the stream frame (deg).
+    windows : sequence of tuple of float
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg), not overlapping;
+        their counts and areas add up.
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Frame of the stars.
+    excluded_healpix_mask : numpy.ndarray of bool or None
+        True where excluded, RING. None: nothing excluded.
+    axis : {"phi1", "phi2"}
+        Axis of the profile.
+    bin_deg : float
+        Bin size along ``axis`` (deg), e.g. ``DEFAULT_PHI2_BIN_DEG``:
+        ``axis_range`` is cut into the whole number of bins closest to it.
+    axis_range : tuple of float, optional
+        Range of the bins (deg). Default: that of the windows along ``axis``.
+
+    Returns
+    -------
+    profile : dict
+        ``{"axis", "centres", "edges", "counts", "area_deg2", "density",
+        "error", "bin_deg", "windows"}``: density in stars/deg², error
+        ``sqrt(counts) / area_deg2``, ``bin_deg`` the bin size used. Bins
+        with no area have NaN density and error.
+
+    Raises
+    ------
+    ValueError
+        ``axis`` neither "phi1" nor "phi2".
+    """
+    if axis not in ("phi1", "phi2"):
+        raise ValueError(f"axis must be 'phi1' or 'phi2', not {axis!r}.")
+    windows = [tuple(float(value) for value in window) for window in windows]
+    k = 0 if axis == "phi1" else 2  # index of the window minimum along the axis
+    if axis_range is None:
+        axis_range = (min(window[k] for window in windows), max(window[k + 1] for window in windows))
+    edges = _bin_edges(axis_range, bin_deg)
+    counts, area = np.zeros(edges.size - 1), np.zeros(edges.size - 1)
+    for window in windows:
+        clipped = np.clip(edges, window[k], window[k + 1])  # the bins inside the window; outside: zero width
+        if axis == "phi1":
+            cells = phi12_density_map(phi1, phi2, clipped, window[2:], stream_frame, excluded_healpix_mask)
+        else:
+            cells = phi12_density_map(phi1, phi2, window[:2], clipped, stream_frame, excluded_healpix_mask)
+        counts += cells["counts"].ravel()
+        area += cells["area_deg2"].ravel()
+    density, error = _density_and_error(counts, area)
+    return {
+        "axis": axis, "centres": (edges[:-1] + edges[1:]) / 2, "edges": edges, "counts": counts,
+        "area_deg2": area, "density": density, "error": error, "bin_deg": float(edges[1] - edges[0]),
+        "windows": windows,
+    }
+
+
+def phi12_density_map(
+    phi1: ArrayLike,
+    phi2: ArrayLike,
+    phi1_edges: ArrayLike,
+    phi2_edges: ArrayLike,
+    stream_frame: coord.BaseCoordinateFrame,
+    excluded_healpix_mask: NDArray[np.bool_] | None,
+) -> dict[str, Any]:
+    """Density of stars on a phi1/phi2 grid: counts per cell over its area outside a mask.
+
+    Not smoothed (unlike the maps of ``analysis.stream_frame_search``): each
+    cell is the count of its stars divided by its area outside the excluded
+    mask (``catalogs.survey_footprint.unmasked_area_deg2``), in stars/deg².
+    ``phi12_density_profile`` adds its cells up along one axis.
+
+    Parameters
+    ----------
+    phi1, phi2 : array_like
+        Coordinates of the stars in the stream frame (deg).
+    phi1_edges, phi2_edges : array_like
+        Edges of the cells (deg), increasing.
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Frame of the stars.
+    excluded_healpix_mask : numpy.ndarray of bool or None
+        True where excluded, RING. None: nothing excluded.
+
+    Returns
+    -------
+    density_map : dict
+        ``{"phi1_edges", "phi2_edges", "counts", "area_deg2", "density",
+        "error"}``, the arrays of shape (n_phi1, n_phi2): density in
+        stars/deg², error ``sqrt(counts) / area_deg2``; cells with no area
+        have NaN density and error.
+    """
+    phi1_edges, phi2_edges = np.asarray(phi1_edges, dtype=float), np.asarray(phi2_edges, dtype=float)
+    counts, _, _ = np.histogram2d(np.asarray(phi1, dtype=float), np.asarray(phi2, dtype=float),
+                                  bins=[phi1_edges, phi2_edges])
+    area = unmasked_area_deg2(stream_frame, phi1_edges, phi2_edges, excluded_healpix_mask)
+    density, error = _density_and_error(counts, area)
+    return {"phi1_edges": phi1_edges, "phi2_edges": phi2_edges, "counts": counts, "area_deg2": area,
+            "density": density, "error": error}
+
+
+def _bin_edges(value_range: tuple[float, float], bin_deg: float) -> NDArray[np.float64]:
+    """Edges cutting a range into the whole number of bins closest to bin_deg (at least one)."""
+    n_bins = max(int(round((value_range[1] - value_range[0]) / bin_deg)), 1)
+    return np.linspace(value_range[0], value_range[1], n_bins + 1)
+
+
+def _density_and_error(
+    counts: NDArray[np.float64], area: NDArray[np.float64]
+) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """counts / area and sqrt(counts) / area; NaN where there is no area."""
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(area > 0, counts / area, np.nan), np.where(area > 0, np.sqrt(counts) / area, np.nan)
+
+
+def on_off_phi1_profile(
+    phi1: ArrayLike,
+    phi2: ArrayLike,
+    regions: dict[str, Any],
+    stream_frame: coord.BaseCoordinateFrame,
+    excluded_healpix_mask: NDArray[np.bool_] | None,
+    *,
+    phi1_range: tuple[float, float] | None = None,
+    bin_deg: float = DEFAULT_PHI1_BIN_DEG,
+) -> dict[str, Any]:
+    """On - off density along phi1, to see where the stream starts and stops.
+
+    ``phi12_density_profile`` along phi1 of the on region and of the off
+    regions below and above the track (``region_windows``, over
+    ``phi1_range``); the off density of a bin is the mean of the two off
+    regions (``mean_off_density``: the one with an area alone where the
+    other has none); and the difference.
+
+    Parameters
+    ----------
+    phi1, phi2 : array_like
+        Coordinates of the stars in the stream frame (deg).
+    regions : dict
+        From ``stream_regions``; its phi2 limits are used.
+    stream_frame : astropy.coordinates.BaseCoordinateFrame
+        Frame of the stars.
+    excluded_healpix_mask : numpy.ndarray of bool or None
+        True where excluded, RING. None: nothing excluded.
+    phi1_range : tuple of float, optional
+        Range of the bins (deg), e.g. that of the window of the maps, to
+        extend beyond the regions. Default: ``regions["phi1_range"]``.
+    bin_deg : float, optional
+        Bin size in phi1 (deg).
+
+    Returns
+    -------
+    profile : dict
+        ``{"centres", "edges", "on", "off", "difference", "error",
+        "on_error", "off_error", "n_off_regions", "bin_deg", "regions"}``:
+        densities in stars/deg²; ``error`` that of the difference (Poisson,
+        in quadrature); ``n_off_regions`` the number of off regions in the
+        mean of each bin: 1 where one has no area, and then a gradient
+        across the track no longer cancels. Bins with no area in the on
+        region or in both off regions have NaN.
+    """
+    if phi1_range is None:
+        phi1_range = regions["phi1_range"]
+    windows = region_windows({**regions, "phi1_range": tuple(phi1_range)})
+    kwargs = {"axis": "phi1", "bin_deg": bin_deg, "axis_range": tuple(phi1_range)}
+    on, below, above = (phi12_density_profile(phi1, phi2, [window], stream_frame, excluded_healpix_mask, **kwargs)
+                        for window in (windows["on"], *windows["off"]))
+    off, off_error, n_off_regions = mean_off_density(below["density"], below["error"], above["density"], above["error"])
+    return {
+        "centres": on["centres"], "edges": on["edges"], "on": on["density"], "off": off,
+        "difference": on["density"] - off, "error": np.hypot(on["error"], off_error),
+        "on_error": on["error"], "off_error": off_error, "n_off_regions": n_off_regions,
+        "bin_deg": on["bin_deg"], "regions": dict(regions),
+    }
+
+
+# ===================================================
+# The investigation
+# ===================================================
+
+
+def _changed(old: Any, new: Any) -> bool:
+    """Whether a new input value differs from the old one (True when they cannot be compared)."""
+    try:
+        return bool(old != new)
+    except (TypeError, ValueError):
+        return True
+
+
+@dataclass
+class CandidateInvestigation:
+    """All inputs and results of one stream-candidate investigation.
+
+    Mutable: change a field and re-run the later steps. Results are None
+    until their step is done. A candidate of the list
+    (``catalogs.stream_candidates``): ``from_candidate_id``.
+
+    Parameters
+    ----------
+    name : str
+        Name of the candidate, for titles.
+    endpoint_1, endpoint_2 : tuple of float
+        (ra, dec) of two points along the stream (deg).
+    age : float, optional
+        Isochrone age (Gyr).
+    metallicity : float, optional
+        Isochrone Z (Marigo et al. 2017 scale). At most one of
+        ``metallicity`` and ``feh``; neither: Z =
+        ``DEFAULT_METALLICITIES[0]`` of ``catalogs.isochrone_parameters``.
+    feh : float, optional
+        Isochrone [Fe/H], converted to Z (``unit_conversions.convert_FeH_to_z``)
+        each time the isochrone is used (``isochrone``).
+    distance_modulus : float, optional
+        Distance modulus of the stream, chosen by eye after the scan
+        (``scan_distance_moduli``). Needed from ``fit_width`` on.
+    distance_moduli : sequence of float, optional
+        Grid of the scan. Default: that of ``prepare_search``.
+    match_filter : dict, optional
+        See ``analysis.cmd_match_filter``. Default: ``DEFAULT_MATCH_FILTER``.
+    padding_phi1_deg, padding_phi2_deg, min_phi2_half_width_deg : float, optional
+        Window around the endpoints (``stream_frames.phi12_window_around``).
+    on_n_sigma : float, optional
+        Half-width of the on region, in units of sigma.
+    off_n_sigma : tuple of float, optional
+        Distances of the off regions, in units of sigma.
+    prepare_kwargs : dict, optional
+        More arguments of ``prepare_search`` (``bin_size_deg``, ``cuts``,
+        ``mask_*``...).
+    figure_folder : str or pathlib.Path, optional
+        Folder of the figures of the candidate. Default:
+        ``CANDIDATE_FIGURES_DIR / "unnamed"`` (``figures/outputs/candidates/unnamed``);
+        from ``from_candidate_id``, ``CANDIDATE_FIGURES_DIR / "<id>"``. Not
+        created here.
+
+    Attributes
+    ----------
+    stream_frame : gala.coordinates.GreatCircleICRSFrame
+        From the endpoints (``stream_frame_from_endpoints``).
+    window : tuple of float
+        ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg).
+    radec_box : tuple
+        ``(ra_range, dec_range)`` of the window (``phi12_window_radec_box``).
+    catalog : pandas.DataFrame
+        The stars given to ``prepare`` (a reference, not a copy), kept to
+        prepare again after ``set_endpoints``.
+    footprint_mask, footprint_nest : numpy.ndarray of bool, bool
+        HEALPix footprint of the catalog (True outside) and its ordering, kept
+        for ``set_endpoints``.
+    search : PreparedSearch
+        From ``prepare_search``.
+    excluded_healpix_mask : numpy.ndarray of bool
+        Footprint OR masked objects, RING (``build_masks.excluded_healpix_mask``).
+    stars_not_excluded : numpy.ndarray of bool
+        True for the stars of ``search.stars`` outside ``excluded_healpix_mask``:
+        those counted in the regions, whose areas leave the mask out
+        (``prepare_search`` drops the stars on masked objects, not those
+        outside the footprint).
+    sky_map : dict
+        ``generic_search_single_dm`` on the loaded box; does not depend on
+        the frame.
+    zoom_map : dict
+        ``stream_frame_search_single_dm`` at the distance modulus of ``sky_map``.
+    maps : dict
+        ``{distance_modulus: result of stream_frame_search_single_dm}``.
+    phi2_profile, width_fit, width_map : dict
+        ``phi12_density_profile`` (along phi2), ``fit_stream_width`` and
+        ``phi12_density_map`` (the same stars in 2D) results.
+    regions, areas, phi1_profile : dict
+        ``stream_regions``, ``region_area_deg2`` and ``on_off_phi1_profile``
+        results.
+    on_hess, off_hess, diff_hess : dict
+        ``hess_diagram`` and ``difference_hess`` results.
+    isochrone_track : dict
+        ``isochrone_cmd_track`` result.
+    """
+
+    # Inputs
+    name: str
+    endpoint_1: tuple[float, float]
+    endpoint_2: tuple[float, float]
+    age: float = DEFAULT_AGES_GYR[0]
+    metallicity: float | None = None
+    feh: float | None = None
+    distance_modulus: float | None = None
+    distance_moduli: Sequence[float] | None = None
+    match_filter: dict | None = None
+    padding_phi1_deg: float = DEFAULT_PADDING_PHI1_DEG
+    padding_phi2_deg: float = DEFAULT_PADDING_PHI2_DEG
+    min_phi2_half_width_deg: float = DEFAULT_MIN_PHI2_HALF_WIDTH_DEG
+    on_n_sigma: float = DEFAULT_ON_N_SIGMA
+    off_n_sigma: tuple[float, float] = DEFAULT_OFF_N_SIGMA
+    prepare_kwargs: dict = field(default_factory=dict)
+    figure_folder: str | Path | None = None
+    # Results, None until computed
+    stream_frame: Any = None
+    window: tuple | None = None
+    radec_box: tuple | None = None
+    catalog: Any = None
+    footprint_mask: NDArray | None = None
+    footprint_nest: bool = False
+    search: PreparedSearch | None = None
+    excluded_healpix_mask: NDArray | None = None
+    stars_not_excluded: NDArray | None = None
+    sky_map: dict | None = None
+    zoom_map: dict | None = None
+    maps: dict | None = None
+    phi2_profile: dict | None = None
+    width_fit: dict | None = None
+    width_map: dict | None = None
+    regions: dict | None = None
+    areas: dict | None = None
+    phi1_profile: dict | None = None
+    on_hess: dict | None = None
+    off_hess: dict | None = None
+    diff_hess: dict | None = None
+    isochrone_track: dict | None = None
+
+    def __post_init__(self) -> None:
+        """Frame, window and (ra, dec) box from the endpoints (``stream_frames``).
+
+        Raises
+        ------
+        ValueError
+            Both ``metallicity`` and ``feh`` given.
+        """
+        _ = self.isochrone  # raises if both metallicity and feh are set
+        if self.figure_folder is None:
+            self.figure_folder = CANDIDATE_FIGURES_DIR / UNNAMED_FIGURE_FOLDER
+        self._set_frame_and_window()
+        object.__setattr__(self, "_track_inputs", True)  # from now on, a changed input clears its results
+
+    def __setattr__(self, name: str, value: Any) -> None:
+        """Set a field; a changed input of ``INPUT_RESULTS`` clears the results computed from it.
+
+        E.g. a new ``distance_modulus`` after ``define_regions`` clears the
+        width, the regions and the Hess diagrams: ``summary`` and the plots
+        never mix results of different inputs. The endpoints and the window
+        change with ``set_endpoints``.
+        """
+        if self.__dict__.get("_track_inputs") and name in INPUT_RESULTS and _changed(self.__dict__.get(name), value):
+            self._clear_results(INPUT_RESULTS[name])
+        object.__setattr__(self, name, value)
+
+    @classmethod
+    def from_candidate_id(
+        cls,
+        candidate_id: int,
+        *,
+        path: str | Path = DEFAULT_CANDIDATES_PATH,
+        name: str | None = None,
+        **inputs: Any,
+    ) -> CandidateInvestigation:
+        """Investigation of a candidate of the list (``catalogs.stream_candidates``), from its id.
+
+        Its endpoints and its ``best_dm`` (as ``distance_modulus``) come from
+        the list, its figures go to ``CANDIDATE_FIGURES_DIR / "<id>"``
+        (``figure_folder``); the other inputs are those of the class. For a candidate
+        not in the list, give the endpoints to the class itself.
+
+        Parameters
+        ----------
+        candidate_id : int
+            Its ``id`` in the list.
+        path : str or pathlib.Path, optional
+            CSV file of the list.
+        name : str, optional
+            Default: ``"candidate_<id>"``.
+        **inputs
+            Other inputs of the class (``age``, ``metallicity`` or ``feh``,
+            ``match_filter``, ``distance_moduli``...); a ``distance_modulus``
+            or a ``figure_folder`` given here replaces that of the list.
+
+        Returns
+        -------
+        cand : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            No candidate with this id (``get_candidate``).
+        """
+        candidate = get_candidate(candidate_id, path)
+        endpoint_1, endpoint_2 = candidate_endpoints(candidate)
+        inputs.setdefault("distance_modulus", float(candidate["best_dm"]))
+        inputs.setdefault("figure_folder", CANDIDATE_FIGURES_DIR / str(int(candidate["id"])))
+        return cls(f"candidate_{int(candidate['id'])}" if name is None else name, endpoint_1, endpoint_2, **inputs)
+
+    @property
+    def isochrone(self) -> dict[str, float]:
+        """``{"age", "metallicity"}`` of the match filter and of the isochrone track.
+
+        Z from ``feh`` when given (``unit_conversions.convert_FeH_to_z``),
+        else ``metallicity``, else ``DEFAULT_METALLICITIES[0]``. Computed each
+        time: changing ``age``, ``metallicity`` or ``feh`` changes it.
+
+        Raises
+        ------
+        ValueError
+            Both ``metallicity`` and ``feh`` set.
+        """
+        if self.metallicity is not None and self.feh is not None:
+            raise ValueError("Give metallicity (Z) or feh, not both.")
+        if self.feh is not None:
+            metallicity = float(convert_FeH_to_z(self.feh))
+        elif self.metallicity is not None:
+            metallicity = float(self.metallicity)
+        else:
+            metallicity = float(DEFAULT_METALLICITIES[0])
+        return {"age": float(self.age), "metallicity": metallicity}
+
+    def _set_frame_and_window(self) -> None:
+        """Frame from the endpoints, window around them, (ra, dec) box of the window."""
+        self.endpoint_1 = (float(self.endpoint_1[0]), float(self.endpoint_1[1]))
+        self.endpoint_2 = (float(self.endpoint_2[0]), float(self.endpoint_2[1]))
+        self.stream_frame = stream_frame_from_endpoints(self.endpoint_1, self.endpoint_2)
+        phi1, phi2 = radec_to_phi12(
+            [self.endpoint_1[0], self.endpoint_2[0]], [self.endpoint_1[1], self.endpoint_2[1]], self.stream_frame
+        )
+        self.window = phi12_window_around(
+            phi1, phi2, padding_phi1_deg=self.padding_phi1_deg, padding_phi2_deg=self.padding_phi2_deg,
+            min_phi2_half_width_deg=self.min_phi2_half_width_deg,
+        )
+        self.radec_box = phi12_window_radec_box(self.stream_frame, self.window)
+
+    # ===================================================
+    # Steps
+    # ===================================================
+
+    def compute_sky_map(
+        self, catalog: pd.DataFrame, distance_modulus: float | None = None, **generic_kwargs: Any
+    ) -> CandidateInvestigation:
+        """Matched-filter map of the loaded box, once (``generic_search_single_dm``).
+
+        The corrected map (``residual``) shows the streams of the box; the
+        frame check draws the great circle of the endpoints over it. Does not
+        depend on the frame: ``set_endpoints`` keeps it. The catalog is kept
+        in ``self.catalog`` (a reference), the default of ``prepare``.
+
+        Parameters
+        ----------
+        catalog : pandas.DataFrame
+            Stars of a box larger than the candidate, e.g. from
+            ``get_euclid_stars``. Not copied.
+        distance_modulus : float, optional
+            Default: ``self.distance_modulus``.
+        **generic_kwargs
+            Arguments of ``generic_search_single_dm`` (``smoothing_deg``,
+            ``polynomial_degree``) and of ``prepare_generic_search``
+            (``nside``, ``cuts``, ``mask_*``...). The isochrone and the match
+            filter are those of the object.
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            No distance modulus given nor set.
+        """
+        distance_modulus = self.distance_modulus if distance_modulus is None else distance_modulus
+        if distance_modulus is None:
+            raise ValueError("compute_sky_map needs a distance_modulus: give one, or set cand.distance_modulus.")
+        self.sky_map = generic_search_single_dm(
+            catalog, distance_modulus, self.isochrone, match_filter=self.match_filter, **generic_kwargs
+        )
+        if catalog is not self.catalog:
+            self.footprint_mask = None  # that of another catalog
+        self.catalog = catalog
+        return self
+
+    def prepare(
+        self,
+        catalog: pd.DataFrame | None = None,
+        *,
+        footprint_mask: NDArray | None = None,
+        nest: bool = False,
+    ) -> CandidateInvestigation:
+        """Stars of the window and excluded mask (``prepare_search``, ``excluded_healpix_mask``).
+
+        ``prepare_search`` with the frame, window, isochrone, match filter and
+        ``distance_moduli`` of the object, and ``prepare_kwargs``; then the
+        excluded mask: the footprint OR the objects masked by
+        ``prepare_search`` (``build_masks.excluded_healpix_mask``, RING). The
+        results of the later steps are cleared.
+
+        The footprint is not that of ``sky_map``: the generic search adds the
+        masked objects to it at its own nside; here the objects come at the
+        finer nside of ``prepare_search``, the one the stars are dropped with.
+
+        Parameters
+        ----------
+        catalog : pandas.DataFrame, optional
+            Stars, kept in ``self.catalog`` (a reference). Default: the
+            catalog of ``compute_sky_map`` or of a previous call.
+        footprint_mask : numpy.ndarray of bool, optional
+            HEALPix footprint, True outside, kept in ``self.footprint_mask``.
+            Default: the one kept, else from the stars
+            (``survey_footprint_healpix_mask`` at ``DEFAULT_FOOTPRINT_NSIDE``,
+            coarser if the pixels hold too few stars: ``star_count_nside``),
+            less its edge pixels (``trim_footprint_edge``: partly covered,
+            they would count their whole area). A given footprint is used as
+            it is.
+        nest : bool, optional
+            Ordering of a given ``footprint_mask``.
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            No catalog given nor kept; or the window leaves the (ra, dec) range
+            of the catalog.
+        """
+        catalog = self.catalog if catalog is None else catalog
+        if catalog is None:
+            raise ValueError("prepare needs the stars: give a catalog, or call compute_sky_map first.")
+        self._check_window_in_catalog(catalog)
+        if catalog is not self.catalog:
+            self.footprint_mask = None  # that of another catalog
+        self.catalog = catalog
+        if footprint_mask is not None:
+            self.footprint_mask, self.footprint_nest = np.asarray(footprint_mask, dtype=bool), nest
+        elif self.footprint_mask is None:
+            ra, dec = catalog["ra"].to_numpy(), catalog["dec"].to_numpy()
+            nside = star_count_nside(ra, dec, DEFAULT_FOOTPRINT_NSIDE)  # coarser for a sparse catalog
+            self.footprint_mask = trim_footprint_edge(survey_footprint_healpix_mask(ra, dec, nside, nest=False),
+                                                      nest=False)  # the partly covered edge pixels left out
+            self.footprint_nest = False
+        self._prepare_stars()
+        return self
+
+    def set_endpoints(
+        self,
+        endpoint_1: tuple[float, float],
+        endpoint_2: tuple[float, float],
+        **window_kwargs: Any,
+    ) -> CandidateInvestigation:
+        """New endpoints: new frame, window and box; prepared again; later results cleared.
+
+        Fast: the sky map, the footprint and the object mask (of the last
+        ``prepare``, which does not depend on the frame) are kept; only the
+        stars of the new window are prepared (when there is a catalog). Then
+        call ``compute_zoom_map`` and ``plot_candidate_frame_check``. After a
+        change of ``prepare_kwargs``, call ``prepare()`` instead.
+
+        Parameters
+        ----------
+        endpoint_1, endpoint_2 : tuple of float
+            (ra, dec) (deg).
+        **window_kwargs
+            ``padding_phi1_deg``, ``padding_phi2_deg``,
+            ``min_phi2_half_width_deg``: set on the object.
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            The new window leaves the (ra, dec) range of the kept catalog:
+            load a larger box. The object is then left unchanged.
+        TypeError
+            Another keyword than those of the window.
+        """
+        unknown = set(window_kwargs) - set(WINDOW_FIELDS)
+        if unknown:
+            raise TypeError(f"Unexpected arguments {sorted(unknown)}; set_endpoints takes {WINDOW_FIELDS}.")
+        previous = {name: getattr(self, name) for name in ("endpoint_1", "endpoint_2", *WINDOW_FIELDS)}
+        self.endpoint_1, self.endpoint_2 = endpoint_1, endpoint_2
+        for name, value in window_kwargs.items():
+            setattr(self, name, value)
+        old_frame = (self.stream_frame, self.window, self.radec_box)
+        self._set_frame_and_window()
+        if self.catalog is not None:
+            try:
+                self._check_window_in_catalog(self.catalog)
+            except ValueError:  # leave the object as it was
+                for name, value in previous.items():
+                    setattr(self, name, value)
+                self.stream_frame, self.window, self.radec_box = old_frame
+                raise
+            self._prepare_stars(None if self.search is None else self.search.object_healpix_mask)
+        else:
+            self._clear_results(FRAME_RESULTS)
+        return self
+
+    def compute_zoom_map(self, distance_modulus: float | None = None, **map_kwargs: Any) -> CandidateInvestigation:
+        """One matched-filter map in the frame (``stream_frame_search_single_dm``).
+
+        Parameters
+        ----------
+        distance_modulus : float, optional
+            Default: that of ``sky_map``, else ``self.distance_modulus``.
+        **map_kwargs
+            Arguments of ``stream_frame_search_single_dm`` (``smoothing_deg``).
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            ``prepare`` not done, or no distance modulus.
+        """
+        self._require("search", "prepare")
+        if distance_modulus is None:
+            distance_modulus = self.sky_map["distance_modulus"] if self.sky_map is not None else self.distance_modulus
+        if distance_modulus is None:
+            raise ValueError("compute_zoom_map needs a distance_modulus: give one, compute_sky_map, or set "
+                             "cand.distance_modulus.")
+        self.zoom_map = stream_frame_search_single_dm(
+            search=self.search, distance_modulus=distance_modulus, isochrone=self.isochrone, **map_kwargs
+        )
+        return self
+
+    # ===================================================
+    # Checks
+    # ===================================================
+
+    def _prepare_stars(self, object_healpix_mask: NDArray | None = None) -> None:
+        """``prepare_search`` on the kept catalog and footprint, the excluded mask and the stars outside it;
+        later results cleared.
+
+        ``object_healpix_mask``: the object mask of a previous search, not built again.
+        """
+        self._clear_results(FRAME_RESULTS)
+        self.search = prepare_search(
+            self.catalog, self.stream_frame, self.window, match_filter=self.match_filter, isochrone=self.isochrone,
+            distance_moduli=self.distance_moduli, footprint_mask=self.footprint_mask, nest=self.footprint_nest,
+            object_healpix_mask=object_healpix_mask, **self.prepare_kwargs,
+        )
+        self.excluded_healpix_mask, _ = excluded_healpix_mask(
+            self.footprint_mask, self.search.object_healpix_mask, nest=self.footprint_nest
+        )
+        stars = self.search.stars
+        pixels = hp.ang2pix(hp.npix2nside(self.excluded_healpix_mask.size), stars["ra"].to_numpy(),
+                            stars["dec"].to_numpy(), lonlat=True)
+        self.stars_not_excluded = ~self.excluded_healpix_mask[pixels]
+
+    def _endpoints_phi1_range(self) -> tuple[float, float]:
+        """phi1 of endpoint_1 and endpoint_2 (deg): negative, then positive."""
+        phi1, _ = radec_to_phi12(
+            [self.endpoint_1[0], self.endpoint_2[0]], [self.endpoint_1[1], self.endpoint_2[1]], self.stream_frame
+        )
+        return float(phi1[0]), float(phi1[1])
+
+    def _region_star_masks(self) -> tuple[NDArray[np.bool_], NDArray[np.bool_], NDArray[np.bool_]]:
+        """Prepared stars outside the excluded mask in the on region, the off region below and the off region above."""
+        stars = self.search.stars
+        phi1, phi2 = stars["phi1"].to_numpy(), stars["phi2"].to_numpy()
+        windows = region_windows(self.regions)
+        return tuple(self.stars_not_excluded & in_phi12_window(phi1, phi2, window)
+                     for window in (windows["on"], *windows["off"]))
+
+    def stars_in_match_filter(self) -> NDArray[np.bool_]:
+        """Prepared stars outside the excluded mask, in the match filter at ``distance_modulus``
+        (``select_stars_in_match_filter``)."""
+        if self.distance_modulus is None:
+            raise ValueError("No distance_modulus: set cand.distance_modulus, e.g. from the maps of "
+                             "scan_distance_moduli.")
+        return self.stars_not_excluded & select_stars_in_match_filter(
+            self.search.stars, self.distance_modulus, self.isochrone, self.search.match_filter
+        )
+
+    def _require(self, field_name: str, step: str) -> None:
+        """ValueError naming the missing step when ``field_name`` is not computed."""
+        if getattr(self, field_name) is None:
+            raise ValueError(f"No {field_name}: call {step}() first.")
+
+    def _clear_results(self, names: Sequence[str]) -> None:
+        """Set these results back to None."""
+        for name in names:
+            setattr(self, name, None)
+
+    def _check_window_in_catalog(self, catalog: pd.DataFrame) -> None:
+        """ValueError when the window leaves the (ra, dec) range of the catalog.
+
+        Range of the stars around the ra of the window centre (no jump at ra =
+        0/360); window outline from ``phi12_window_radec_box`` without margin.
+        A window containing a pole is not checked.
+        """
+        (ra_min, ra_max), (dec_min, dec_max) = phi12_window_radec_box(self.stream_frame, self.window, margin_deg=0.0)
+        if (ra_min, ra_max) == (0.0, 360.0):
+            return
+        centre_ra = (ra_min + ((ra_max - ra_min) % 360.0) / 2) % 360.0
+
+        def relative(ra: Any) -> Any:
+            return (np.asarray(ra) - centre_ra + 180.0) % 360.0 - 180.0
+
+        star_ra = relative(catalog["ra"].to_numpy())
+        star_dec = catalog["dec"].to_numpy()
+        tolerance = CATALOG_EDGE_TOLERANCE_DEG
+        if (relative(ra_min) < star_ra.min() - tolerance or relative(ra_max) > star_ra.max() + tolerance
+                or dec_min < star_dec.min() - tolerance or dec_max > star_dec.max() + tolerance):
+            raise ValueError(
+                f"The window (ra {ra_min:.1f} to {ra_max:.1f}, dec {dec_min:.1f} to {dec_max:.1f} deg) leaves the "
+                f"stars (ra {(star_ra.min() + centre_ra) % 360:.1f} to {(star_ra.max() + centre_ra) % 360:.1f}, dec "
+                f"{star_dec.min():.1f} to {star_dec.max():.1f} deg): load a larger box."
+            )
+
+    def scan_distance_moduli(
+        self, distance_moduli: Sequence[float] | None = None, **scan_kwargs: Any
+    ) -> CandidateInvestigation:
+        """Maps in the frame over distance moduli (``stream_frame_search_dm_scan``), in ``maps``.
+
+        One map per distance modulus, with the isochrone of the object, on
+        the prepared stars. The maps are small (the grid of the window): all
+        are kept, ``{distance_modulus: result}``. Then choose
+        ``distance_modulus`` by eye (``plot_candidate_map``).
+
+        Parameters
+        ----------
+        distance_moduli : sequence of float, optional
+            Default: ``self.distance_moduli``, else the grid of the search
+            (``prepare_search``: 15 to 22 every 0.1).
+        **scan_kwargs
+            Arguments of ``stream_frame_search_dm_scan`` (``smoothing_deg``,
+            ``n_workers``).
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            ``prepare`` not done.
+        """
+        self._require("search", "prepare")
+        if distance_moduli is None:
+            distance_moduli = self.distance_moduli
+        self.maps = dict(stream_frame_search_dm_scan(
+            search=self.search, distance_moduli=distance_moduli, isochrone=self.isochrone, **scan_kwargs
+        ))
+        return self
+
+    def fit_width(
+        self,
+        phi1_range: tuple[float, float] | None = None,
+        *,
+        bin_deg: float = DEFAULT_PHI2_BIN_DEG,
+        map_bins_deg: tuple[float, float] = DEFAULT_WIDTH_MAP_BINS_DEG,
+        **fit_kwargs: Any,
+    ) -> CandidateInvestigation:
+        """phi2 density profile of the stars in the match filter, and its Gaussian width.
+
+        Stars of ``search.stars`` outside the excluded mask
+        (``stars_not_excluded``) in the match filter at
+        ``distance_modulus`` (``select_stars_in_match_filter``), then
+        ``phi12_density_profile`` along phi2 over ``phi1_range`` and the phi2
+        range of the window (outside ``excluded_healpix_mask``), and
+        ``fit_stream_width``: in ``phi2_profile`` and ``width_fit``. Also
+        their 2D density over the same window (``phi12_density_map``), in
+        ``width_map``, to compare with the model (``plot_width_fit_map``).
+
+        Parameters
+        ----------
+        phi1_range : tuple of float, optional
+            Default: the phi1 of the endpoints.
+        bin_deg : float, optional
+            Bins of the profile in phi2 (deg).
+        map_bins_deg : tuple of float, optional
+            (phi1, phi2) cells of the 2D map (deg): long along the stream.
+        **fit_kwargs
+            Arguments of ``fit_stream_width`` (``phi2_centre_guess``,
+            ``sigma_guess``, ``phi2_fit_range``, ``background_degree``).
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            ``prepare`` not done, or ``distance_modulus`` not set.
+        """
+        self._require("search", "prepare")
+        selected = self.stars_in_match_filter()
+        phi1_range = self._endpoints_phi1_range() if phi1_range is None else tuple(phi1_range)
+        stars = self.search.stars
+        phi1, phi2 = stars["phi1"].to_numpy()[selected], stars["phi2"].to_numpy()[selected]
+        phi2_range = self.window[2:]
+        self.phi2_profile = phi12_density_profile(
+            phi1, phi2, [(*phi1_range, *phi2_range)], self.stream_frame, self.excluded_healpix_mask,
+            axis="phi2", bin_deg=bin_deg,
+        )
+        self.width_fit = fit_stream_width(self.phi2_profile, **fit_kwargs)
+        self.width_map = phi12_density_map(
+            phi1, phi2, _bin_edges(phi1_range, map_bins_deg[0]), _bin_edges(phi2_range, map_bins_deg[1]),
+            self.stream_frame, self.excluded_healpix_mask,
+        )
+        return self
+
+    def define_regions(
+        self,
+        phi1_range: tuple[float, float] | None = None,
+        phi2_centre: float | None = None,
+        sigma: float | None = None,
+        *,
+        on_phi2_offset_deg: float = 0.0,
+        off_phi2_offsets_deg: tuple[float, float] = (0.0, 0.0),
+        bin_deg: float = DEFAULT_PHI1_BIN_DEG,
+    ) -> CandidateInvestigation:
+        """On and off regions, their areas and the phi1 profile.
+
+        ``stream_regions`` (with ``on_n_sigma`` and ``off_n_sigma`` of the
+        object), ``region_area_deg2`` (outside ``excluded_healpix_mask``) and
+        ``on_off_phi1_profile`` of the stars in the match filter at
+        ``distance_modulus``, its bins over the whole window: where the stream
+        starts and stops, to choose ``phi1_range``. The Hess diagrams of
+        earlier regions are cleared.
+
+        Parameters
+        ----------
+        phi1_range : tuple of float, optional
+            Default: the phi1 of the endpoints.
+        phi2_centre, sigma : float, optional
+            Default: from ``width_fit``.
+        on_phi2_offset_deg, off_phi2_offsets_deg : optional
+            phi2 shifts of the on region and of the off regions (below, above)
+            (deg), see ``stream_regions``; e.g. on region and top off region
+            moved off the stream as a null test.
+        bin_deg : float, optional
+            Bins of the phi1 profile (deg).
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            ``prepare`` not done; ``phi2_centre`` or ``sigma`` not given and
+            ``fit_width`` not done; ``distance_modulus`` not set; or the
+            regions leave the window (make it wider: ``min_phi2_half_width_deg``).
+        """
+        self._require("search", "prepare")
+        if (phi2_centre is None or sigma is None) and self.width_fit is None:
+            raise ValueError("No width_fit: call fit_width() first, or give phi2_centre and sigma.")
+        phi2_centre = self.width_fit["phi2_centre"] if phi2_centre is None else phi2_centre
+        sigma = self.width_fit["sigma"] if sigma is None else sigma
+        phi1_range = self._endpoints_phi1_range() if phi1_range is None else tuple(phi1_range)
+        regions = stream_regions(phi1_range, phi2_centre, sigma, on_n_sigma=self.on_n_sigma,
+                                 off_n_sigma=self.off_n_sigma, on_phi2_offset_deg=on_phi2_offset_deg,
+                                 off_phi2_offsets_deg=off_phi2_offsets_deg)
+        windows = region_windows(regions)
+        phi2_min = min(window[2] for window in (windows["on"], *windows["off"]))
+        phi2_max = max(window[3] for window in (windows["on"], *windows["off"]))
+        if phi2_min < self.window[2] or phi2_max > self.window[3] or phi1_range[0] < self.window[0] \
+                or phi1_range[1] > self.window[1]:
+            raise ValueError(f"The regions (phi1 {phi1_range}, phi2 {phi2_min:.2f} to {phi2_max:.2f} deg) leave the "
+                             f"window {tuple(round(value, 2) for value in self.window)}: make it larger.")
+        selected = self.stars_in_match_filter()
+        stars = self.search.stars
+        self._clear_results(("on_hess", "off_hess", "diff_hess"))
+        self.regions = regions
+        self.areas = region_area_deg2(regions, self.stream_frame, self.excluded_healpix_mask)
+        self.phi1_profile = on_off_phi1_profile(
+            stars["phi1"].to_numpy()[selected], stars["phi2"].to_numpy()[selected], regions, self.stream_frame,
+            self.excluded_healpix_mask, phi1_range=self.window[:2], bin_deg=bin_deg,
+        )
+        return self
+
+    def compute_hess(
+        self, *, color_bins: Any = None, mag_bins: Any = None, color_index: int = 0
+    ) -> CandidateInvestigation:
+        """On, off and on - off Hess diagrams (``hess_diagram``, ``difference_hess``).
+
+        Every prepared star of the on region and of the two off regions
+        (``region_windows``, ``in_phi12_window``) outside the excluded mask
+        (``stars_not_excluded``), not only those in the match filter; colour
+        ``reference_band - color_bands[color_index]`` of the match filter and
+        magnitude ``reference_band``; densities per deg² with the areas of
+        ``define_regions``. The off diagram is the mean of those of the two
+        off regions (``mean_off_hess``).
+
+        Parameters
+        ----------
+        color_bins, mag_bins : array_like, optional
+            Bin edges, the same for on and off. Default: those of
+            ``hess_diagram``.
+        color_index : int, optional
+            Colour band of the match filter.
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            ``define_regions`` not done.
+        """
+        self._require("regions", "define_regions")
+        stars = self.search.stars
+        on, below, above = self._region_star_masks()
+        reference, *colors = match_filter_columns(self.search.match_filter)
+        kwargs = {"color_bins": color_bins, "mag_bins": mag_bins}
+        self.on_hess = hess_diagram(stars, (reference, colors[color_index]), mask=on, area_deg2=self.areas["on"],
+                                    **kwargs)
+        off_region_hess = [hess_diagram(stars, (reference, colors[color_index]), mask=mask,
+                                        area_deg2=self.areas[name] if self.areas[name] > 0 else None, **kwargs)
+                           for mask, name in ((below, "off_below"), (above, "off_above"))]
+        self.off_hess = mean_off_hess(*off_region_hess)
+        self.diff_hess = difference_hess(self.on_hess, self.off_hess)
+        return self
+
+    def compute_isochrone(
+        self,
+        *,
+        age: float | None = None,
+        metallicity: float | None = None,
+        feh: float | None = None,
+        distance_modulus: float | None = None,
+        color_index: int = 0,
+    ) -> CandidateInvestigation:
+        """Isochrone track in the bands of the match filter (``isochrone_cmd_track``), in ``isochrone_track``.
+
+        The colour of the Hess diagrams (``compute_hess`` with the same
+        ``color_index``): the track can be drawn on them
+        (``plot_candidate_hess``). Does not need the earlier steps.
+
+        Parameters
+        ----------
+        age, metallicity, feh, distance_modulus : float, optional
+            Default: those of the object (Z or [Fe/H] as given to it: ``feh``
+            when set, else the Z of ``isochrone``). Given values are only used
+            for this track, not stored as inputs; at most one of
+            ``metallicity`` and ``feh``.
+        color_index : int, optional
+            Colour band of the match filter.
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            No distance modulus; both ``metallicity`` and ``feh``
+            (``isochrone_cmd_track``).
+        """
+        distance_modulus = self.distance_modulus if distance_modulus is None else distance_modulus
+        if distance_modulus is None:
+            raise ValueError("compute_isochrone needs a distance_modulus: give one, or set cand.distance_modulus.")
+        if metallicity is None and feh is None:  # those of the object: [Fe/H] when given (in the label), else Z
+            metallicity, feh = (None, self.feh) if self.feh is not None else (self.isochrone["metallicity"], None)
+        self.isochrone_track = isochrone_cmd_track(
+            distance_modulus, self.age if age is None else age, metallicity, feh=feh,
+            match_filter=self.match_filter if self.search is None else self.search.match_filter,
+            color_index=color_index,
+        )
+        return self
+
+    def run_all_steps(
+        self,
+        catalog: pd.DataFrame,
+        *,
+        footprint_mask: NDArray | None = None,
+        nest: bool = False,
+        step_kwargs: Mapping[str, Mapping[str, Any]] | None = None,
+    ) -> CandidateInvestigation:
+        """Every step in order, with the inputs of the object.
+
+        ``compute_sky_map`` and ``compute_zoom_map`` at ``distance_modulus``,
+        ``prepare``, ``scan_distance_moduli`` (over ``distance_moduli``),
+        ``fit_width``, ``define_regions``, ``compute_hess``,
+        ``compute_isochrone``: the steps of the example notebook, with the
+        distance modulus chosen there.
+
+        Parameters
+        ----------
+        catalog : pandas.DataFrame
+            Stars of a box containing the window. Not copied.
+        footprint_mask : numpy.ndarray of bool, optional
+            See ``prepare``.
+        nest : bool, optional
+            See ``prepare``.
+        step_kwargs : mapping, optional
+            More arguments of a step, by method name (``RUN_ALL_STEPS``; not
+            ``prepare``: ``prepare_kwargs``), e.g.
+            ``{"fit_width": {"background_degree": 1}, "compute_hess":
+            {"color_bins": ..., "mag_bins": ...}}``.
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            ``distance_modulus`` not set; a key of ``step_kwargs`` not a step.
+        """
+        if self.distance_modulus is None:
+            raise ValueError("run_all_steps needs cand.distance_modulus: choose it from the maps of "
+                             "scan_distance_moduli first.")
+        step_kwargs = dict(step_kwargs or {})
+        unknown = set(step_kwargs) - set(RUN_ALL_STEPS)
+        if unknown:
+            raise ValueError(f"Unknown steps {sorted(unknown)} in step_kwargs; the steps are {RUN_ALL_STEPS}.")
+        kwargs = {step: dict(step_kwargs.get(step, {})) for step in RUN_ALL_STEPS}
+        self.compute_sky_map(catalog, self.distance_modulus, **kwargs["compute_sky_map"])
+        self.prepare(catalog, footprint_mask=footprint_mask, nest=nest)
+        self.compute_zoom_map(self.distance_modulus, **kwargs["compute_zoom_map"])
+        self.scan_distance_moduli(**kwargs["scan_distance_moduli"])
+        self.fit_width(**kwargs["fit_width"])
+        self.define_regions(**kwargs["define_regions"])
+        self.compute_hess(**kwargs["compute_hess"])
+        self.compute_isochrone(**kwargs["compute_isochrone"])
+        return self
+
+    # ===================================================
+    # Track and summary
+    # ===================================================
+
+    def track_phi12(self, n_points: int = DEFAULT_TRACK_POINTS) -> tuple[NDArray, NDArray]:
+        """(phi1, phi2) of the straight track: phi2 = ``phi2_centre`` over ``phi1_range``; phi2 = 0 between the endpoints before ``define_regions``.
+
+        Parameters
+        ----------
+        n_points : int, optional
+            Number of points.
+
+        Returns
+        -------
+        phi1, phi2 : numpy.ndarray
+            (deg).
+        """
+        if self.regions is not None:
+            phi1 = np.linspace(*self.regions["phi1_range"], n_points)
+            return phi1, np.full(n_points, float(self.regions["phi2_centre"]))
+        return np.linspace(*self._endpoints_phi1_range(), n_points), np.zeros(n_points)
+
+    def track_radec(self, n_points: int = DEFAULT_TRACK_POINTS) -> tuple[NDArray, NDArray]:
+        """(ra, dec) of ``track_phi12``, for sky maps.
+
+        Parameters
+        ----------
+        n_points : int, optional
+            Number of points.
+
+        Returns
+        -------
+        ra, dec : numpy.ndarray
+            (deg).
+        """
+        return phi12_to_radec(*self.track_phi12(n_points), self.stream_frame)
+
+    def summary(self) -> dict[str, Any]:
+        """Key numbers of the investigation, those computed so far.
+
+        Returns
+        -------
+        summary : dict
+            ``{"name", "endpoint_1", "endpoint_2", "window", "age",
+            "metallicity", "feh", "distance_modulus", "distance_kpc",
+            "phi2_centre", "sigma", "phi1_range", "area_on_deg2",
+            "area_off_deg2", "n_on", "n_off", "n_excess", "n_excess_error"}``;
+            None for the steps not done. ``metallicity`` is the Z used
+            (``isochrone``). ``n_on`` and ``n_off``: stars in the match
+            filter at ``distance_modulus`` outside the excluded mask, in the
+            on region and in the two off regions; ``n_excess = area_on * (n_on
+            / area_on - off density)``, the off density the mean of the two
+            off regions (``mean_off_density``), and its Poisson error
+            ``n_excess_error``.
+        """
+        summary: dict[str, Any] = {
+            "name": self.name, "endpoint_1": tuple(self.endpoint_1), "endpoint_2": tuple(self.endpoint_2),
+            "window": None if self.window is None else tuple(float(value) for value in self.window),
+            "age": self.isochrone["age"], "metallicity": self.isochrone["metallicity"], "feh": self.feh,
+            "distance_modulus": self.distance_modulus,
+            "distance_kpc": None if self.distance_modulus is None
+            else float(convert_DM_to_kpc(self.distance_modulus).value),
+        }
+        fit = self.width_fit if self.regions is None else self.regions
+        summary.update({
+            "phi2_centre": None if fit is None else float(fit["phi2_centre"]),
+            "sigma": None if fit is None else float(fit["sigma"]),
+            "phi1_range": None if self.regions is None else self.regions["phi1_range"],
+            "area_on_deg2": None if self.areas is None else self.areas["on"],
+            "area_off_deg2": None if self.areas is None else self.areas["off"],
+            "n_on": None, "n_off": None, "n_excess": None, "n_excess_error": None,
+        })
+        if self.regions is not None and self.distance_modulus is not None:
+            selected = self.stars_in_match_filter()
+            n_on, n_below, n_above = (int((selected & mask).sum()) for mask in self._region_star_masks())
+            areas = self.areas
+            below, above = ((count / area, np.sqrt(count) / area) if area > 0 else (np.nan, np.nan)
+                            for count, area in ((n_below, areas["off_below"]), (n_above, areas["off_above"])))
+            off_density, off_error, _ = mean_off_density(*below, *above)
+            summary.update({
+                "n_on": n_on, "n_off": n_below + n_above, "n_excess": float(n_on - areas["on"] * off_density),
+                "n_excess_error": float(np.sqrt(n_on + (areas["on"] * off_error) ** 2)),
+            })
+        return summary

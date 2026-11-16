@@ -111,11 +111,12 @@ src/streameucliddes/
                                                             pipeline.scan_find_stream)
                                  [NEW] prepare_generic_search, PreparedGenericSearch,
                                  generic_search_cmd_stars
-                                 (generic-search branch: API mirrors known_stream_search;
+                                 (generic-search branch: API mirrors stream_frame_search;
                                   shared match filter, no copy of the catalog, chunks)
-    known_stream_search.py       [NEW] known_stream_search_single_dm
-                                 [NEW] known_stream_search_dm_scan
-                                 [NEW] known_stream_search_dm_along_track
+    stream_frame_search.py       [NEW] stream_frame_search_single_dm
+                                 (was known_stream_search.py; renamed: any frame)
+                                 [NEW] stream_frame_search_dm_scan
+                                 [NEW] stream_frame_search_dm_along_track
     injected_stream_snr.py       get_stream_snr, scan_snr_grid + helpers
                                  (old: data_manipulation.py)
 
@@ -134,7 +135,7 @@ src/streameucliddes/
                                   branch: CMD selection, map, background, corrected map)
                                  [NEW] plot_generic_search_residual_map (corrected map
                                        alone, known stream tracks faint and dashed)
-    plot_known_stream_search.py  [NEW] plot_known_stream_search_single_dm
+    plot_stream_frame_search.py  [NEW] plot_stream_frame_search_single_dm
                                  [NEW] plot_galstreams_selection
     plot_injected_stream_snr.py  plot_snr_contours, plot_snr_maps + helpers
                                  (old: plotting.py)
@@ -164,7 +165,7 @@ notebooks/                       [NEW] known_stream_search_example.ipynb (usage 
 ```
 
 Naming rules used:
-- `generic_search_*` and `known_stream_search_*` mirror each other: `_single_dm` gives one map; `_dm_scan` goes over a dm grid one dm at a time (it yields `(dm, result)`), so that the caller can drop each map before the next one is computed. The workflows save all the maps of a run in one file (`save_*_maps`). Known-stream maps: one set per isochrone.
+- `generic_search_*` and `stream_frame_search_*` mirror each other: `_single_dm` gives one map; `_dm_scan` goes over a dm grid one dm at a time (it yields `(dm, result)`), so that the caller can drop each map before the next one is computed. The workflows save all the maps of a run in one file (`save_*_maps`). Known-stream maps: one set per isochrone.
 - `star_density_*` = smoothed star counts, `*_healpix` or `*_phi12` says the grid.
 - `galstreams_*` = reads galstreams. `survey_footprint_*` = footprint.
 - `plot_<thing>` in `plot_<module>.py`; `run_<thing>` in `run_<thing>.py`.

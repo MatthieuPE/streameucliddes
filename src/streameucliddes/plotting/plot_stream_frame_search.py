@@ -1,4 +1,4 @@
-"""Figures of the known-stream search (analysis.known_stream_search)."""
+"""Figures of the search in a stream frame (analysis.stream_frame_search)."""
 
 from __future__ import annotations
 
@@ -13,7 +13,7 @@ from matplotlib.lines import Line2D
 from matplotlib.patches import Patch
 from matplotlib.patheffects import withStroke
 
-from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS
+from streameucliddes.plotting.plot_style import CATEGORICAL_COLORS, format_distance_modulus
 
 if TYPE_CHECKING:
     from collections.abc import Iterator, Mapping, Sequence
@@ -26,6 +26,7 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike, NDArray
 
 TRACK_COLOR = CATEGORICAL_COLORS[0]  # one color for every track: the labels give their names
+TRACK_STYLE = {"color": TRACK_COLOR, "lw": 1.0, "ls": "--", "alpha": 0.8}  # thin dashed: not to hide the stream
 FOOTPRINT_GREY = "0.88"
 FOOTPRINT_OUTSIDE_GREY = "0.85"  # single-dm maps: bins outside the footprint
 DENSITY_PERCENTILES = (1.0, 99.5)  # single-dm maps: default colour scale
@@ -38,24 +39,29 @@ INK = "0.15"  # text
 LABEL_FRACTIONS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9)
 
 
-def plot_known_stream_search_single_dm(
+def plot_stream_frame_search_single_dm(
     result: Mapping[str, Any],
     *,
     track_phi12: tuple[ArrayLike, ArrayLike] | None = None,
     other_tracks: Sequence[tuple[str, ArrayLike, ArrayLike]] = (),
     ax: Axes | None = None,
     vmax: float | None = None,
+    phi1_range: tuple[float, float] | None = None,
+    phi2_range: tuple[float, float] | None = None,
     cmap: str = "gray_r",
     title: str | None = None,
 ) -> tuple[Figure, Axes]:
-    """Map of a known-stream search at one distance modulus.
+    """Map of a search in a stream frame at one distance modulus.
 
     ``imshow`` of the density on the phi1/phi2 grid, phi1 increasing to the
     left, with the track of the stream and the other galstreams tracks in the
     window. Does not save the figure: the workflows do.
 
     The colour scale goes from the 1st percentile of the density to
-    ``vmax`` (default: its 99.5th percentile), to bring out faint streams.
+    ``vmax`` (default: its 99.5th percentile), to bring out faint streams;
+    the percentiles are those of the bins shown (``phi1_range``,
+    ``phi2_range``), so that a dense object left out of view does not set
+    the scale.
     Bins outside the footprint are light grey. The track of the stream is a
     thin dashed line, not to hide the stream; the other tracks have one
     colour each and a legend.
@@ -63,8 +69,8 @@ def plot_known_stream_search_single_dm(
     Parameters
     ----------
     result : mapping
-        Output of ``known_stream_search_single_dm``, or a result of
-        ``known_stream_search_dm_scan`` or ``known_stream_search_dm_along_track``.
+        Output of ``stream_frame_search_single_dm``, or a result of
+        ``stream_frame_search_dm_scan`` or ``stream_frame_search_dm_along_track``.
     track_phi12 : tuple of array_like, optional
         (phi1, phi2) of the stream track (deg), drawn as a line.
     other_tracks : sequence of (label, phi1, phi2), optional
@@ -73,7 +79,11 @@ def plot_known_stream_search_single_dm(
         Axes to draw in. Default: a new figure.
     vmax : float, optional
         Top of the colour scale. Default: the 99.5th percentile of the density
-        (``DENSITY_PERCENTILES``).
+        (``DENSITY_PERCENTILES``) of the bins shown.
+    phi1_range, phi2_range : tuple of float, optional
+        Part of the map shown (deg), e.g. to leave out a dense object: the
+        axis limits and the bins of the colour scale (those whose centre is
+        inside, ``bins_in_phi12_range``). Default: the whole window.
     cmap : str, optional
         Colour map.
     title : str, optional
@@ -96,14 +106,15 @@ def plot_known_stream_search_single_dm(
     half_bin = result["bin_size_deg"] / 2
     extent = (phi1_centres[0] - half_bin, phi1_centres[-1] + half_bin,
               phi2_centres[0] - half_bin, phi2_centres[-1] + half_bin)
+    view = _view_limits(extent, phi1_range, phi2_range)
     if ax is None:
-        width = extent[1] - extent[0]
-        height = extent[3] - extent[2]
+        width = view[1] - view[0]
+        height = view[3] - view[2]
         fig, ax = plt.subplots(figsize=(10.0, float(np.clip(10.0 * height / width, 2.0, 8.0)) + 1.0))
     else:
         fig = ax.figure
 
-    values = density.compressed()
+    values = density[bins_in_phi12_range(phi1_centres, phi2_centres, view[:2], view[2:])].compressed()
     vmin = float(np.percentile(values, DENSITY_PERCENTILES[0])) if values.size else 0.0
     if vmax is None:
         vmax = float(np.percentile(values, DENSITY_PERCENTILES[1])) if values.size else 1.0
@@ -116,24 +127,142 @@ def plot_known_stream_search_single_dm(
     fig.colorbar(image, cax=colorbar_ax, label="Counts (smoothed)", format=f"%.{COLORBAR_DECIMALS}f")
 
     if track_phi12 is not None:
-        ax.plot(*track_phi12, color=TRACK_COLOR, lw=1.0, ls="--", alpha=0.8,
-                label=result.get("track_name") or "Track")
+        draw_stream_track(ax, *track_phi12, label=result.get("track_name") or "Track")
     for color, (label, phi1, phi2) in zip(CATEGORICAL_COLORS[1:], other_tracks):
         ax.plot(phi1, phi2, color=color, lw=1.0, ls="--", alpha=0.8, label=label)
     if track_phi12 is not None or len(other_tracks):
         ax.legend(loc="upper right", fontsize="small", framealpha=0.8, labelcolor=INK)
 
-    ax.set(xlim=(extent[1], extent[0]), ylim=(extent[2], extent[3]),  # phi1 increasing to the left
+    ax.set(xlim=(view[1], view[0]), ylim=(view[2], view[3]),  # phi1 increasing to the left
            xlabel=r"$\phi_1$ [deg]", ylabel=r"$\phi_2$ [deg]")
     ax.set_title(_single_dm_title(result) if title is None else title, color=INK)
     return fig, ax
+
+
+def bins_in_phi12_range(
+    phi1_centres: ArrayLike,
+    phi2_centres: ArrayLike,
+    phi1_range: tuple[float, float] | None = None,
+    phi2_range: tuple[float, float] | None = None,
+) -> NDArray[np.bool_]:
+    """Bins of a phi1/phi2 map whose centre is inside a phi1 and a phi2 range: those shown.
+
+    The colour scale of a zoomed map is computed on them only, so that a
+    dense object outside the view does not set it.
+
+    Parameters
+    ----------
+    phi1_centres, phi2_centres : array_like
+        Bin centres of the map (deg).
+    phi1_range, phi2_range : tuple of float, optional
+        Ranges (deg), in either order. None: the whole axis.
+
+    Returns
+    -------
+    inside : numpy.ndarray of bool
+        Shape (n_phi1, n_phi2), as the maps.
+    """
+    phi1_centres, phi2_centres = np.asarray(phi1_centres, dtype=float), np.asarray(phi2_centres, dtype=float)
+    inside = []
+    for centres, value_range in ((phi1_centres, phi1_range), (phi2_centres, phi2_range)):
+        if value_range is None:
+            inside.append(np.ones(centres.size, dtype=bool))
+        else:
+            low, high = sorted(float(value) for value in value_range)
+            inside.append((centres >= low) & (centres <= high))
+    return inside[0][:, None] & inside[1][None, :]
+
+
+def _view_limits(
+    extent: tuple[float, float, float, float],
+    phi1_range: tuple[float, float] | None,
+    phi2_range: tuple[float, float] | None,
+) -> tuple[float, float, float, float]:
+    """(phi1_min, phi1_max, phi2_min, phi2_max) shown: the given ranges (sorted), else those of the map."""
+    phi1 = extent[:2] if phi1_range is None else sorted(float(value) for value in phi1_range)
+    phi2 = extent[2:] if phi2_range is None else sorted(float(value) for value in phi2_range)
+    return (float(phi1[0]), float(phi1[1]), float(phi2[0]), float(phi2[1]))
+
+
+def draw_stream_track(
+    ax: Axes,
+    phi1: ArrayLike,
+    phi2: ArrayLike,
+    *,
+    label: str | None = None,
+    phi2_offset_deg: float = 0.0,
+    **line_kwargs: Any,
+) -> list[Line2D]:
+    """Track on a phi1/phi2 map, e.g. from ``plot_stream_frame_search_single_dm``.
+
+    A thin dashed line (``TRACK_STYLE``), optionally shifted in phi2 not to
+    hide the stream. Takes arrays: a galstreams track, the arc between two
+    endpoints, the track of a candidate.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes of a phi1/phi2 map.
+    phi1, phi2 : array_like
+        Track (deg).
+    label : str, optional
+        Legend label.
+    phi2_offset_deg : float, optional
+        Shift of the line in phi2 (deg).
+    **line_kwargs
+        Arguments of ``ax.plot``, updating ``TRACK_STYLE``.
+
+    Returns
+    -------
+    lines : list of matplotlib.lines.Line2D
+    """
+    return ax.plot(phi1, np.asarray(phi2, dtype=float) + phi2_offset_deg, label=label,
+                   **{**TRACK_STYLE, **line_kwargs})
+
+
+def draw_stream_track_on_sky(
+    ax: Any,
+    ra: ArrayLike,
+    dec: ArrayLike,
+    *,
+    label: str | None = None,
+    **line_kwargs: Any,
+) -> list[Line2D]:
+    """Track on a skyproj sky map, split at the map edge (``_split_at_map_edge``).
+
+    No line crosses the map from one edge to the other.
+
+    Parameters
+    ----------
+    ax : skyproj.SkyAxes
+        Axes of a sky map, e.g. from ``plot_generic_search_residual_map``;
+        its ``plot`` takes (ra, dec) in degrees.
+    ra, dec : array_like
+        Track (deg).
+    label : str, optional
+        Legend label, on the first part only.
+    **line_kwargs
+        Arguments of ``ax.plot``, updating ``TRACK_STYLE``.
+
+    Returns
+    -------
+    lines : list of matplotlib.lines.Line2D
+        One per part of the track.
+    """
+    lon_0 = ax.projection.proj4_params["lon_0"]  # the map edge is at lon_0 + 180
+    style = {**TRACK_STYLE, **line_kwargs}
+    lines = []
+    parts = _split_at_map_edge(np.asarray(ra, dtype=float), np.asarray(dec, dtype=float), lon_0)
+    for index, (ra_part, dec_part) in enumerate(parts):
+        lines += ax.plot(ra_part, dec_part, label=label if index == 0 else None, **style)
+    return lines
 
 
 def _single_dm_title(result: Mapping[str, Any]) -> str:
     """Track, distance modulus (or offset along the track) and isochrone of a map."""
     parts = [result["track_name"]] if result.get("track_name") else []
     if "distance_modulus" in result:
-        parts.append(f"dm {result['distance_modulus']:.1f} ({result['distance_kpc']:.1f} kpc)")
+        parts.append(f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.1f} kpc)")
     else:
         parts.append(f"dm along the track {result['dm_offset']:+.1f}")
     isochrone = result["isochrone"]
