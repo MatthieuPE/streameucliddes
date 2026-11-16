@@ -7,8 +7,9 @@ the stream (``endpoint_1_ra``, ``endpoint_1_dec``, ``endpoint_2_ra``,
 The file is in ``data/candidates/`` (local, gitignored with the rest of
 ``data/``). Columns added by hand are kept when a candidate is added.
 
-``load_candidates`` reads the list, ``add_candidate`` adds one and writes the
-file; ``plotting.plot_candidate_investigation.plot_candidates`` draws them on a
+``load_candidates`` reads the list, ``get_candidate`` gives one by its id,
+``add_candidate`` adds one and writes the file (``CandidateInvestigation.from_candidate_id``
+starts the investigation of a listed one); ``plotting.plot_candidate_investigation.plot_candidates`` draws them on a
 sky map, and ``EndpointPicker`` gives the endpoints from clicks on the map.
 """
 
@@ -113,6 +114,33 @@ def add_candidate(
     path.parent.mkdir(parents=True, exist_ok=True)
     candidates.to_csv(path, index=False)
     return candidates
+
+
+def get_candidate(candidate_id: int, path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.Series:
+    """The candidate of an id, a row of ``load_candidates``.
+
+    Parameters
+    ----------
+    candidate_id : int
+        Its ``id`` in the file.
+    path : str or pathlib.Path, optional
+        CSV file.
+
+    Returns
+    -------
+    candidate : pandas.Series
+        Its columns: ``CANDIDATE_COLUMNS`` and any added by hand.
+
+    Raises
+    ------
+    ValueError
+        No candidate with this id (the ids of the file are listed).
+    """
+    candidates = load_candidates(path)
+    rows = candidates[candidates["id"] == int(candidate_id)]
+    if rows.empty:
+        raise ValueError(f"No candidate with id {candidate_id} in {path}; the ids are {candidates['id'].tolist()}.")
+    return rows.iloc[0]
 
 
 def candidate_endpoints(candidate: pd.Series) -> tuple[tuple[float, float], tuple[float, float]]:

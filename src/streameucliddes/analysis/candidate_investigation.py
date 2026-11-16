@@ -83,6 +83,7 @@ from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_single_dm,
 )
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, DEFAULT_METALLICITIES
+from streameucliddes.catalogs.stream_candidates import DEFAULT_CANDIDATES_PATH, candidate_endpoints, get_candidate
 from streameucliddes.catalogs.survey_footprint import (
     star_count_nside,
     survey_footprint_healpix_mask,
@@ -104,6 +105,7 @@ from streameucliddes.unit_conversions import convert_DM_to_kpc, convert_FeH_to_z
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
+    from pathlib import Path
 
     import astropy.coordinates as coord
     import pandas as pd
@@ -493,7 +495,8 @@ class CandidateInvestigation:
     """All inputs and results of one stream-candidate investigation.
 
     Mutable: change a field and re-run the later steps. Results are None
-    until their step is done.
+    until their step is done. A candidate of the list
+    (``catalogs.stream_candidates``): ``from_candidate_id``.
 
     Parameters
     ----------
@@ -632,6 +635,48 @@ class CandidateInvestigation:
         if self.__dict__.get("_track_inputs") and name in INPUT_RESULTS and _changed(self.__dict__.get(name), value):
             self._clear_results(INPUT_RESULTS[name])
         object.__setattr__(self, name, value)
+
+    @classmethod
+    def from_candidate_id(
+        cls,
+        candidate_id: int,
+        *,
+        path: str | Path = DEFAULT_CANDIDATES_PATH,
+        name: str | None = None,
+        **inputs: Any,
+    ) -> CandidateInvestigation:
+        """Investigation of a candidate of the list (``catalogs.stream_candidates``), from its id.
+
+        Its endpoints and its ``best_dm`` (as ``distance_modulus``) come from
+        the list; the other inputs are those of the class. For a candidate
+        not in the list, give the endpoints to the class itself.
+
+        Parameters
+        ----------
+        candidate_id : int
+            Its ``id`` in the list.
+        path : str or pathlib.Path, optional
+            CSV file of the list.
+        name : str, optional
+            Default: ``"candidate_<id>"``.
+        **inputs
+            Other inputs of the class (``age``, ``metallicity`` or ``feh``,
+            ``match_filter``, ``distance_moduli``...); a ``distance_modulus``
+            given here replaces ``best_dm``.
+
+        Returns
+        -------
+        cand : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            No candidate with this id (``get_candidate``).
+        """
+        candidate = get_candidate(candidate_id, path)
+        endpoint_1, endpoint_2 = candidate_endpoints(candidate)
+        inputs.setdefault("distance_modulus", float(candidate["best_dm"]))
+        return cls(f"candidate_{int(candidate['id'])}" if name is None else name, endpoint_1, endpoint_2, **inputs)
 
     @property
     def isochrone(self) -> dict[str, float]:

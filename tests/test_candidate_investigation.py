@@ -19,6 +19,7 @@ from streameucliddes.analysis.candidate_investigation import (
     stream_regions,
 )
 from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
+from streameucliddes.catalogs.stream_candidates import add_candidate
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_METALLICITIES
@@ -662,3 +663,20 @@ def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream
     assert (summary["n_on"], summary["n_off"]) == (n_on, n_below + n_above)
     assert summary["n_excess"] == pytest.approx(n_on - areas["on"] * off_density)
     assert summary["n_excess_error"] == pytest.approx(np.sqrt(n_on + areas["on"] ** 2 * off_variance))
+
+
+# From the id of a listed candidate: its endpoints, best_dm as distance modulus and a default name; the other
+# inputs as given, a distance_modulus given replacing best_dm; the same frame as from the endpoints
+def test_from_candidate_id(tmp_path, candidate_endpoints):
+    path = tmp_path / "candidates.csv"
+    add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
+    add_candidate(*candidate_endpoints, 17.5, path=path)
+    cand = CandidateInvestigation.from_candidate_id(2, path=path, age=12.0)
+    assert cand.name == "candidate_2" and cand.distance_modulus == 17.5 and cand.age == 12.0
+    assert (cand.endpoint_1, cand.endpoint_2) == candidate_endpoints
+    by_hand = CandidateInvestigation("by hand", *candidate_endpoints)
+    assert cand.window == pytest.approx(by_hand.window)
+    other = CandidateInvestigation.from_candidate_id(2, path=path, name="stream 2", distance_modulus=18.0)
+    assert other.name == "stream 2" and other.distance_modulus == 18.0
+    with pytest.raises(ValueError, match="No candidate with id 5"):
+        CandidateInvestigation.from_candidate_id(5, path=path)

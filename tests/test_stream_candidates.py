@@ -7,6 +7,7 @@ from streameucliddes.catalogs.stream_candidates import (
     CANDIDATE_COLUMNS,
     add_candidate,
     candidate_endpoints,
+    get_candidate,
     load_candidates,
 )
 
@@ -62,3 +63,15 @@ def test_add_candidate_errors(tmp_path):
     pd.read_csv(path).drop(columns="best_dm").to_csv(path, index=False)
     with pytest.raises(ValueError, match="best_dm"):
         load_candidates(path)
+
+
+# The row of an id; an id not in the file: ValueError listing the ids
+def test_get_candidate(tmp_path):
+    path = tmp_path / "candidates.csv"
+    add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
+    add_candidate((77.0, -40.5), (70.0, -44.5), 17.5, path=path)
+    candidate = get_candidate(2, path)
+    assert candidate["id"] == 2 and candidate["best_dm"] == 17.5
+    assert candidate_endpoints(candidate) == ((77.0, -40.5), (70.0, -44.5))
+    with pytest.raises(ValueError, match=r"\[1, 2\]"):
+        get_candidate(3, path)
