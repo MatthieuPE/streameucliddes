@@ -3,7 +3,7 @@
 The MER mosaics are 0.1 arcsec per pixel: a stream 5 deg long would be
 ~180,000 pixels at full resolution, in tiles of ~1.5 GB per band. So the
 images are small cutouts (a few arcmin) at chosen positions, e.g. along the
-track of a stream candidate and in its off band at the same phi1
+track of a stream candidate and in its off region at the same phi1
 (``candidate_image_positions``), to check what the stars counted in the match
 filter look like.
 
@@ -226,13 +226,13 @@ def cutout_wcs(directory: str | os.PathLike) -> WCS:
 
 
 def candidate_image_positions(
-    cand: CandidateInvestigation, step_deg: float = DEFAULT_IMAGE_STEP_DEG, *, off_band: str = "above"
+    cand: CandidateInvestigation, step_deg: float = DEFAULT_IMAGE_STEP_DEG, *, off_region: str = "above"
 ) -> pd.DataFrame:
-    """Image positions along the track of a candidate, and in an off band at the same phi1.
+    """Image positions along the track of a candidate, and in an off region at the same phi1.
 
     Over ``cand.regions["phi1_range"]``, at the centres of steps of about
     ``step_deg``; on: phi2 of the centre of the on region; off: phi2 of the
-    centre of one off band (``region_windows``, offsets included).
+    centre of one off region (``region_windows``, offsets included).
 
     Parameters
     ----------
@@ -240,8 +240,8 @@ def candidate_image_positions(
         With its regions (``define_regions``).
     step_deg : float, optional
         Spacing along phi1 (deg).
-    off_band : {"above", "below"}, optional
-        Off band of the comparison images.
+    off_region : {"above", "below"}, optional
+        Off region of the comparison images.
 
     Returns
     -------
@@ -252,21 +252,21 @@ def candidate_image_positions(
     Raises
     ------
     ValueError
-        No regions, ``step_deg <= 0``, or an unknown ``off_band``.
+        No regions, ``step_deg <= 0``, or an unknown ``off_region``.
     """
     if cand.regions is None:
         raise ValueError("No regions: call cand.define_regions() first.")
     if step_deg <= 0:
         raise ValueError(f"step_deg must be > 0, not {step_deg}.")
-    bands = {"below": 0, "above": 1}
-    if off_band not in bands:
-        raise ValueError(f"off_band must be one of {sorted(bands)}, not {off_band!r}.")
+    sides = {"below": 0, "above": 1}  # the off regions below and above the track (region_windows)
+    if off_region not in sides:
+        raise ValueError(f"off_region must be one of {sorted(sides)}, not {off_region!r}.")
     windows = region_windows(cand.regions)
     phi1_min, phi1_max = cand.regions["phi1_range"]
     n_steps = max(1, round((phi1_max - phi1_min) / step_deg))
     phi1 = phi1_min + (np.arange(n_steps) + 0.5) * (phi1_max - phi1_min) / n_steps
     rows = []
-    for region, window in (("on", windows["on"]), ("off", windows["off"][bands[off_band]])):
+    for region, window in (("on", windows["on"]), ("off", windows["off"][sides[off_region]])):
         phi2 = np.full(n_steps, 0.5 * (window[2] + window[3]))
         ra, dec = phi12_to_radec(phi1, phi2, cand.stream_frame)
         rows.append(pd.DataFrame({"region": region, "phi1": phi1, "phi2": phi2, "ra": ra, "dec": dec}))

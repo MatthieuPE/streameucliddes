@@ -89,6 +89,8 @@ def test_plot_candidate_map(candidate_with_maps):
     fig, ax = plot_candidate_map(cand)
     assert "dm 16.0" in ax.get_title()
     plt.close(fig)
+    with pytest.raises(ValueError, match="from 16 to 18"):  # beyond one grid step (0.75) of the closest map
+        plot_candidate_map(cand, 19.5)
     cand.regions = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5,
                     "off_n_sigma": (2.5, 4.0)}
     fig, ax = plot_candidate_map(cand)  # with regions: the track and three outlines

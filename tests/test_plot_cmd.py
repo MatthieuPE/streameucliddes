@@ -12,6 +12,7 @@ import pytest
 from streameucliddes.analysis.catalog_preparation import default_error_cuts, prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_MATCH_FILTER,
+    hess_diagram,
     match_filter_polygons,
     select_stars_in_match_filter,
 )
@@ -281,3 +282,22 @@ def test_plot_match_filter_polygon_closed():
     np.testing.assert_array_equal(line.get_xydata(), np.vstack([polygon, polygon[:1]]))
     assert line.get_label() == "Match filter"
     plt.close(fig)
+
+
+# plot_CMD: the counts of hess_diagram on its bins, bright at the top, the limits given; an xlim bound None: the
+# 1st/99th percentile of the colour (an xlim tuple holding None used to crash); default labels from the columns
+def test_plot_cmd_wrapper():
+    rng = np.random.default_rng(2)
+    vis = rng.uniform(18.0, 26.0, 2000)
+    stars = pd.DataFrame({"vis": vis, "h": vis - rng.uniform(-1.0, 1.5, 2000)})
+    fig, ax = plot_cmd.plot_CMD(stars, mag_cols=("vis", "h"), xlim=(-0.5, 1.0), ylim=(18, 26), xlabel=None, ylabel=None)
+    assert ax.get_ylim() == (26, 18) and ax.get_xlim() == (-0.5, 1.0)
+    assert (ax.get_xlabel(), ax.get_ylabel()) == ("vis - h", "vis")
+    expected = hess_diagram(stars, ("vis", "h"), color_bins=np.arange(-0.5, 1.0, 0.01), mag_bins=np.arange(18, 26, 0.1))
+    np.testing.assert_array_equal(np.ma.filled(ax.images[0].get_array(), 0), expected["density"].T)
+    plt.close(fig)
+    fig, ax = plot_cmd.plot_CMD(stars, mag_cols=("vis", "h"), xlim=(None, 1.0), ylim=(18, 26))
+    colour = stars["vis"] - stars["h"]
+    assert ax.get_xlim() == pytest.approx((np.percentile(colour, 1), 1.0))
+    plt.close(fig)
+

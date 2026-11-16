@@ -30,6 +30,7 @@ if TYPE_CHECKING:
     from matplotlib.axes import Axes
     from matplotlib.figure import Figure
     from matplotlib.lines import Line2D
+    from numpy.typing import ArrayLike
 
 MATCH_FILTER_COLOR = CATEGORICAL_COLORS[0]
 # Default limits of a match-filter plot: the extent of the polygon plus this margin (mag)
@@ -43,64 +44,69 @@ DEFAULT_DIFFERENCE_SMOOTHING_BINS = 1.0  # smoothing of the on - off diagram in 
 ISOCHRONE_COLOR = "k"
 
 def plot_CMD(
-    data,
-    fig=None,
-    ax=None,
-    mag_cols=["mag_g", "mag_r"],
-    ylim=(15, 28),
-    xlim=(0.1, 1.2),
-    xlabel=rf"$g-r$",
-    ylabel=rf"$g$",
-    color=None,
-    cmap="cividis",
-    norm="log",
-    bins_colors=None,
-    bins_mag=None,
-):
+    data: pd.DataFrame | Mapping[str, Any],
+    fig: Figure | None = None,
+    ax: Axes | None = None,
+    mag_cols: Sequence[str] = ("mag_g", "mag_r"),
+    ylim: tuple[float, float] = (15, 28),
+    xlim: tuple[float | None, float | None] | None = (0.1, 1.2),
+    xlabel: str | None = r"$g-r$",
+    ylabel: str | None = r"$g$",
+    color: Any = None,
+    cmap: str = "cividis",
+    norm: str | None = "log",
+    bins_colors: ArrayLike | None = None,
+    bins_mag: ArrayLike | None = None,
+) -> tuple[Figure, Axes]:
+    """Colour-magnitude 2D histogram of stars: ``hess_diagram`` (counts) drawn by ``plot_hess``.
+
+    Colour ``mag_cols[0] - mag_cols[1]``, magnitude ``mag_cols[0]``, bright
+    at the top.
+
+    Parameters
+    ----------
+    data : pandas.DataFrame or dict
+        Stars with the ``mag_cols`` columns.
+    fig, ax : optional
+        Axes to draw on. Default: a new figure.
+    mag_cols : sequence of str, optional
+        Magnitude columns: reference band, then the colour band.
+    ylim, xlim : tuple, optional
+        Magnitude and colour ranges. ``xlim`` None, or a bound None: the 1st
+        and 99th percentiles of the colour.
+    xlabel, ylabel : str, optional
+        Axis labels. None: the column names.
+    color : optional
+        Not used; kept for older calls.
+    cmap, norm : optional
+        Of ``plot_hess``.
+    bins_colors, bins_mag : array_like, optional
+        Bin edges. Default: 0.01 in colour over ``xlim``, 0.1 in magnitude
+        over ``ylim``.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax : matplotlib.axes.Axes
     """
-    To plot 2D hist in the CMD
-
-    data must be data frame of dict.
-
-    The counts are computed by ``analysis.cmd_match_filter.hess_diagram``
-    and drawn by ``plot_hess``.
-    """
-
-    if fig is None or ax is None:
+    if ax is None:
         fig, ax = plt.subplots(1, 1, figsize=(8, 4))
-
-    mag1 = pd.to_numeric(data[mag_cols[0]], errors="coerce")
-    mag2 = pd.to_numeric(data[mag_cols[1]], errors="coerce")
-
+    fig = ax.figure
+    mag_cols = list(mag_cols)
+    colour = (pd.to_numeric(data[mag_cols[0]], errors="coerce")
+              - pd.to_numeric(data[mag_cols[1]], errors="coerce"))
+    low, high = (None, None) if xlim is None else xlim
+    xlim = (np.nanpercentile(colour, 1) if low is None else low, np.nanpercentile(colour, 99) if high is None else high)
     if bins_colors is None:
-        if xlim is None:
-            xlim = [None, None]
-        if xlim[0] is None:
-            xlim[0] = np.nanpercentile(mag1 - mag2, 1)
-        if xlim[1] is None:
-            xlim[1] = np.nanpercentile(mag1 - mag2, 99)
         bins_colors = np.arange(xlim[0], xlim[1], 0.01)
     if bins_mag is None:
         bins_mag = np.arange(ylim[0], ylim[1], 0.1)
-    if norm not in (None, "log"):
-        raise ValueError(f"Invalid norm: {norm}. Use None or 'log'.")
-
-    # computed in analysis.cmd_match_filter, drawn by plot_hess: one way for every CMD histogram
     hess = hess_diagram(data, mag_cols, color_bins=bins_colors, mag_bins=bins_mag)
     plot_hess(hess, ax=ax, cmap=cmap, norm=norm, title="")
-
-    ax.set_xlabel(f"{mag_cols[0]} - {mag_cols[1]}")
     ax.set_xlim(xlim)
-    ax.set_ylim(ylim)
-    ax.set_ylabel(mag_cols[0])
-    if xlabel is not None:
-        ax.set_xlabel(xlabel)
-    if ylabel is not None:
-        ax.set_ylabel(ylabel)
-    if ax.get_legend():
-        ax.legend()
-
-    ax.invert_yaxis()
+    ax.set_ylim(max(ylim), min(ylim))  # bright at the top
+    ax.set_xlabel(f"{mag_cols[0]} - {mag_cols[1]}" if xlabel is None else xlabel)
+    ax.set_ylabel(mag_cols[0] if ylabel is None else ylabel)
     return fig, ax
 
 

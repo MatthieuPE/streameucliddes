@@ -81,7 +81,7 @@ def draw_stream_regions(
     on_color: str = ON_REGION_COLOR,
     off_color: str = OFF_REGION_COLOR,
 ) -> list[Line2D]:
-    """Outlines of the on region and of the two off bands on a phi1/phi2 map.
+    """Outlines of the on region and of the two off regions on a phi1/phi2 map.
 
     ``stream_frames.phi12_window_outline`` of each window of
     ``analysis.candidate_investigation.region_windows``.
@@ -373,15 +373,31 @@ def plot_candidate_map(
 
 
 def _candidate_map(cand: CandidateInvestigation, distance_modulus: float | None) -> Mapping[str, Any]:
-    """Map of ``cand.maps`` closest to ``distance_modulus`` (default ``cand.distance_modulus``), else the zoom map."""
+    """Map at ``distance_modulus`` (default ``cand.distance_modulus``).
+
+    The map of ``cand.maps`` closest to it, within one step of their grid
+    (only that distance modulus for a single map), else the zoom map at that
+    distance modulus (or without one given).
+
+    Raises
+    ------
+    ValueError
+        No map at or near this distance modulus.
+    """
     if distance_modulus is None:
         distance_modulus = cand.distance_modulus
     if distance_modulus is not None and cand.maps:
-        return cand.maps[min(cand.maps, key=lambda dm: abs(dm - distance_modulus))]
+        grid = np.sort(np.asarray(list(cand.maps), dtype=float))
+        step = float(np.min(np.diff(grid))) if grid.size > 1 else 0.0
+        closest = min(cand.maps, key=lambda dm: abs(dm - distance_modulus))
+        if abs(closest - distance_modulus) <= step + 1e-9:
+            return cand.maps[closest]
     zoom = cand.zoom_map
     if zoom is not None and (distance_modulus is None or np.isclose(zoom["distance_modulus"], distance_modulus)):
         return zoom
-    raise ValueError("No map at this distance modulus: call cand.scan_distance_moduli() or cand.compute_zoom_map().")
+    scanned = f" (the scanned maps go from {min(cand.maps):g} to {max(cand.maps):g})" if cand.maps else ""
+    at = "no distance modulus" if distance_modulus is None else f"dm {distance_modulus:g}"
+    raise ValueError(f"No map at {at}{scanned}: call cand.scan_distance_moduli() with it, or cand.compute_zoom_map().")
 
 
 

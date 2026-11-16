@@ -16,7 +16,6 @@ from streameucliddes.analysis.catalog_preparation import (
     check_columns,
     default_error_cuts,
     prepare_match_filter_catalog,
-    resolve_mag_columns,
     star_healpix_pixels,
 )
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, DES_GR_MATCH_FILTER
@@ -67,18 +66,6 @@ FRAMES = {
     "across ra = 0": _frame((350.0, -30.0), (15.0, -40.0)),
     "near the pole": _frame((0.0, -80.0), (120.0, -85.0)),
 }
-
-
-# ===================================================
-# Test resolve_mag_columns
-# ===================================================
-
-
-# The '<col>_corrected' column is used when it exists and is requested
-def test_resolve_mag_columns():
-    data = pd.DataFrame({"mag_g": [20.0], "mag_g_corrected": [19.9], "mag_r": [19.5]})
-    assert resolve_mag_columns(data, ["mag_g", "mag_r"], True) == ["mag_g_corrected", "mag_r"]
-    assert resolve_mag_columns(data, ["mag_g", "mag_r"], False) == ["mag_g", "mag_r"]
 
 
 # ===================================================

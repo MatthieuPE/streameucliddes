@@ -351,11 +351,14 @@ Done:
   and phi1 profiles, difference Hess with the isochrone). Notebook sections
   10-11.
 - Review fixes (2026-11-16):
-  - Off density = mean of the two bands (`cmd_match_filter.off_band_weights`,
-    `off_bands_hess`; φ1 profile, Hess, summary), not the stars of both over
-    their summed area: a linear φ2 gradient cancels whatever the masks cut;
-    a band alone where the other has no area (`phi1_profile["off_weights"]`).
-    No reference: the usual argument for a linear gradient.
+  - Off density = mean of the densities of the two off regions, below and
+    above the track (`cmd_match_filter.mean_off_density`, `mean_off_hess`;
+    φ1 profile, Hess, summary), not the stars of both over their summed area:
+    a linear φ2 gradient cancels whatever the masks cut; the off region with
+    an area alone where the other has none (`phi1_profile["n_off_regions"]`).
+    No reference: the usual argument for a linear gradient. (User,
+    2026-11-16: an explicit mean, not "weights"; "off region", not "off
+    band", which reads as a photometric band.)
   - Footprint from the stars: at `star_count_nside` (512 down by halves until
     the pixels with stars hold 10 stars on average) and trimmed by one pixel
     (`trim_footprint_edge`), so partly covered edge pixels do not count their

@@ -34,7 +34,7 @@ import healpy as hp
 import numpy as np
 import pandas as pd
 
-from streameucliddes.analysis.background_polynomial_fit import fit_background_model
+from streameucliddes.analysis.background_polynomial_fit import fit_background_model_polyfit2d
 from streameucliddes.analysis.build_masks import DEFAULT_RADIUS_SCALES, overlapped_objects_healpix_mask
 from streameucliddes.analysis.catalog_preparation import (
     CHUNK_SIZE,
@@ -282,8 +282,8 @@ def generic_search_single_dm(
     in their pixels, by chunks. The counts are smoothed with a Gaussian and
     divided by the smoothed footprint: no drop at the footprint edges. A 2D
     polynomial of the log density
-    (``analysis.background_polynomial_fit.fit_background_model``, method
-    ``"polyfit2d"``), on (longitude around the footprint centre, latitude),
+    (``analysis.background_polynomial_fit.fit_background_model_polyfit2d``),
+    on (longitude around the footprint centre, latitude),
     gives the background; the residual is the density minus the background.
 
     Parameters
@@ -528,7 +528,7 @@ def _smoothed_density(counts, search, smoothing_deg):
 class _FootprintCentredProj:
     """(longitude around the footprint centre, wrapped to [-180, 180), latitude), in deg.
 
-    The ``proj`` of ``fit_background_model``: ra = 0 does not cut a footprint across it.
+    The ``proj`` of ``fit_background_model_polyfit2d``: ra = 0 does not cut a footprint across it.
     """
 
     def __init__(self, centre_lon):
@@ -544,9 +544,8 @@ class _FootprintCentredProj:
 
 def _background(density, search, polynomial_degree):
     """2D polynomial background of a density map, masked outside the footprint."""
-    _, _, prepared = fit_background_model(
+    _, _, prepared = fit_background_model_polyfit2d(
         density,
-        method="polyfit2d",
         model_type={"polynomial": {"degree": int(polynomial_degree)}},
         proj=_FootprintCentredProj(search.footprint_centre_lon),
         nside=search.nside,

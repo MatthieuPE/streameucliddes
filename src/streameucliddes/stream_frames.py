@@ -9,7 +9,7 @@ take and return numpy arrays in degrees, as in the catalogs.
 Maps in a stream frame use the phi1/phi2 grid of ``phi12_bin_centres``.
 
 A window is a tuple ``(phi1_min, phi1_max, phi2_min, phi2_max)`` (deg): the
-window of the maps, and also the on region and the off bands of a stream
+window of the maps, and also the on region and the off regions of a stream
 candidate. ``phi12_window_around`` puts a window around points (a galstreams
 track, two endpoints); ``in_phi12_window`` selects stars in a window;
 ``phi12_window_outline`` gives its outline (to the sky with

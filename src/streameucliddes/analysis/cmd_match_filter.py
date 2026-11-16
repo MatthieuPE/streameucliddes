@@ -353,70 +353,82 @@ def hess_diagram(
     }
 
 
-def off_band_weights(area_below: ArrayLike, area_above: ArrayLike) -> tuple[NDArray, NDArray]:
-    """Weights of the two off bands in the off density: 1/2 each.
+def mean_off_density(
+    density_below: ArrayLike, error_below: ArrayLike, density_above: ArrayLike, error_above: ArrayLike
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.int64]]:
+    """Off density: the mean of the densities of the off regions below and above the track.
 
-    The off density is ``w_below * N_below / A_below + w_above * N_above /
-    A_above``, not ``(N_below + N_above) / (A_below + A_above)``: the bands
-    lie on each side of the track, so with equal weights a linear field
-    gradient in phi2 cancels, whatever area the masks leave in each band;
-    weighting by area, the band with more area counts more and the gradient
-    no longer cancels. A band with no area gets 0 and the other 1; both
-    without area: 0 and 0.
+    The two off regions lie on each side of the track, at the same distance:
+    the mean of their densities cancels a linear gradient of the field across
+    the track (along phi2), whatever area the masks leave in each. Their
+    stars together over their areas together would not: the region with more
+    area would count more. Where one region has no area (its density NaN,
+    e.g. a phi1 bin masked on that side), the off density is that of the
+    other alone; where neither has, NaN.
 
     Parameters
     ----------
-    area_below, area_above : array_like
-        Areas of the bands (deg²), e.g. per bin of a profile.
+    density_below, error_below, density_above, error_above : array_like
+        Densities and their Poisson errors (stars/deg²) of the off region
+        below and above the track, of the same shape (e.g. per bin); NaN
+        where the region has no area.
 
     Returns
     -------
-    weight_below, weight_above : numpy.ndarray
-        Of the shape of the areas (0-d for scalars).
+    density, error : numpy.ndarray
+        The mean and its error; NaN where neither region has an area.
+    n_regions : numpy.ndarray of int
+        Number of off regions in the mean: 2, 1 (one has no area) or 0.
     """
-    below = np.asarray(area_below, dtype=float) > 0
-    above = np.asarray(area_above, dtype=float) > 0
-    n_bands = below.astype(float) + above
+    densities = np.stack([np.asarray(density_below, dtype=float), np.asarray(density_above, dtype=float)])
+    errors = np.stack([np.asarray(error_below, dtype=float), np.asarray(error_above, dtype=float)])
+    with_area = np.isfinite(densities)
+    n_regions = with_area.sum(axis=0)
     with np.errstate(divide="ignore", invalid="ignore"):
-        return np.where(n_bands > 0, below / n_bands, 0.0), np.where(n_bands > 0, above / n_bands, 0.0)
+        density = np.where(n_regions > 0, np.where(with_area, densities, 0.0).sum(axis=0) / n_regions, np.nan)
+        error = np.where(n_regions > 0, np.sqrt(np.where(with_area, errors**2, 0.0).sum(axis=0)) / n_regions, np.nan)
+    return density, error, n_regions
 
 
-def off_bands_hess(below_hess: Mapping[str, Any], above_hess: Mapping[str, Any]) -> dict[str, Any]:
-    """Off Hess diagram of two off bands: their densities averaged with ``off_band_weights``.
+def mean_off_hess(below_hess: Mapping[str, Any], above_hess: Mapping[str, Any]) -> dict[str, Any]:
+    """Off Hess diagram: the mean of the Hess diagrams of the off regions below and above the track.
+
+    ``mean_off_density`` of their densities, bin by bin.
 
     Parameters
     ----------
     below_hess, above_hess : mapping
         From ``hess_diagram``, with the same bin edges; ``area_deg2`` None
-        for a band with no area (its weight is then 0).
+        for an off region with no area (the other is then used alone).
 
     Returns
     -------
     hess : dict
-        The keys of ``hess_diagram``: ``density`` the weighted mean of the
-        two densities, ``error`` its Poisson error; ``counts``, ``n_stars``
-        and ``area_deg2`` the sums over the two bands (so ``counts /
-        area_deg2`` is not ``density`` when the areas differ); plus
-        ``band_weights`` (below, above).
+        The keys of ``hess_diagram``: ``density`` the mean of the two
+        densities and ``error`` its error; ``counts``, ``n_stars`` and
+        ``area_deg2`` the sums over the two regions (so ``counts /
+        area_deg2`` is not ``density`` when their areas differ); plus
+        ``n_off_regions`` (2, or 1 when one has no area).
 
     Raises
     ------
     ValueError
-        The bin edges differ, or neither band has an area.
+        The bin edges differ, or neither region has an area.
     """
     for name in ("color_edges", "mag_edges"):
         if not np.array_equal(below_hess[name], above_hess[name]):
-            raise ValueError(f"The off band Hess diagrams have different {name}.")
-    areas = [hess["area_deg2"] or 0.0 for hess in (below_hess, above_hess)]
-    weight_below, weight_above = (float(weight) for weight in off_band_weights(*areas))
-    if weight_below + weight_above == 0:
-        raise ValueError("Neither off band has an area.")
+            raise ValueError(f"The Hess diagrams of the off regions have different {name}.")
+    with_area = [hess for hess in (below_hess, above_hess) if hess["area_deg2"]]
+    if not with_area:
+        raise ValueError("Neither off region has an area.")
+    arrays = [(hess["density"], hess["error"]) if hess["area_deg2"] else (np.full_like(hess["density"], np.nan),) * 2
+              for hess in (below_hess, above_hess)]
+    density, error, _ = mean_off_density(*arrays[0], *arrays[1])
     return {
         **{key: below_hess[key] for key in ("color_edges", "mag_edges", "color_label", "mag_label")},
-        "density": weight_below * below_hess["density"] + weight_above * above_hess["density"],
-        "error": np.hypot(weight_below * below_hess["error"], weight_above * above_hess["error"]),
+        "density": density, "error": error,
         "counts": below_hess["counts"] + above_hess["counts"], "n_stars": below_hess["n_stars"] + above_hess["n_stars"],
-        "area_deg2": float(sum(areas)), "band_weights": (weight_below, weight_above),
+        "area_deg2": float(sum(hess["area_deg2"] for hess in with_area)), "n_off_regions": len(with_area),
     }
 
 
@@ -435,7 +447,7 @@ def difference_hess(on_hess: Mapping[str, Any], off_hess: Mapping[str, Any]) -> 
         errors in quadrature, ``area_deg2`` that of the on region; ``counts``
         the excess stars of the on region per bin, ``density * area_deg2``
         (for one off diagram: on counts minus off counts scaled by the ratio
-        of the areas; also right for ``off_bands_hess``), and ``n_stars``
+        of the areas; also right for ``mean_off_hess``), and ``n_stars``
         their sum: the excess stars of the on region (float).
 
     Raises

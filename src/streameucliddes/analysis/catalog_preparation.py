@@ -1,7 +1,7 @@
 """Preparation of the star catalogs for the searches, before the match filter.
 
-Columns checked, magnitude columns resolved (dust-corrected or not), cuts,
-stream-frame coordinates and window, HEALPix pixels of the stars. The
+Columns checked, cuts, stream-frame coordinates and window, HEALPix pixels
+of the stars. The magnitudes of the catalogs are already dereddened. The
 selection itself is in ``analysis.cmd_match_filter``.
 """
 
@@ -14,7 +14,6 @@ import numpy as np
 import pandas as pd
 
 from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, match_filter_columns
-from streameucliddes.catalogs import dust_correction
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
 from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12
 
@@ -32,45 +31,6 @@ WINDOW_PRESELECTION_NSIDE = 64
 # Stars per chunk of the cuts, the window pre-selection, the phi1/phi2 transformation and the
 # HEALPix pixels: bounds their temporary arrays
 CHUNK_SIZE = 500_000
-
-
-# ===================================================
-# Magnitude columns and dust correction (generic search)
-# ===================================================
-
-
-def resolve_mag_columns(data, mag_cols, use_dust_corrected):
-    """Swap in '<col>_corrected' columns when available and requested."""
-    resolved = []
-    for col in mag_cols:
-        corrected = f"{col}_corrected"
-        if use_dust_corrected and corrected in data.columns:
-            resolved.append(corrected)
-        else:
-            if use_dust_corrected:
-                print(
-                    f"Warning: requested dust-corrected column '{corrected}' not found in data; using '{col}' instead."
-                )
-            resolved.append(col)
-    return resolved
-
-
-def ensure_dust_corrected(
-    data, mag_cols, ra_col, dec_col, dust_correction_kwargs=None, verbose=False
-):
-    """Compute missing '<col>_corrected' columns in place via dust_correction.correct_dust_map."""
-    missing = [col for col in mag_cols if f"{col}_corrected" not in data.columns]
-    if not missing:
-        return
-
-    if verbose:
-        print(f"Applying dust correction for: {missing}")
-    dust_correction.correct_dust_map(
-        data,
-        mag_cols=list(mag_cols),
-        pos_columns=[ra_col, dec_col],
-        **dict(dust_correction_kwargs or {}),
-    )
 
 
 # ===================================================

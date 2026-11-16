@@ -58,7 +58,7 @@ def test_stream_regions_keys():
                        "on_phi2_offset_deg": 0.0, "off_phi2_offsets_deg": (0.0, 0.0)}
 
 
-# Off bands overlapping the on region (wider, or shifted), off_n_sigma not increasing, sigma <= 0, phi1_range
+# Off regions overlapping the on region (wider, or shifted), off_n_sigma not increasing, sigma <= 0, phi1_range
 # not increasing
 @pytest.mark.parametrize("kwargs", [{"on_n_sigma": 2.6}, {"on_phi2_offset_deg": 0.5}, {"off_phi2_offsets_deg": (0.5, 0.0)},
                                     {"off_n_sigma": (3.0, 2.5)}, {"sigma": 0.0}, {"phi1_range": (2.0, -3.0)}])
@@ -90,16 +90,16 @@ def test_region_windows_offsets():
         assert window == pytest.approx((reference[0], reference[1], reference[2] + offset, reference[3] + offset))
 
 
-# No mask: on and off areas of the band formula; half of the phi1 range masked: half the areas
+# No mask: on and off areas of the strip formula; half of the phi1 range masked: half the areas
 def test_region_area_matches_analytic(candidate_endpoints):
     frame = stream_frame_from_endpoints(*candidate_endpoints)
     regions = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)}
     windows = region_windows(regions)
     areas = region_area_deg2(regions, frame, None)
-    band = lambda window: unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0]  # noqa: E731
-    assert areas["on"] == pytest.approx(band(windows["on"]))
-    assert areas["off_below"] == pytest.approx(band(windows["off"][0]))
-    assert areas["off_above"] == pytest.approx(band(windows["off"][1]))
+    window_area = lambda window: unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0]  # noqa: E731
+    assert areas["on"] == pytest.approx(window_area(windows["on"]))
+    assert areas["off_below"] == pytest.approx(window_area(windows["off"][0]))
+    assert areas["off_above"] == pytest.approx(window_area(windows["off"][1]))
     assert areas["off"] == areas["off_below"] + areas["off_above"]
     half = region_area_deg2(regions, frame, _mask_phi1_below(frame, 512, -0.5))
     assert half["on"] == pytest.approx(areas["on"] / 2, rel=0.03) and half["off"] == pytest.approx(areas["off"] / 2, rel=0.03)
@@ -449,7 +449,7 @@ def test_set_endpoints_without_catalog(candidate_endpoints):
 
 
 # define_regions: the regions of the width fit (or the values given) over the phi1 of the endpoints, their
-# areas, the phi1 profile over the window; earlier Hess diagrams cleared; errors: steps not done, off bands
+# areas, the phi1 profile over the window; earlier Hess diagrams cleared; errors: steps not done, off regions
 # beyond the window
 def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
     cand = CandidateInvestigation("test", *candidate_endpoints, on_n_sigma=1.5, off_n_sigma=(2.5, 4.0),
@@ -473,14 +473,14 @@ def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate
     cand.define_regions(phi1_range=(-1.0, 1.0), phi2_centre=0.0, sigma=0.4)
     assert cand.regions["phi1_range"] == (-1.0, 1.0) and cand.regions["sigma"] == 0.4
     with pytest.raises(ValueError, match="leave the window"):
-        cand.define_regions(sigma=2.0)  # off bands to 8 deg
+        cand.define_regions(sigma=2.0)  # off regions to 8 deg
     cand.define_regions(on_phi2_offset_deg=1.0, off_phi2_offsets_deg=(0.0, 1.0))
     assert cand.regions["on_phi2_offset_deg"] == 1.0 and cand.regions["off_phi2_offsets_deg"] == (0.0, 1.0)
     with pytest.raises(ValueError, match="leave the window"):
         cand.define_regions(on_phi2_offset_deg=cand.window[3])  # on region beyond the top of the window
 
 
-# A footprint hole across half of the bottom off band, no stream: define_regions leaves the hole out of the
+# A footprint hole across half of the bottom off region, no stream: define_regions leaves the hole out of the
 # off area (the on area untouched), so the off density of the uniform field stays that of the on region (on - off
 # consistent with 0); divided by the full off area, it would be too low
 def test_compute_hess_areas_outside_footprint_hole(candidate_endpoints, candidate_catalog, no_object_masks):
@@ -506,10 +506,10 @@ def test_compute_hess_areas_outside_footprint_hole(candidate_endpoints, candidat
     assert n_on / cand.areas["on"] - n_off / full["off"] > 3 * error
 
 
-# A field with a linear gradient in phi2 (no stream) and a footprint hole across half of the bottom off band: the
-# off density, the mean of the two bands, matches that of the on region (Hess diagrams, summary, and the phi1
-# profile where both bands have an area; in the hole the band above alone cannot cancel the gradient); the stars of
-# both bands over their summed area would be too high, the denser band above weighing more
+# A field with a linear gradient in phi2 (no stream) and a footprint hole across half of the bottom off region: the
+# off density, the mean of the two off regions, matches that of the on region (Hess diagrams, summary, and the
+# phi1 profile where both off regions have an area; in the hole the off region above alone cannot cancel the
+# gradient); the stars of both over their summed area would be too high, the denser region above weighing more
 def test_off_density_cancels_gradient_with_hole(candidate_endpoints, no_object_masks):
     rng = np.random.default_rng(11)
     frame = stream_frame_from_endpoints(*candidate_endpoints)
@@ -538,15 +538,15 @@ def test_off_density_cancels_gradient_with_hole(candidate_endpoints, no_object_m
     assert abs(on - off) < 3 * error
     assert cand.off_hess["counts"].sum() / cand.off_hess["area_deg2"] - on > 3 * error
     profile = cand.phi1_profile
-    both = np.isfinite(profile["difference"]) & (profile["off_weights"][0] == 0.5)
-    assert both.sum() > 10 and np.all(profile["off_weights"][1][both] == 0.5)
+    both = np.isfinite(profile["difference"]) & (profile["n_off_regions"] == 2)
+    assert both.sum() > 10 and np.any(profile["n_off_regions"] == 1)  # the hole: the region above alone
     pulls = profile["difference"][both] / profile["error"][both]
     assert abs(pulls.mean()) < 3 / np.sqrt(pulls.size)
     summary = cand.summary()
     assert abs(summary["n_excess"]) < 3 * summary["n_excess_error"]
 
 
-# compute_hess: every prepared star of the on region and of the off bands, per deg² with the region areas,
+# compute_hess: every prepared star of the on region and of the off regions, per deg² with the region areas,
 # on - off; the stream's stars in the match filter make the difference positive there
 def test_compute_hess(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
     cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
@@ -575,7 +575,7 @@ def test_compute_isochrone(candidate_endpoints):
     track = cand.compute_isochrone(age=10.0, metallicity=0.001, distance_modulus=18.0).isochrone_track
     assert (track["age"], track["metallicity"], track["distance_modulus"], track["feh"]) == (10.0, 0.001, 18.0, None)
     assert (cand.age, cand.feh, cand.distance_modulus) == (12.0, -1.5, 17.0)  # inputs not changed
-    with pytest.raises(ValueError, match="not both"):
+    with pytest.raises(ValueError, match="exactly one"):  # the check of isochrone_cmd_track
         cand.compute_isochrone(metallicity=0.001, feh=-1.0)
 
 
@@ -704,7 +704,7 @@ def test_run_all_steps(candidate_endpoints, candidate_stream_catalog, candidate_
 
 
 # summary: the same keys at every step, None for the steps not done; after define_regions, the counts of the stars
-# in the match filter outside the excluded mask, in the on region and in the off bands, and the excess
+# in the match filter outside the excluded mask, in the on region and in the off regions, and the excess
 def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
     keys = {"name", "endpoint_1", "endpoint_2", "window", "age", "metallicity", "feh", "distance_modulus",
             "distance_kpc", "phi2_centre", "sigma", "phi1_range", "area_on_deg2", "area_off_deg2", "n_on", "n_off",
@@ -732,7 +732,7 @@ def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream
     n_on = (selected & in_phi12_window(phi1, phi2, windows["on"])).sum()
     n_below, n_above = ((selected & in_phi12_window(phi1, phi2, window)).sum() for window in windows["off"])
     areas = cand.areas
-    off_density = 0.5 * (n_below / areas["off_below"] + n_above / areas["off_above"])  # both bands with an area
+    off_density = 0.5 * (n_below / areas["off_below"] + n_above / areas["off_above"])  # both off regions with an area
     off_variance = 0.25 * (n_below / areas["off_below"] ** 2 + n_above / areas["off_above"] ** 2)
     assert (summary["n_on"], summary["n_off"]) == (n_on, n_below + n_above)
     assert summary["n_excess"] == pytest.approx(n_on - areas["on"] * off_density)

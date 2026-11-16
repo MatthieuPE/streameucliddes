@@ -133,7 +133,7 @@ def test_make_color_image_errors(tmp_path):
         cutout_wcs(tmp_path)
 
 
-# Positions at the centres of steps over phi1_range, on the centre of the on region and of the chosen off band
+# Positions at the centres of steps over phi1_range, on the centre of the on region and of the chosen off region
 # (offsets included), with their (ra, dec); errors
 def test_candidate_image_positions(candidate_endpoints):
     cand = CandidateInvestigation("test", *candidate_endpoints)
@@ -142,8 +142,8 @@ def test_candidate_image_positions(candidate_endpoints):
     cand.regions = stream_regions((-2.0, 2.0), 0.1, 0.3, on_n_sigma=1.5, off_n_sigma=(2.5, 4.0),
                                   on_phi2_offset_deg=0.2)
     windows = region_windows(cand.regions)
-    for off_band, index in (("above", 1), ("below", 0)):
-        positions = candidate_image_positions(cand, 1.0, off_band=off_band)
+    for off_region, index in (("above", 1), ("below", 0)):
+        positions = candidate_image_positions(cand, 1.0, off_region=off_region)
         on, off = positions[positions["region"] == "on"], positions[positions["region"] == "off"]
         np.testing.assert_allclose(on["phi1"], [-1.5, -0.5, 0.5, 1.5])
         np.testing.assert_allclose(off["phi1"], on["phi1"])
@@ -153,8 +153,8 @@ def test_candidate_image_positions(candidate_endpoints):
         np.testing.assert_allclose(phi1, positions["phi1"], atol=1e-8)
         np.testing.assert_allclose(phi2, positions["phi2"], atol=1e-8)
     assert len(candidate_image_positions(cand, 10.0)) == 2  # one step at least
-    with pytest.raises(ValueError, match="off_band"):
-        candidate_image_positions(cand, off_band="left")
+    with pytest.raises(ValueError, match="off_region"):
+        candidate_image_positions(cand, off_region="left")
     with pytest.raises(ValueError, match="step_deg"):
         candidate_image_positions(cand, 0.0)
 
