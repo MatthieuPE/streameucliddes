@@ -184,6 +184,8 @@ claude/
 .vscode/
 # Local experiment plots (not tracked)
 plots/
+# Draft notebook (local only)
+notebooks/draft.ipynb
 
 .DS_Store
 
