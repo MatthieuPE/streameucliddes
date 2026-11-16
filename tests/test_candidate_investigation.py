@@ -10,6 +10,7 @@ from streameucliddes.analysis import stream_frame_search as stream_frame_search_
 from streameucliddes.analysis.build_masks import object_mask_nside
 from streameucliddes.analysis.candidate_investigation import (
     DEFAULT_FOOTPRINT_NSIDE,
+    CANDIDATE_FIGURES_DIR,
     CandidateInvestigation,
     on_off_phi1_profile,
     phi12_density_map,
@@ -665,8 +666,9 @@ def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream
     assert summary["n_excess_error"] == pytest.approx(np.sqrt(n_on + areas["on"] ** 2 * off_variance))
 
 
-# From the id of a listed candidate: its endpoints, best_dm as distance modulus and a default name; the other
-# inputs as given, a distance_modulus given replacing best_dm; the same frame as from the endpoints
+# From the id of a listed candidate: its endpoints, best_dm as distance modulus, a default name and its figure
+# folder (that of an unlisted one: unnamed); the other inputs as given, a distance_modulus or figure_folder given
+# replacing those of the list; the same frame as from the endpoints
 def test_from_candidate_id(tmp_path, candidate_endpoints):
     path = tmp_path / "candidates.csv"
     add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
@@ -676,7 +678,10 @@ def test_from_candidate_id(tmp_path, candidate_endpoints):
     assert (cand.endpoint_1, cand.endpoint_2) == candidate_endpoints
     by_hand = CandidateInvestigation("by hand", *candidate_endpoints)
     assert cand.window == pytest.approx(by_hand.window)
-    other = CandidateInvestigation.from_candidate_id(2, path=path, name="stream 2", distance_modulus=18.0)
-    assert other.name == "stream 2" and other.distance_modulus == 18.0
+    assert cand.figure_folder == CANDIDATE_FIGURES_DIR / "2" and by_hand.figure_folder == CANDIDATE_FIGURES_DIR / "unnamed"
+    other = CandidateInvestigation.from_candidate_id(2, path=path, name="stream 2", distance_modulus=18.0,
+                                                     figure_folder=tmp_path / "figures")
+    assert other.name == "stream 2" and other.distance_modulus == 18.0 and other.figure_folder == tmp_path / "figures"
+    assert not (tmp_path / "figures").exists()  # not created
     with pytest.raises(ValueError, match="No candidate with id 5"):
         CandidateInvestigation.from_candidate_id(5, path=path)

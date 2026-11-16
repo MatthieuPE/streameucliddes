@@ -60,6 +60,7 @@ choices, no reference.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import healpy as hp
@@ -105,7 +106,6 @@ from streameucliddes.unit_conversions import convert_DM_to_kpc, convert_FeH_to_z
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-    from pathlib import Path
 
     import astropy.coordinates as coord
     import pandas as pd
@@ -120,6 +120,10 @@ DEFAULT_PHI1_BIN_DEG = 0.5  # bins of the phi1 profile
 DEFAULT_WIDTH_MAP_BINS_DEG = (0.5, 0.2)  # (phi1, phi2) cells of the 2D map of the width fit
 DEFAULT_FOOTPRINT_NSIDE = 512  # footprint from the stars (finest nside; coarser for sparse stars)
 DEFAULT_TRACK_POINTS = 100
+# Figures of the candidates: figures/outputs/ of the repository (gitignored), one folder per candidate,
+# "unnamed" for one given by its endpoints, its id for one of the list (from_candidate_id)
+CANDIDATE_FIGURES_DIR = Path(__file__).resolve().parents[3] / "figures" / "outputs" / "candidates"
+UNNAMED_FIGURE_FOLDER = "unnamed"
 CATALOG_EDGE_TOLERANCE_DEG = 0.1  # window outline beyond the outermost stars by less than this: still inside
 # Steps of run_all_steps that take step_kwargs, in order (prepare, between compute_sky_map and compute_zoom_map, takes
 # footprint_mask, nest and the prepare_kwargs of the object)
@@ -529,6 +533,11 @@ class CandidateInvestigation:
     prepare_kwargs : dict, optional
         More arguments of ``prepare_search`` (``bin_size_deg``, ``cuts``,
         ``mask_*``...).
+    figure_folder : str or pathlib.Path, optional
+        Folder of the figures of the candidate. Default:
+        ``CANDIDATE_FIGURES_DIR / "unnamed"`` (``figures/outputs/candidates/unnamed``);
+        from ``from_candidate_id``, ``CANDIDATE_FIGURES_DIR / "<id>"``. Not
+        created here.
 
     Attributes
     ----------
@@ -588,6 +597,7 @@ class CandidateInvestigation:
     on_n_sigma: float = DEFAULT_ON_N_SIGMA
     off_n_sigma: tuple[float, float] = DEFAULT_OFF_N_SIGMA
     prepare_kwargs: dict = field(default_factory=dict)
+    figure_folder: str | Path | None = None
     # Results, None until computed
     stream_frame: Any = None
     window: tuple | None = None
@@ -621,6 +631,8 @@ class CandidateInvestigation:
             Both ``metallicity`` and ``feh`` given.
         """
         _ = self.isochrone  # raises if both metallicity and feh are set
+        if self.figure_folder is None:
+            self.figure_folder = CANDIDATE_FIGURES_DIR / UNNAMED_FIGURE_FOLDER
         self._set_frame_and_window()
         object.__setattr__(self, "_track_inputs", True)  # from now on, a changed input clears its results
 
@@ -648,7 +660,8 @@ class CandidateInvestigation:
         """Investigation of a candidate of the list (``catalogs.stream_candidates``), from its id.
 
         Its endpoints and its ``best_dm`` (as ``distance_modulus``) come from
-        the list; the other inputs are those of the class. For a candidate
+        the list, its figures go to ``CANDIDATE_FIGURES_DIR / "<id>"``
+        (``figure_folder``); the other inputs are those of the class. For a candidate
         not in the list, give the endpoints to the class itself.
 
         Parameters
@@ -662,7 +675,7 @@ class CandidateInvestigation:
         **inputs
             Other inputs of the class (``age``, ``metallicity`` or ``feh``,
             ``match_filter``, ``distance_moduli``...); a ``distance_modulus``
-            given here replaces ``best_dm``.
+            or a ``figure_folder`` given here replaces that of the list.
 
         Returns
         -------
@@ -676,6 +689,7 @@ class CandidateInvestigation:
         candidate = get_candidate(candidate_id, path)
         endpoint_1, endpoint_2 = candidate_endpoints(candidate)
         inputs.setdefault("distance_modulus", float(candidate["best_dm"]))
+        inputs.setdefault("figure_folder", CANDIDATE_FIGURES_DIR / str(int(candidate["id"])))
         return cls(f"candidate_{int(candidate['id'])}" if name is None else name, endpoint_1, endpoint_2, **inputs)
 
     @property
