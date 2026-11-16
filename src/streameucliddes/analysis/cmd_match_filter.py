@@ -353,6 +353,73 @@ def hess_diagram(
     }
 
 
+def off_band_weights(area_below: ArrayLike, area_above: ArrayLike) -> tuple[NDArray, NDArray]:
+    """Weights of the two off bands in the off density: 1/2 each.
+
+    The off density is ``w_below * N_below / A_below + w_above * N_above /
+    A_above``, not ``(N_below + N_above) / (A_below + A_above)``: the bands
+    lie on each side of the track, so with equal weights a linear field
+    gradient in phi2 cancels, whatever area the masks leave in each band;
+    weighting by area, the band with more area counts more and the gradient
+    no longer cancels. A band with no area gets 0 and the other 1; both
+    without area: 0 and 0.
+
+    Parameters
+    ----------
+    area_below, area_above : array_like
+        Areas of the bands (deg²), e.g. per bin of a profile.
+
+    Returns
+    -------
+    weight_below, weight_above : numpy.ndarray
+        Of the shape of the areas (0-d for scalars).
+    """
+    below = np.asarray(area_below, dtype=float) > 0
+    above = np.asarray(area_above, dtype=float) > 0
+    n_bands = below.astype(float) + above
+    with np.errstate(divide="ignore", invalid="ignore"):
+        return np.where(n_bands > 0, below / n_bands, 0.0), np.where(n_bands > 0, above / n_bands, 0.0)
+
+
+def off_bands_hess(below_hess: Mapping[str, Any], above_hess: Mapping[str, Any]) -> dict[str, Any]:
+    """Off Hess diagram of two off bands: their densities averaged with ``off_band_weights``.
+
+    Parameters
+    ----------
+    below_hess, above_hess : mapping
+        From ``hess_diagram``, with the same bin edges; ``area_deg2`` None
+        for a band with no area (its weight is then 0).
+
+    Returns
+    -------
+    hess : dict
+        The keys of ``hess_diagram``: ``density`` the weighted mean of the
+        two densities, ``error`` its Poisson error; ``counts``, ``n_stars``
+        and ``area_deg2`` the sums over the two bands (so ``counts /
+        area_deg2`` is not ``density`` when the areas differ); plus
+        ``band_weights`` (below, above).
+
+    Raises
+    ------
+    ValueError
+        The bin edges differ, or neither band has an area.
+    """
+    for name in ("color_edges", "mag_edges"):
+        if not np.array_equal(below_hess[name], above_hess[name]):
+            raise ValueError(f"The off band Hess diagrams have different {name}.")
+    areas = [hess["area_deg2"] or 0.0 for hess in (below_hess, above_hess)]
+    weight_below, weight_above = (float(weight) for weight in off_band_weights(*areas))
+    if weight_below + weight_above == 0:
+        raise ValueError("Neither off band has an area.")
+    return {
+        **{key: below_hess[key] for key in ("color_edges", "mag_edges", "color_label", "mag_label")},
+        "density": weight_below * below_hess["density"] + weight_above * above_hess["density"],
+        "error": np.hypot(weight_below * below_hess["error"], weight_above * above_hess["error"]),
+        "counts": below_hess["counts"] + above_hess["counts"], "n_stars": below_hess["n_stars"] + above_hess["n_stars"],
+        "area_deg2": float(sum(areas)), "band_weights": (weight_below, weight_above),
+    }
+
+
 def difference_hess(on_hess: Mapping[str, Any], off_hess: Mapping[str, Any]) -> dict[str, Any]:
     """On - off Hess diagram.
 
@@ -367,8 +434,9 @@ def difference_hess(on_hess: Mapping[str, Any], off_hess: Mapping[str, Any]) -> 
         The keys of ``hess_diagram``: ``density`` on - off, ``error`` the two
         errors in quadrature, ``area_deg2`` that of the on region; ``counts``
         the excess stars of the on region per bin, ``density * area_deg2``
-        (on counts minus off counts scaled by the ratio of the areas), and
-        ``n_stars`` their sum: the excess stars of the on region (float).
+        (for one off diagram: on counts minus off counts scaled by the ratio
+        of the areas; also right for ``off_bands_hess``), and ``n_stars``
+        their sum: the excess stars of the on region (float).
 
     Raises
     ------
@@ -380,7 +448,7 @@ def difference_hess(on_hess: Mapping[str, Any], off_hess: Mapping[str, Any]) -> 
     for name in ("color_edges", "mag_edges"):
         if not np.array_equal(on_hess[name], off_hess[name]):
             raise ValueError(f"The on and off Hess diagrams have different {name}.")
-    excess = on_hess["counts"] - off_hess["counts"] * on_hess["area_deg2"] / off_hess["area_deg2"]
+    excess = (on_hess["density"] - off_hess["density"]) * on_hess["area_deg2"]
     return {
         **{key: on_hess[key] for key in ("color_edges", "mag_edges", "area_deg2", "color_label", "mag_label")},
         "density": on_hess["density"] - off_hess["density"], "error": np.hypot(on_hess["error"], off_hess["error"]),

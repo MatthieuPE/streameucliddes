@@ -31,6 +31,8 @@ LOGGER = logging.getLogger(__name__)
 FOOTPRINT_DIR = Path(__file__).resolve().parents[3] / "data" / "footprints"
 # Stars per chunk of the star counts: bounds their temporary arrays, whatever the catalog size
 CHUNK_SIZE = 500_000
+# Mean stars per pixel with stars of a footprint from the star counts (star_count_nside)
+MIN_MEAN_STARS_PER_PIXEL = 10.0
 
 
 def survey_footprint_healpix_mask(
@@ -94,6 +96,73 @@ def survey_footprint_healpix_mask(
         pixels = hp.ang2pix(nside, chunk_ra[valid], chunk_dec[valid], lonlat=True, nest=nest)
         counts += np.bincount(pixels, minlength=counts.size)
     return counts < min_count
+
+
+def star_count_nside(
+    ra: ArrayLike, dec: ArrayLike, max_nside: int, *, min_mean_count: float = MIN_MEAN_STARS_PER_PIXEL
+) -> int:
+    """Finest nside, from ``max_nside`` down by halves, at which the pixels with stars hold ``min_mean_count`` stars on average.
+
+    A footprint from the star counts (``survey_footprint_healpix_mask``)
+    needs well-filled pixels: with a few stars per pixel, many pixels inside
+    the survey are empty by chance and left out of the footprint (and
+    ``trim_footprint_edge`` would leave out their neighbours too). Stops at
+    nside 1.
+
+    Parameters
+    ----------
+    ra, dec : array_like
+        Stars (deg); non-finite positions left out.
+    max_nside : int
+        Finest nside allowed.
+    min_mean_count : float, optional
+        Minimum mean number of stars per pixel with stars.
+
+    Returns
+    -------
+    nside : int
+    """
+    ra = np.asarray(ra, dtype=float)
+    dec = np.asarray(dec, dtype=float)
+    nside = int(max_nside)
+    while nside > 1:
+        n_pixels_with_stars = np.count_nonzero(~survey_footprint_healpix_mask(ra, dec, nside, nest=False))
+        n_stars = np.count_nonzero(np.isfinite(ra) & np.isfinite(dec))
+        if n_pixels_with_stars and n_stars / n_pixels_with_stars >= min_mean_count:
+            break
+        nside //= 2
+    return nside
+
+
+def trim_footprint_edge(footprint_mask: NDArray[np.bool_], *, nest: bool) -> NDArray[np.bool_]:
+    """The footprint less its edge pixels: those with a neighbour outside it (``healpy.get_all_neighbours``).
+
+    A footprint computed from the star counts keeps every pixel with a star,
+    also those only partly covered (survey or tile edge, edge of a loaded
+    box): their area counts in full, so the density near the edges is too
+    low. Trimming one pixel leaves out the partly covered pixels; their stars
+    must then be left out too (e.g. ``CandidateInvestigation.stars_not_excluded``).
+
+    Parameters
+    ----------
+    footprint_mask : numpy.ndarray of bool
+        True outside the footprint.
+    nest : bool
+        Its HEALPix ordering.
+
+    Returns
+    -------
+    mask : numpy.ndarray of bool
+        True outside the footprint or on its edge; a new array.
+    """
+    footprint_mask = np.asarray(footprint_mask, dtype=bool)
+    nside = hp.npix2nside(footprint_mask.size)
+    inside = np.flatnonzero(~footprint_mask)  # only these: light at any nside
+    neighbours = hp.get_all_neighbours(nside, inside, nest=nest)  # (8, n), -1 where there is none
+    outside_neighbour = (footprint_mask[neighbours] & (neighbours >= 0)).any(axis=0)
+    trimmed = footprint_mask.copy()
+    trimmed[inside[outside_neighbour]] = True
+    return trimmed
 
 
 def convert_footprint_healpix_mask(

@@ -4,7 +4,13 @@ import pytest
 from streamobs.match_filter import build_match_filter, is_in_match_filter
 
 from streameucliddes.analysis import cmd_match_filter
-from streameucliddes.analysis.cmd_match_filter import difference_hess, hess_diagram, isochrone_cmd_track
+from streameucliddes.analysis.cmd_match_filter import (
+    difference_hess,
+    hess_diagram,
+    isochrone_cmd_track,
+    off_band_weights,
+    off_bands_hess,
+)
 
 pytestmark = pytest.mark.cmd_match_filter
 
@@ -267,3 +273,35 @@ def test_difference_hess_rejects_different_bins():
         difference_hess(on, hess_diagram(stars, columns, area_deg2=1.0, mag_bins=np.linspace(17.0, 27.0, 11)))
     with pytest.raises(ValueError, match="area_deg2"):
         difference_hess(on, hess_diagram(stars, columns))
+
+
+# 1/2 each while both bands have an area, 1 for the only band with one, 0 for none; per bin for arrays
+def test_off_band_weights():
+    assert [float(weight) for weight in off_band_weights(2.0, 5.0)] == [0.5, 0.5]
+    assert [float(weight) for weight in off_band_weights(0.0, 5.0)] == [0.0, 1.0]
+    below, above = off_band_weights([1.0, 0.0, 3.0, 0.0], [2.0, 4.0, 0.0, 0.0])
+    np.testing.assert_array_equal(below, [0.5, 0.0, 1.0, 0.0])
+    np.testing.assert_array_equal(above, [0.5, 1.0, 0.0, 0.0])
+
+
+# The mean of the two densities (2 and 1 stars/deg²: 1.5, not 6 stars / 5 deg²), the errors combined, the counts,
+# stars and areas summed; a band without area: the other alone; different bins or no area at all: ValueError
+def test_off_bands_hess():
+    columns = ("euclid_q1_VIS_obs", "euclid_q1_H_obs")
+    bins = {"color_bins": [0.0, 1.0], "mag_bins": [20.0, 21.0]}
+
+    def stars(n):
+        return pd.DataFrame({columns[0]: np.full(n, 20.5), columns[1]: np.full(n, 20.0)})
+
+    below = hess_diagram(stars(2), columns, area_deg2=1.0, **bins)
+    above = hess_diagram(stars(4), columns, area_deg2=4.0, **bins)
+    off = off_bands_hess(below, above)
+    assert off["density"][0, 0] == pytest.approx(1.5) and off["band_weights"] == (0.5, 0.5)
+    assert off["error"][0, 0] == pytest.approx(0.5 * np.hypot(np.sqrt(2) / 1.0, np.sqrt(4) / 4.0))
+    assert off["counts"][0, 0] == 6 and off["n_stars"] == 6 and off["area_deg2"] == 5.0
+    alone = off_bands_hess(hess_diagram(stars(2), columns, **bins), above)
+    assert alone["density"][0, 0] == pytest.approx(1.0) and alone["band_weights"] == (0.0, 1.0)
+    with pytest.raises(ValueError, match="mag_edges"):
+        off_bands_hess(below, hess_diagram(stars(4), columns, area_deg2=4.0, color_bins=[0.0, 1.0], mag_bins=[19.0, 21.0]))
+    with pytest.raises(ValueError, match="Neither"):
+        off_bands_hess(hess_diagram(stars(2), columns, **bins), hess_diagram(stars(4), columns, **bins))

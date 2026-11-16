@@ -22,6 +22,9 @@ plt_params = {
     "text.usetex": False,
     "font.family": "serif",
     "font.serif": ["cmr10"],
+    # cmr10 has no Unicode minus: plain-text labels (e.g. the WCS axes of astropy) need the ASCII one; tick labels in
+    # mathtext still show a proper minus
+    "axes.unicode_minus": False,
     "axes.labelsize": 9,
     "axes.titlesize": 10,
     "xtick.labelsize": 8,

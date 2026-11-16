@@ -350,6 +350,23 @@ Done:
   are reproduced), `plot_candidate_overview` (2 x 2: map with regions, phi2
   and phi1 profiles, difference Hess with the isochrone). Notebook sections
   10-11.
+- Review fixes (2026-11-16):
+  - Off density = mean of the two bands (`cmd_match_filter.off_band_weights`,
+    `off_bands_hess`; φ1 profile, Hess, summary), not the stars of both over
+    their summed area: a linear φ2 gradient cancels whatever the masks cut;
+    a band alone where the other has no area (`phi1_profile["off_weights"]`).
+    No reference: the usual argument for a linear gradient.
+  - Footprint from the stars: at `star_count_nside` (512 down by halves until
+    the pixels with stars hold 10 stars on average) and trimmed by one pixel
+    (`trim_footprint_edge`), so partly covered edge pixels do not count their
+    whole area. No DR1 coverage map in data/footprints yet; a given footprint
+    is used as it is.
+  - Width fit: χ² kept; on DR1 stream 2 the 0.05° bins hold 32-85 stars (none
+    < 20). The 2D Poisson-likelihood fit (later) covers sparser cases.
+  - A changed input clears the results computed from it (`INPUT_RESULTS`,
+    `__setattr__`); `compute_isochrone` uses the match filter of the search.
+  - DR1 stream 2 after these fixes: excess 254 ± 43 stars in the match filter
+    (287 ± 43 before), off bands 5.11 and 5.79 deg².
 
 ## 4. New functions, by module
 
@@ -411,7 +428,7 @@ first, then the class (C7).
 
 ```python
 DEFAULT_ON_N_SIGMA = 1.4          # user choice
-DEFAULT_OFF_N_SIGMA = (2.5, 4.5)  # user choice
+DEFAULT_OFF_N_SIGMA = (3.5, 6)  # user choice (2.5, 4.5 until 2026-11-13)
 DEFAULT_SIGMA_GUESS_DEG = 0.2
 DEFAULT_PHI2_BIN_DEG = 0.05
 DEFAULT_PHI1_BIN_DEG = 0.5

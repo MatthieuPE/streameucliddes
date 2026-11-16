@@ -15,8 +15,10 @@ import pytest
 from streameucliddes.catalogs import survey_footprint
 from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
+    star_count_nside,
     survey_footprint_healpix_mask,
     survey_footprint_phi12_mask,
+    trim_footprint_edge,
     unmasked_area_deg2,
 )
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
@@ -308,3 +310,34 @@ def test_unmasked_area_half_masked(icrs_frame):
     cells = unmasked_area_deg2(icrs_frame, np.linspace(5.0, 15.0, 11), np.linspace(-5.0, 5.0, 6), mask)
     assert cells.sum() == pytest.approx(masked, rel=1e-3)
     assert cells[:5].sum() < 0.05 * cells.sum()  # phi1 = ra < 10: masked
+
+
+# A disc: the pixels left are those whose 8 neighbours are all in the disc, the pixels removed each have one
+# outside; nothing removed without an edge (whole sky); both orderings; the input is not changed
+@pytest.mark.parametrize("nest", [False, True])
+def test_trim_footprint_edge(nest):
+    nside = 64
+    disc = hp.query_disc(nside, hp.ang2vec(40.0, -30.0, lonlat=True), np.radians(5.0), nest=nest)
+    mask = np.ones(hp.nside2npix(nside), dtype=bool)
+    mask[disc] = False
+    before = mask.copy()
+    trimmed = trim_footprint_edge(mask, nest=nest)
+    np.testing.assert_array_equal(mask, before)
+    assert np.all(trimmed[mask])  # nothing added
+    kept, removed = np.flatnonzero(~trimmed), np.flatnonzero(trimmed & ~mask)
+    assert removed.size > 0 and kept.size > 0
+    assert not mask[hp.get_all_neighbours(nside, kept, nest=nest)].any()
+    assert mask[hp.get_all_neighbours(nside, removed, nest=nest)].any(axis=0).all()
+    assert not trim_footprint_edge(np.zeros(hp.nside2npix(nside), dtype=bool), nest=nest).any()
+
+
+# Dense stars: max_nside kept; sparse: halved until the pixels with stars hold min_mean_count on average
+def test_star_count_nside(rng):
+    ra, dec = _uniform_on_sphere(rng, 200_000, (30.0, 50.0), (-40.0, -20.0))  # ~ 500 stars/deg²
+    assert star_count_nside(ra, dec, 64, min_mean_count=10) == 64  # 64: 0.84 deg² pixels
+    nside = star_count_nside(ra, dec, 1024, min_mean_count=10)
+    assert nside < 1024
+    for value, expected in ((nside, True), (2 * nside, False)):
+        n_pixels = np.count_nonzero(~survey_footprint_healpix_mask(ra, dec, value, nest=False))
+        assert (ra.size / n_pixels >= 10) == expected
+

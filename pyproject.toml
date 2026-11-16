@@ -66,6 +66,7 @@ markers = [
     "plot_cmd: plotting/plot_cmd.py (colour-magnitude diagrams and match filters)",
     "plot_generic_search: plotting/plot_generic_search.py (generic search figures)",
     "plot_sky_density: plotting/plot_sky_density.py (star density maps on the sky)",
+    "euclid_images: images/euclid_images.py (Euclid MER cutouts and eummy colour images)",
     "run_config: workflows/run_config.py (YAML run configurations)",
     "run_known_stream_search: workflows/run_known_stream_search.py (known-stream search runs)",
     "run_generic_search: workflows/run_generic_search.py (generic search runs and maps files)",
