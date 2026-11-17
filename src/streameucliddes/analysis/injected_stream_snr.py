@@ -123,7 +123,9 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
     stars_background = _get_background(gc_frame, reload_data=reload_data)
 
     distance_modulus = stream_config["distance_modulus"]["center"]["value"]
-    isochrone = {"age": stream_config["isochrone"]["age"], "metallicity": stream_config["isochrone"]["z"]}
+    # the match filter of the isochrone model of the injected stream
+    isochrone = {"age": stream_config["isochrone"]["age"], "metallicity": stream_config["isochrone"]["z"],
+                 "isochrone_model": stream_config["isochrone"]["name"]}
     phi2_max = PHI2_WIDTH_FACTOR * stream_config["stream_width"]
 
     snr_results = {}

@@ -28,7 +28,11 @@ from streameucliddes.analysis.cmd_match_filter import (
     on_off_hess,
     select_stars_in_match_filter,
 )
-from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.catalogs.isochrone_parameters import (
+    DEFAULT_ISOCHRONE_MODEL,
+    default_isochrone_grid,
+    get_isochrone_model,
+)
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
 from streameucliddes.plotting.plot_style import COLORBAR_LABEL_SIZE, CATEGORICAL_COLORS, format_distance_modulus
 from streameucliddes.unit_conversions import convert_DM_to_kpc
@@ -237,7 +241,8 @@ def plot_match_filter(
 
     if title is None:
         title = (f"dm {format_distance_modulus(distance_modulus)} ({convert_DM_to_kpc(distance_modulus).value:.1f} kpc), "
-                 f"{isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}")
+                 f"{_isochrone_model_prefix(get_isochrone_model(isochrone))}{isochrone['age']:g} Gyr, "
+                 f"Z = {isochrone['metallicity']:.2g}")
         if stars is not None:
             n_selected = select_stars_in_match_filter(stars, distance_modulus, isochrone, match_filter).sum()
             title += f"\n{n_selected} stars in the filter"
@@ -278,7 +283,13 @@ def draw_match_filter(
     """Polygon of a match filter (``plot_match_filter_polygon``) and its isochrone track (``plot_isochrone``)."""
     plot_match_filter_polygon(ax, distance_modulus, isochrone, match_filter, color_index=color_index)
     plot_isochrone(ax, isochrone_cmd_track(distance_modulus, isochrone["age"], metallicity=isochrone["metallicity"],
-                                           match_filter=match_filter, color_index=color_index))
+                                           match_filter=match_filter, color_index=color_index,
+                                           isochrone_model=get_isochrone_model(isochrone)))
+
+
+def _isochrone_model_prefix(isochrone_model: str | None) -> str:
+    """The isochrone model for a label, only when not the default one: "Dotter2016, "."""
+    return "" if isochrone_model in (None, DEFAULT_ISOCHRONE_MODEL) else f"{isochrone_model}, "
 
 
 def _cmd_pairs(
@@ -644,14 +655,16 @@ def plot_isochrone(
     lw : float, optional
         Line width.
     label : str, optional
-        Default: age, Z ([Fe/H] when given) and distance modulus.
+        Default: the model (when not the default one), age, Z ([Fe/H] when
+        given) and distance modulus.
 
     Returns
     -------
     line : matplotlib.lines.Line2D
     """
     if label is None:
-        label = f"{isochrone_track['age']:g} Gyr, Z = {isochrone_track['metallicity']:.2g}"
+        label = (f"{_isochrone_model_prefix(isochrone_track.get('isochrone_model'))}{isochrone_track['age']:g} Gyr, "
+                 f"Z = {isochrone_track['metallicity']:.2g}")
         if isochrone_track.get("feh") is not None:
             label += f" ([Fe/H] = {isochrone_track['feh']:+.2f})"
         label += f", dm {format_distance_modulus(isochrone_track['distance_modulus'])}"

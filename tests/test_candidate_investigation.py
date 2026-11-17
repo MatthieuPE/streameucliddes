@@ -23,7 +23,7 @@ from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
 from streameucliddes.catalogs.stream_candidates import add_candidate
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
-from streameucliddes.catalogs.isochrone_parameters import DEFAULT_METALLICITIES
+from streameucliddes.catalogs.isochrone_parameters import DEFAULT_METALLICITIES, isochrone_from_feh
 from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
     star_count_nside,
@@ -685,3 +685,13 @@ def test_from_candidate_id(tmp_path, candidate_endpoints):
     assert not (tmp_path / "figures").exists()  # not created
     with pytest.raises(ValueError, match="No candidate with id 5"):
         CandidateInvestigation.from_candidate_id(5, path=path)
+
+
+# The isochrone model: in the isochrone and the track; changing it clears the maps
+def test_isochrone_model(candidate_endpoints):
+    cand = CandidateInvestigation("test", *candidate_endpoints, feh=-1.5, isochrone_model="Dotter2016")
+    assert cand.isochrone == isochrone_from_feh(feh=-1.5, isochrone_model="Dotter2016")
+    assert cand.compute_isochrone(distance_modulus=17.0).isochrone_track["isochrone_model"] == "Dotter2016"
+    cand.sky_map = {"stub": True}
+    cand.isochrone_model = None
+    assert cand.sky_map is None and "isochrone_model" not in cand.isochrone

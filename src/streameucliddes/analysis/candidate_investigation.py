@@ -133,7 +133,8 @@ REGION_RESULTS = ("regions", "areas", "phi1_profile", "on_hess", "off_hess", "di
 # own distance modulus; prepare_search keeps the isochrone only as a default the candidate never uses)
 INPUT_RESULTS = {
     "distance_modulus": DISTANCE_MODULUS_RESULTS,
-    **dict.fromkeys(("age", "metallicity", "feh"), ("sky_map", "zoom_map", "maps", *DISTANCE_MODULUS_RESULTS)),
+    **dict.fromkeys(("age", "metallicity", "feh", "isochrone_model"),
+                    ("sky_map", "zoom_map", "maps", *DISTANCE_MODULUS_RESULTS)),
     "match_filter": ("sky_map", *FRAME_RESULTS, "isochrone_track"),
     "prepare_kwargs": FRAME_RESULTS,
     **dict.fromkeys(("on_n_sigma", "off_n_sigma"), REGION_RESULTS),
@@ -503,12 +504,16 @@ class CandidateInvestigation:
     age : float, optional
         Isochrone age (Gyr).
     metallicity : float, optional
-        Isochrone Z (Marigo et al. 2017 scale). At most one of
-        ``metallicity`` and ``feh``; neither: Z =
+        Isochrone Z (on the scale of ``isochrone_model``). At most one of
+        ``metallicity`` and ``feh``; neither: the Z of
         ``DEFAULT_METALLICITIES[0]`` of ``catalogs.isochrone_parameters``.
     feh : float, optional
-        Isochrone [Fe/H], converted to Z (``unit_conversions.convert_FeH_to_z``)
-        each time the isochrone is used (``isochrone``).
+        Isochrone [Fe/H], converted to Z on the scale of ``isochrone_model``
+        (``catalogs.isochrone_parameters.feh_to_z``) each time the isochrone
+        is used (``isochrone``).
+    isochrone_model : str, optional
+        ugali isochrone model of the match filter and of the isochrone track,
+        e.g. ``"Dotter2016"``. None: ``DEFAULT_ISOCHRONE_MODEL`` (Marigo2017).
     distance_modulus : float, optional
         Distance modulus of the stream, chosen by eye after the scan
         (``scan_distance_moduli``). Needed from ``fit_width`` on.
@@ -580,6 +585,7 @@ class CandidateInvestigation:
     age: float = DEFAULT_AGES_GYR[0]
     metallicity: float | None = None
     feh: float | None = None
+    isochrone_model: str | None = None
     distance_modulus: float | None = None
     distance_moduli: Sequence[float] | None = None
     match_filter: dict | None = None
@@ -686,19 +692,21 @@ class CandidateInvestigation:
 
     @property
     def isochrone(self) -> dict[str, float]:
-        """``{"age", "metallicity"}`` of the match filter and of the isochrone track.
+        """``{"age", "metallicity"}`` (and ``"isochrone_model"``) of the match filter and of the isochrone track.
 
-        Z from ``feh`` when given (``unit_conversions.convert_FeH_to_z``),
-        else ``metallicity``, else ``DEFAULT_METALLICITIES[0]``
+        Z from ``feh`` when given (on the scale of ``isochrone_model``), else
+        ``metallicity``, else ``DEFAULT_METALLICITIES[0]``
         (``catalogs.isochrone_parameters.isochrone_from_feh``). Computed each
-        time: changing ``age``, ``metallicity`` or ``feh`` changes it.
+        time: changing ``age``, ``metallicity``, ``feh`` or
+        ``isochrone_model`` changes it.
 
         Raises
         ------
         ValueError
             Both ``metallicity`` and ``feh`` set.
         """
-        return isochrone_from_feh(self.age, feh=self.feh, metallicity=self.metallicity)
+        return isochrone_from_feh(self.age, feh=self.feh, metallicity=self.metallicity,
+                                  isochrone_model=self.isochrone_model)
 
     def _set_frame_and_window(self) -> None:
         """Frame from the endpoints, window around them, (ra, dec) box of the window."""
@@ -1240,7 +1248,7 @@ class CandidateInvestigation:
         self.isochrone_track = isochrone_cmd_track(
             distance_modulus, self.age if age is None else age, metallicity, feh=feh,
             match_filter=self.match_filter if self.search is None else self.search.match_filter,
-            color_index=color_index,
+            color_index=color_index, isochrone_model=self.isochrone_model,
         )
         return self
 

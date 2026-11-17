@@ -1,9 +1,20 @@
-"""Isochrone parameters of the match filters: age and metallicity.
+"""Isochrone parameters of the match filters: isochrone model, age and metallicity.
 
-An isochrone is given as ``{"age": age_gyr, "metallicity": z}``, the
-arguments of ``analysis.cmd_match_filter.build_match_filter_polygon``. The
-analysis uses the Marigo et al. 2017 isochrones of ugali (PARSEC), so every Z
-here is on their scale, that of ``unit_conversions.convert_FeH_to_z``.
+An isochrone is given as ``{"age": age_gyr, "metallicity": z}``, with an
+optional ``"isochrone_model"``: the ugali isochrone model (``"Marigo2017"``, PARSEC;
+``"Dotter2016"``, MIST; ``"Bressan2012"``, ``"Dotter2008"``...), by default
+``DEFAULT_ISOCHRONE_MODEL`` (``get_isochrone_model``). These are the arguments of
+``analysis.cmd_match_filter.build_match_filter_polygon``. Z is on the scale of
+the model: each model has its own relation between [Fe/H] and Z (ugali's
+``feh2z`` and ``z2feh``: ``feh_to_z``, ``z_to_feh``); [Fe/H] = -2 is Z =
+1.55e-4 for Marigo2017 (``unit_conversions.convert_FeH_to_z``), 1.49e-4 for
+Dotter2016. The Z of this module (defaults, population table) are on the
+Marigo et al. 2017 scale; for another model they are converted with the
+same [Fe/H] (``convert_metallicity``): the same population.
+
+ugali takes the isochrone of its grid nearest to the age and Z asked: check
+that the grid of the model covers them, for the survey of each band
+(``analysis.cmd_match_filter`` warns when it does not).
 
 The ages and metallicities of the known streams are curated by hand from the
 literature in ``stream_populations.csv``, next to this module, each with its
@@ -34,11 +45,13 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
-
-from streameucliddes.unit_conversions import convert_FeH_to_z
+import ugali.isochrone
 
 if TYPE_CHECKING:
-    from collections.abc import Mapping, Sequence
+    from collections.abc import Iterable, Mapping, Sequence
+    from typing import Any
+
+    from numpy.typing import ArrayLike, NDArray
 
 POPULATION_TABLE_PATH = Path(__file__).with_name("stream_populations.csv")
 INDEX_COLUMN = "galstreams_name"
@@ -49,13 +62,99 @@ TEXT_COLUMNS = ["age_reference", "feh_reference", "z_reference", "notes"]  # str
 
 # Shipp et al. 2018, Sect. 3: matched filter of the DES search, 13 Gyr and Z = 0.0002 ([Fe/H] = -1.9)
 DEFAULT_AGES_GYR = (13.0,)
-DEFAULT_METALLICITIES = (0.0002,)
+DEFAULT_METALLICITIES = (0.0002,)  # on the scale of DEFAULT_ISOCHRONE_MODEL
+# ugali isochrone model of the match filters (default of streamobs.match_filter.build_match_filter): Marigo et al.
+# 2017 (PARSEC). The Z of this module are on its scale
+DEFAULT_ISOCHRONE_MODEL = "Marigo2017"
+
+
+# ===================================================
+# Isochrone models and metallicity scales
+# ===================================================
+
+
+def get_isochrone_model(isochrone: Mapping[str, Any] | None) -> str:
+    """Model of an isochrone: its ``"isochrone_model"``, else ``DEFAULT_ISOCHRONE_MODEL``."""
+    isochrone_model = None if isochrone is None else isochrone.get("isochrone_model")
+    return DEFAULT_ISOCHRONE_MODEL if isochrone_model is None else str(isochrone_model)
+
+
+def _isochrone_model_class(isochrone_model: str | None) -> type:
+    """ugali isochrone class of a model name (None: DEFAULT_ISOCHRONE_MODEL)."""
+    isochrone_model = DEFAULT_ISOCHRONE_MODEL if isochrone_model is None else isochrone_model
+    model_class = getattr(ugali.isochrone, isochrone_model, None)
+    if not isinstance(model_class, type) or not hasattr(model_class, "feh2z"):
+        classes = {name: getattr(ugali.isochrone, name) for name in dir(ugali.isochrone)}
+        known = [name for name, value in classes.items() if isinstance(value, type) and hasattr(value, "feh2z")]
+        raise ValueError(f"Unknown ugali isochrone model {isochrone_model!r}: one of {known}.")
+    return model_class
+
+
+def feh_to_z(feh: ArrayLike, isochrone_model: str | None = None) -> NDArray[np.float64] | float:
+    """Z of an [Fe/H] on the scale of an isochrone model (ugali ``feh2z`` of the model).
+
+    Parameters
+    ----------
+    feh : float or array_like
+        [Fe/H].
+    isochrone_model : str, optional
+        ugali isochrone model. Default: ``DEFAULT_ISOCHRONE_MODEL``.
+
+    Raises
+    ------
+    ValueError
+        Unknown model.
+    """
+    z = _isochrone_model_class(isochrone_model).feh2z(np.asarray(feh, dtype=float))
+    return z if np.ndim(feh) else float(z)
+
+
+def z_to_feh(z: ArrayLike, isochrone_model: str | None = None) -> NDArray[np.float64] | float:
+    """[Fe/H] of a Z on the scale of an isochrone model (ugali ``z2feh`` of the model); see ``feh_to_z``."""
+    feh = _isochrone_model_class(isochrone_model).z2feh(np.asarray(z, dtype=float))
+    return feh if np.ndim(z) else float(feh)
+
+
+def convert_metallicity(
+    z: ArrayLike, from_isochrone_model: str | None, to_isochrone_model: str | None
+) -> NDArray[np.float64] | float:
+    """Z of the same [Fe/H] on the scale of another isochrone model.
+
+    ``feh_to_z(z_to_feh(z, from_isochrone_model), to_isochrone_model)``; None: ``DEFAULT_ISOCHRONE_MODEL``.
+
+    E.g. Z = 0.0002 for Marigo2017 ([Fe/H] = -1.89) is Z = 0.000192 for Dotter2016.
+    """
+    if (from_isochrone_model or DEFAULT_ISOCHRONE_MODEL) == (to_isochrone_model or DEFAULT_ISOCHRONE_MODEL):
+        return z if np.ndim(z) else float(z)
+    return feh_to_z(z_to_feh(z, from_isochrone_model), to_isochrone_model)
+
+
+def _with_isochrone_model(isochrone: dict[str, Any], isochrone_model: str | None) -> dict[str, Any]:
+    """The isochrone with its ``"isochrone_model"`` when one is given (none: the default, no key)."""
+    return isochrone if isochrone_model is None else {**isochrone, "isochrone_model": isochrone_model}
+
+
+def with_isochrone_model(isochrones: Iterable[Mapping[str, Any]], isochrone_model: str | None) -> list[dict[str, Any]]:
+    """Copies of isochrones, ``isochrone_model`` set on those without their own (their Z read on its scale).
+
+    Used by the searches for the isochrones given (``isochrone``,
+    ``default_grid``) with an ``isochrone_model``. None: unchanged copies.
+    """
+    return [dict(isochrone) if "isochrone_model" in isochrone
+            else _with_isochrone_model(dict(isochrone), isochrone_model) for isochrone in isochrones]
+
+
+# ===================================================
+# Isochrones
+# ===================================================
 
 
 def default_isochrone_grid(
     ages_gyr: Sequence[float] | None = None,
     metallicities: Sequence[float] | None = None,
-) -> list[dict[str, float]]:
+    *,
+    isochrone_model: str | None = None,
+) -> list[dict[str, Any]]:
     """Default grid of old, metal-poor isochrones.
 
     For the streams whose age or [Fe/H] is unknown, and for the generic
@@ -66,37 +165,49 @@ def default_isochrone_grid(
     ages_gyr : sequence of float, optional
         Ages (Gyr). Default: ``DEFAULT_AGES_GYR``, 13 Gyr.
     metallicities : sequence of float, optional
-        Metallicities, as mass fractions Z (Marigo et al. 2017 scale).
-        Default: ``DEFAULT_METALLICITIES``, Z = 0.0002.
+        Metallicities, as mass fractions Z on the scale of ``isochrone_model``.
+        Default: ``DEFAULT_METALLICITIES``, Z = 0.0002 for Marigo2017, the
+        same [Fe/H] (-1.89) for another model (``convert_metallicity``).
+    isochrone_model : str, optional
+        ugali isochrone model, added as ``"isochrone_model"``. None: the default
+        (``DEFAULT_ISOCHRONE_MODEL``), no ``"isochrone_model"`` key.
 
     Returns
     -------
     isochrones : list of dict
-        ``{"age": age (Gyr), "metallicity": Z}``, one per isochrone, every
-        metallicity for the first age, then for the next one.
+        ``{"age": age (Gyr), "metallicity": Z}`` (and ``"isochrone_model"``), one per
+        isochrone, every metallicity for the first age, then for the next one.
 
     Notes
     -----
     The default is the single isochrone of the DES search of Shipp et al.
-    2018, Sect. 3. The local ugali Marigo et al. 2017 grid covers 1 to
-    13.5 Gyr and Z = 0.0001 to 0.001; outside it, ugali uses the nearest
-    isochrone.
+    2018, Sect. 3. The local ugali Marigo et al. 2017 grids (DES, Euclid)
+    cover 1 to 13.5 Gyr and Z = 0.0001 to 0.001; the Dotter et al. 2016
+    Euclid grid 1 to 13.5 Gyr and Z = 0.00001 to 0.001, its DES grid only 10
+    and 12 Gyr, Z = 0.0001 and 0.0002 (2026-11-17). Outside a grid, ugali
+    uses the nearest isochrone.
 
     References
     ----------
     Shipp et al. 2018, ApJ 862, 114. Marigo et al. 2017, ApJ 835, 77.
     """
     ages_gyr = DEFAULT_AGES_GYR if ages_gyr is None else ages_gyr
-    metallicities = DEFAULT_METALLICITIES if metallicities is None else metallicities
+    if metallicities is None:
+        metallicities = [convert_metallicity(z, DEFAULT_ISOCHRONE_MODEL, isochrone_model)
+                         for z in DEFAULT_METALLICITIES]
     return [
-        {"age": float(age), "metallicity": float(z)}
+        _with_isochrone_model({"age": float(age), "metallicity": float(z)}, isochrone_model)
         for age, z in itertools.product(ages_gyr, metallicities)
     ]
 
 
 def isochrone_from_feh(
-    age: float | None = None, *, feh: float | None = None, metallicity: float | None = None
-) -> dict[str, float]:
+    age: float | None = None,
+    *,
+    feh: float | None = None,
+    metallicity: float | None = None,
+    isochrone_model: str | None = None,
+) -> dict[str, Any]:
     """One isochrone ``{"age", "metallicity"}``, from [Fe/H] or Z, the defaults for what is unknown.
 
     Parameters
@@ -104,16 +215,19 @@ def isochrone_from_feh(
     age : float, optional
         Age (Gyr). None or NaN: ``DEFAULT_AGES_GYR[0]``.
     feh : float, optional
-        [Fe/H], converted to Z (``unit_conversions.convert_FeH_to_z``,
-        Marigo et al. 2017 scale). None or NaN: unknown.
+        [Fe/H], converted to Z on the scale of ``isochrone_model`` (``feh_to_z``). None
+        or NaN: unknown.
     metallicity : float, optional
-        Z, when [Fe/H] is not given. None or NaN, and no [Fe/H]:
-        ``DEFAULT_METALLICITIES[0]``.
+        Z on the scale of ``isochrone_model``, when [Fe/H] is not given. None or NaN,
+        and no [Fe/H]: ``DEFAULT_METALLICITIES[0]``, converted to ``isochrone_model``.
+    isochrone_model : str, optional
+        ugali isochrone model, e.g. ``"Dotter2016"``, added as ``"isochrone_model"``.
+        None: the default (``DEFAULT_ISOCHRONE_MODEL``), no ``"isochrone_model"`` key.
 
     Returns
     -------
     isochrone : dict
-        ``{"age": age (Gyr), "metallicity": Z}``.
+        ``{"age": age (Gyr), "metallicity": Z}`` (and ``"isochrone_model"``).
 
     Raises
     ------
@@ -124,17 +238,22 @@ def isochrone_from_feh(
     if known[1] and known[2]:
         raise ValueError("Give metallicity (Z) or feh, not both.")
     if known[1]:
-        z = float(convert_FeH_to_z(feh))
+        z = feh_to_z(feh, isochrone_model)
+    elif known[2]:
+        z = float(metallicity)
     else:
-        z = float(metallicity) if known[2] else float(DEFAULT_METALLICITIES[0])
-    return {"age": float(age) if known[0] else float(DEFAULT_AGES_GYR[0]), "metallicity": z}
+        z = convert_metallicity(DEFAULT_METALLICITIES[0], DEFAULT_ISOCHRONE_MODEL, isochrone_model)
+    age = float(age) if known[0] else float(DEFAULT_AGES_GYR[0])
+    return _with_isochrone_model({"age": age, "metallicity": float(z)}, isochrone_model)
 
 
 def known_stream_isochrone_parameters(
     stream_name: str,
     population_table: pd.DataFrame | None = None,
     default_grid: Sequence[Mapping[str, float]] | None = None,
-) -> list[dict[str, float]]:
+    *,
+    isochrone_model: str | None = None,
+) -> list[dict[str, Any]]:
     """Isochrones of a known stream: its own age and [Fe/H] when known.
 
     The age and the metallicity Z come from the population table
@@ -154,13 +273,17 @@ def known_stream_isochrone_parameters(
         ``load_stream_population_table()``; pass it to read the file only once
         for several streams.
     default_grid : sequence of mapping, optional
-        Default: ``default_isochrone_grid()``.
+        Default: ``default_isochrone_grid(isochrone_model=isochrone_model)``.
+    isochrone_model : str, optional
+        ugali isochrone model: the Z of the table (Marigo et al. 2017 scale)
+        converted to it with the same [Fe/H] (``convert_metallicity``), and
+        added as ``"isochrone_model"``. None: the default (``DEFAULT_ISOCHRONE_MODEL``).
 
     Returns
     -------
     isochrones : list of dict
-        ``{"age": age (Gyr), "metallicity": Z}``. One entry when both the age
-        and Z are known.
+        ``{"age": age (Gyr), "metallicity": Z}`` (and ``"isochrone_model"``). One entry
+        when both the age and Z are known.
 
     References
     ----------
@@ -169,17 +292,19 @@ def known_stream_isochrone_parameters(
     arXiv:2405.19410.
     """
     population_table = load_stream_population_table() if population_table is None else population_table
-    default_grid = default_isochrone_grid() if default_grid is None else default_grid
+    default_grid = default_isochrone_grid(isochrone_model=isochrone_model) if default_grid is None else default_grid
     if stream_name in population_table.index:
         age, z = population_table.loc[stream_name, ["age_gyr", "z"]]
     else:
         age, z = np.nan, np.nan
+    if not np.isnan(z):
+        z = convert_metallicity(z, DEFAULT_ISOCHRONE_MODEL, isochrone_model)
     isochrones = []
     for default in default_grid:
-        isochrone = {
+        isochrone = _with_isochrone_model({
             "age": float(default["age"] if np.isnan(age) else age),
             "metallicity": float(default["metallicity"] if np.isnan(z) else z),
-        }
+        }, isochrone_model)
         if isochrone not in isochrones:  # a known value is shared by the whole grid
             isochrones.append(isochrone)
     return isochrones

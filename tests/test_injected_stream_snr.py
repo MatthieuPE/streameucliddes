@@ -297,3 +297,17 @@ def test_scan_snr_grid():
     for name, snr in snr_results.items():
         assert results[name]["snr"][i, j] == snr
 
+
+# The match filter of the isochrone model of the injected stream
+def test_match_filter_of_the_injected_model(mock_background, monkeypatch):
+    isochrones = []
+
+    def count(catalog, cuts, distance_modulus, isochrone, match_filter):
+        isochrones.append(isochrone)
+        return 1
+
+    monkeypatch.setattr(injected_stream_snr, "_count_selected", count)
+    injected_stream_snr.get_stream_snr(seed=SEED, isochrone={"name": "Dotter2016", "age": 12.0, "z": 0.0002},
+                                       match_filter_list=MATCH_FILTER_LIST[:1])
+    assert isochrones and all(isochrone == {"age": 12.0, "metallicity": 0.0002, "isochrone_model": "Dotter2016"}
+                              for isochrone in isochrones)

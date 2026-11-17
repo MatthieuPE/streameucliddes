@@ -1,9 +1,12 @@
+import warnings
+
 import numpy as np
 import pandas as pd
 import pytest
 from streamobs.match_filter import build_match_filter, is_in_match_filter
 
 from streameucliddes.analysis import cmd_match_filter
+from streameucliddes.catalogs.isochrone_parameters import DEFAULT_ISOCHRONE_MODEL, feh_to_z
 from streameucliddes.analysis.cmd_match_filter import (
     difference_hess,
     hess_diagram,
@@ -147,7 +150,7 @@ def test_select_stars_defaults(stars):
         {"age": 8.0, "metallicity": 0.0006},  # younger
         {"age": 13.5, "metallicity": 0.0006},  # older
         {"age": 12.0, "metallicity": 0.0001},  # more metal-poor
-        {"age": 12.0, "metallicity": 0.002},  # more metal-rich
+        {"age": 12.0, "metallicity": 0.001},  # more metal-rich (the top of the Marigo et al. 2017 grid)
     ],
 )
 def test_select_stars_isochrone_changes(stars, isochrone):
@@ -349,3 +352,47 @@ def test_on_off_hess(stars, rng):
     np.testing.assert_array_equal(off_hess["density"], expected["density"])
     with pytest.raises(ValueError, match="One or two"):
         on_off_hess(stars, mag_cols, on, 1.0, [below, above, on], [1.0, 1.0, 1.0])
+
+
+# ===================================================
+# Test the isochrone model
+# ===================================================
+
+DOTTER = {"age": 13.0, "metallicity": 0.0002, "isochrone_model": "Dotter2016"}
+
+
+# The "isochrone_model" of the isochrone reaches streamobs: the polygon of build_match_filter with that isochrone_model,
+# another than the default one, cached apart
+def test_match_filter_polygons_model():
+    polygon, = match_filter_polygons(17.0, DOTTER)
+    expected = build_match_filter(distance_modulus=17.0, age=13.0, metallicity=0.0002, band_1="VIS", band_2="H",
+                                  survey_1="euclid", survey_2="euclid", isochrone_model="Dotter2016")
+    np.testing.assert_array_equal(polygon, expected)
+    default, = match_filter_polygons(17.0, {"age": 13.0, "metallicity": 0.0002})
+    assert not np.array_equal(polygon, default)
+    explicit, = match_filter_polygons(17.0, {"age": 13.0, "metallicity": 0.0002, "isochrone_model": "Marigo2017"})
+    assert explicit is default  # the default model, the same cached polygon
+
+
+# The track of the model, with [Fe/H] on its scale; the model in the track
+def test_isochrone_cmd_track_model():
+    track = isochrone_cmd_track(17.0, 13.0, feh=-1.9, isochrone_model="Dotter2016")
+    assert track["isochrone_model"] == "Dotter2016"
+    assert track["metallicity"] == pytest.approx(feh_to_z(-1.9, "Dotter2016"))
+    default = isochrone_cmd_track(17.0, 13.0, feh=-1.9)
+    assert default["isochrone_model"] == DEFAULT_ISOCHRONE_MODEL
+    assert not np.array_equal(track["color"], default["color"])
+
+
+# A warning when the grid of the model has no isochrone near the one asked (the DES Dotter2016 grid: 10 and 12 Gyr,
+# Z 1e-4 and 2e-4; Z below 1e-4 for Marigo2017); none inside a full grid
+def test_isochrone_grid_warning():
+    cmd_match_filter._check_isochrone_grid.cache_clear()
+    with pytest.warns(UserWarning, match="No Dotter2016 isochrone near 13 Gyr, Z = 0.0006 for des"):
+        match_filter_polygons(17.0, {"age": 13.0, "metallicity": 0.0006, "isochrone_model": "Dotter2016"}, DES_GR)
+    with pytest.warns(UserWarning, match="Z = 3.5e-05 for euclid: ugali uses the nearest of its grid, 13 Gyr, Z = "):
+        isochrone_cmd_track(17.0, 13.0, metallicity=3.5e-5)
+    with warnings.catch_warnings():
+        warnings.simplefilter("error")
+        match_filter_polygons(17.0, DOTTER)  # the Euclid Dotter2016 grid: full
+        isochrone_cmd_track(17.0, 12.5, metallicity=0.0004)

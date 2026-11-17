@@ -599,3 +599,18 @@ def test_dm_along_track_errors(stream_catalog, gc_frame, mock_mws):
     with pytest.raises(ValueError, match="no distance"):
         next(stream_frame_search_dm_along_track(stream_catalog, stream_name="NoDistance", mws=mock_mws,
                                                 add_ibata2024=True))
+
+
+# isochrone_model: the default grid and the stream's isochrones of that model; given ones without a model get it
+def test_prepare_search_isochrone_model(stream_catalog, gc_frame, mock_mws):
+    search = prepare_search(stream_catalog, gc_frame, WINDOW, bin_size_deg=BIN, isochrone_model="Dotter2016")
+    assert search.isochrones == default_isochrone_grid(isochrone_model="Dotter2016")
+    table = _population_table(age_gyr=12.0)
+    search = prepare_search(stream_catalog, stream_name="Mock", mws=mock_mws, population_table=table, bin_size_deg=BIN,
+                            isochrone_model="Dotter2016")
+    assert search.isochrones == isochrone_parameters.known_stream_isochrone_parameters("Mock", table,
+                                                                                       isochrone_model="Dotter2016")
+    given = [{"age": 11.0, "metallicity": 0.0002}, {"age": 13.0, "metallicity": 0.0004, "isochrone_model": "Marigo2017"}]
+    search = prepare_search(stream_catalog, gc_frame, WINDOW, default_grid=given, bin_size_deg=BIN,
+                            isochrone_model="Dotter2016")
+    assert search.isochrones == [{**given[0], "isochrone_model": "Dotter2016"}, given[1]]

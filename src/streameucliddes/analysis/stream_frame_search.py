@@ -54,6 +54,7 @@ from streameucliddes.catalogs.galstreams_catalog import (
 )
 from streameucliddes.catalogs.isochrone_parameters import (
     default_isochrone_grid,
+    with_isochrone_model,
     known_stream_isochrone_parameters,
 )
 from streameucliddes.catalogs.survey_footprint import survey_footprint_phi12_mask
@@ -165,6 +166,7 @@ def prepare_search(
     mws: galstreams.MWStreams | None = None,
     population_table: pd.DataFrame | None = None,
     default_grid: Iterable[Mapping[str, float]] | None = None,
+    isochrone_model: str | None = None,
     bin_size_deg: float = DEFAULT_BIN_SIZE_DEG,
     footprint_mask: NDArray[np.bool_] | None = None,
     nest: bool | None = None,
@@ -250,6 +252,12 @@ def prepare_search(
         those of a stream without a literature value, or all of them for a
         search without a stream. Default:
         ``catalogs.isochrone_parameters.default_isochrone_grid()``.
+    isochrone_model : str, optional
+        ugali isochrone model of the isochrones, e.g. ``"Dotter2016"``: those
+        of the stream and of the default grid (their Z converted to it,
+        ``catalogs.isochrone_parameters.convert_metallicity``), and those
+        given (``isochrone``, ``default_grid``) without their own ``"isochrone_model"``.
+        None: ``DEFAULT_ISOCHRONE_MODEL`` (Marigo2017).
     bin_size_deg : float, optional
         Bin size of the grid (deg).
     footprint_mask : numpy.ndarray of bool, optional
@@ -318,14 +326,17 @@ def prepare_search(
     if distance_moduli is None:
         distance_moduli = _distance_moduli_grid(dm_min, dm_max)
 
+    if default_grid is not None:
+        default_grid = with_isochrone_model(default_grid, isochrone_model)
     if isochrone is not None:
-        isochrones = [dict(isochrone)]
+        isochrones = with_isochrone_model([isochrone], isochrone_model)
     elif track is not None or stream_name is not None:
         isochrones = known_stream_isochrone_parameters(
-            track.stream_name if track is not None else stream_name, population_table, default_grid
+            track.stream_name if track is not None else stream_name, population_table, default_grid,
+            isochrone_model=isochrone_model,
         )
     else:
-        isochrones = default_isochrone_grid() if default_grid is None else [dict(item) for item in default_grid]
+        isochrones = default_isochrone_grid(isochrone_model=isochrone_model) if default_grid is None else default_grid
     match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
 
     # Masked objects, stars and footprint, once

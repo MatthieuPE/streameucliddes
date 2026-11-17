@@ -407,3 +407,15 @@ def test_cmd_stars(catalog, search):
     assert rows.max() > 0.9 * len(catalog)  # spread over the catalog, not its first rows
     pd.testing.assert_frame_equal(stars, catalog.loc[stars.index, [VIS, H]])
     assert len(generic_search_cmd_stars(search, max_stars=10 * len(catalog))) == search.keep.sum()
+
+
+# isochrone_model: the default grid of that model; given isochrones without a model get it, the others keep theirs
+def test_prepare_isochrone_model(catalog):
+    search = prepare_generic_search(catalog, nside=NSIDE, isochrone_model="Dotter2016")
+    assert search.isochrones == default_isochrone_grid(isochrone_model="Dotter2016")
+    given = {"age": 12.0, "metallicity": 0.0003}
+    assert prepare_generic_search(catalog, nside=NSIDE, isochrone=given, isochrone_model="Dotter2016").isochrones == [
+        {**given, "isochrone_model": "Dotter2016"}]
+    own = {**given, "isochrone_model": "Bressan2012"}
+    assert prepare_generic_search(catalog, nside=NSIDE, default_grid=[own], isochrone_model="Dotter2016").isochrones == [
+        own]

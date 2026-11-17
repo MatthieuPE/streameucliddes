@@ -50,6 +50,8 @@ KNOWN_STREAM_SEARCH_CONFIG = {
     "cuts": None,
     # None: catalogs.isochrone_parameters.default_isochrone_grid(), for the age and Z not known
     "default_grid": None,
+    # ugali isochrone model of the match filters, e.g. "Dotter2016"; None: Marigo2017
+    "isochrone_model": None,
     # None: the track's distance moduli in the footprint +- 1 mag, every 0.1 (prepare_search)
     "distance_moduli": None,
     "bin_size_deg": DEFAULT_BIN_SIZE_DEG,
@@ -81,6 +83,8 @@ GENERIC_SEARCH_CONFIG = {
     "cuts": None,
     # None: catalogs.isochrone_parameters.default_isochrone_grid(): one set of maps per isochrone
     "default_grid": None,
+    # ugali isochrone model of the match filters, e.g. "Dotter2016"; None: Marigo2017
+    "isochrone_model": None,
     # None: 15 to 22 every 0.1 (stream_frame_search.DEFAULT_DISTANCE_MODULI)
     "distance_moduli": None,
     "nside": generic_stream_search.DEFAULT_NSIDE,

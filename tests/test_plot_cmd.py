@@ -352,3 +352,14 @@ def test_plot_on_off_hess_per_color(catalog):
         plot_on_off_hess_per_color(catalog, on, 1.0, [~on], [3.0], DM, ISOCHRONE, VIS_H_J_MATCH_FILTER,
                                    axes=[plt.subplots(1, 4)[1]])
     plt.close("all")
+
+
+# A model other than the default one leads the label; the default one is not named
+def test_plot_isochrone_label_model():
+    fig, ax = plt.subplots()
+    track = {"color": np.array([0.2, 0.4]), "mag": np.array([24.0, 21.0]), "age": 12.0, "metallicity": 0.0003,
+             "feh": None, "distance_modulus": 17.0}
+    label = plot_isochrone(ax, {**track, "isochrone_model": "Dotter2016"}).get_label()
+    assert label == "Dotter2016, 12 Gyr, Z = 0.0003, dm 17.0"
+    assert plot_isochrone(ax, {**track, "isochrone_model": "Marigo2017"}).get_label() == "12 Gyr, Z = 0.0003, dm 17.0"
+    plt.close(fig)
