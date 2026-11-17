@@ -8,7 +8,7 @@ import gala.coordinates as gc
 import logging
 
 from streameucliddes.analysis.catalog_preparation import catalog_match_filter_mask, default_error_cuts
-from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER
+from streameucliddes.analysis.cmd_match_filter import get_match_filter
 from streameucliddes.catalogs.catalog_cuts import cut_flow
 from streameucliddes.catalogs.euclid_catalog import get_euclid_stars
 from streameucliddes.injection import inject
@@ -41,7 +41,7 @@ STREAM_CONFIG = {
     }
 }
 
-DEFAULT_MATCH_FILTERS = [DEFAULT_MATCH_FILTER]
+DEFAULT_MATCH_FILTERS = [get_match_filter()]
 # Default phi2 window: +- 1.4 stream_width, maximizes the SNR of a gaussian signal on
 # a uniform background
 PHI2_WIDTH_FACTOR = 1.4

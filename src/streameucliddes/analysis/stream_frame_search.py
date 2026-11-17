@@ -44,7 +44,7 @@ from streameucliddes.analysis.build_masks import (
     overlapped_objects_healpix_mask,
 )
 from streameucliddes.analysis.catalog_preparation import prepare_match_filter_catalog
-from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, select_stars_in_match_filter
+from streameucliddes.analysis.cmd_match_filter import get_match_filter, select_stars_in_match_filter
 from streameucliddes.analysis.star_density_maps import star_density_phi12
 from streameucliddes.catalogs.galstreams_catalog import (
     galstreams_dm_along_track,
@@ -230,7 +230,7 @@ def prepare_search(
     track : galstreams.Track6D, optional
         The track itself, instead of ``stream_name``.
     match_filter : mapping, optional
-        See ``cmd_match_filter``. Default: ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
+        See ``cmd_match_filter``. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     isochrone : mapping, optional
         The one isochrone of the search, ``{"age": age (Gyr), "metallicity": Z}``.
     distance_moduli : iterable of float, optional
@@ -338,7 +338,7 @@ def prepare_search(
         )
     else:
         isochrones = default_isochrone_grid(isochrone_model=isochrone_model) if default_grid is None else default_grid
-    match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
+    match_filter = dict(get_match_filter(match_filter))
 
     # Masked objects, stars and footprint, once
     any_mask = mask_lmc or mask_smc or mask_dwarfs or mask_gc or mask_galaxies

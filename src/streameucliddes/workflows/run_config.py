@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any
 import numpy as np
 
 from streameucliddes.analysis import build_masks, generic_stream_search
-from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER
+from streameucliddes.analysis.cmd_match_filter import get_match_filter
 from streameucliddes.analysis.stream_frame_search import (
     DEFAULT_BIN_SIZE_DEG,
     DEFAULT_SMOOTHING_DEG,
@@ -45,7 +45,7 @@ if TYPE_CHECKING:
 # Arguments of run_all_known_stream_searches (and of the functions it calls), by default
 KNOWN_STREAM_SEARCH_CONFIG = {
     # Match filter (see analysis.cmd_match_filter): Euclid VIS vs VIS - H
-    "match_filter": copy.deepcopy(DEFAULT_MATCH_FILTER),
+    "match_filter": copy.deepcopy(get_match_filter()),
     # Update the default errors <= 0.2 on the bands of the match filter (catalog_preparation.default_error_cuts)
     "cuts": None,
     # None: catalogs.isochrone_parameters.default_isochrone_grid(), for the age and Z not known
@@ -78,7 +78,7 @@ KNOWN_STREAM_SEARCH_OTHER_ARGUMENTS = ("track_names", *SELECTION_ARGUMENTS)
 # Arguments of run_generic_search (and of the functions it calls), by default
 GENERIC_SEARCH_CONFIG = {
     # Match filter (see analysis.cmd_match_filter): Euclid VIS vs VIS - H
-    "match_filter": copy.deepcopy(DEFAULT_MATCH_FILTER),
+    "match_filter": copy.deepcopy(get_match_filter()),
     # Update the default errors <= 0.2 on the bands of the match filter (catalog_preparation.default_error_cuts)
     "cuts": None,
     # None: catalogs.isochrone_parameters.default_isochrone_grid(): one set of maps per isochrone

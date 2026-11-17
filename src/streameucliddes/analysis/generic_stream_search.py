@@ -42,7 +42,7 @@ from streameucliddes.analysis.catalog_preparation import (
     star_healpix_pixels,
 )
 from streameucliddes.analysis.cmd_match_filter import (
-    DEFAULT_MATCH_FILTER,
+    get_match_filter,
     match_filter_columns,
     select_stars_in_match_filter,
 )
@@ -162,7 +162,7 @@ def prepare_generic_search(
         the match filter, e.g. ``catalogs.euclid_catalog.get_euclid_stars()``.
     match_filter : mapping, optional
         See ``analysis.cmd_match_filter``. Default:
-        ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
+        ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     isochrone : mapping, optional
         The one isochrone of the search, ``{"age": age (Gyr), "metallicity": Z}``.
     default_grid : iterable of mapping, optional
@@ -221,7 +221,7 @@ def prepare_generic_search(
         ``footprint_mask`` without ``nest``, an empty footprint, or a
         footprint all masked by the objects.
     """
-    match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
+    match_filter = dict(get_match_filter(match_filter))
     object_mask = overlapped_objects_healpix_mask(
         nside, nest=False, mask_lmc=mask_lmc, mask_smc=mask_smc, mask_dwarfs=mask_dwarfs, mask_gc=mask_gc,
         mask_galaxies=mask_galaxies, radius_scale=mask_radius_scale,

@@ -26,6 +26,7 @@ from streameucliddes.analysis.generic_stream_search import (
     prepare_generic_search,
 )
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
+from streameucliddes.analysis.cmd_match_filter import get_match_filter
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 
@@ -103,7 +104,7 @@ def test_prepare(catalog, monkeypatch):
     ))
     assert search.catalog is catalog
     assert not search.object_mask.any()  # no object in the (empty) mock LVDB
-    assert search.match_filter == generic_stream_search.DEFAULT_MATCH_FILTER
+    assert search.match_filter == get_match_filter()
     assert search.isochrones == default_isochrone_grid()
     assert search.distance_moduli == list(generic_stream_search.DEFAULT_DISTANCE_MODULI)
     assert min(abs(search.footprint_centre_lon), abs(search.footprint_centre_lon - 360.0)) < 1.0  # ra 0

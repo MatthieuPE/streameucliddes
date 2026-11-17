@@ -6,6 +6,7 @@ import pytest
 from streamobs.match_filter import build_match_filter, is_in_match_filter
 
 from streameucliddes.analysis import cmd_match_filter
+from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid, get_isochrone
 from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL, convert_FeH_to_z
 from streameucliddes.analysis.cmd_match_filter import (
     difference_hess,
@@ -93,7 +94,7 @@ def test_match_filter_polygons():
     np.testing.assert_allclose(polygons[0], _polygon(17.0, ISOCHRONE, "r"))
     np.testing.assert_allclose(polygons[1], _polygon(17.0, ISOCHRONE, "i"))
 
-    default_isochrone = cmd_match_filter.default_isochrone_grid()[0]
+    default_isochrone = get_isochrone()
     default_polygon, = cmd_match_filter.match_filter_polygons(17.0)
     np.testing.assert_allclose(default_polygon, build_match_filter(
         distance_modulus=17.0, age=default_isochrone["age"], metallicity=default_isochrone["metallicity"],
@@ -396,3 +397,11 @@ def test_isochrone_grid_warning():
         warnings.simplefilter("error")
         match_filter_polygons(17.0, DOTTER)  # the Euclid Dotter2016 grid: full
         isochrone_cmd_track(17.0, 12.5, metallicity=0.0004)
+
+
+# The query functions: the one given, else the default (the shared default match filter, a new default isochrone)
+def test_get_match_filter_and_isochrone():
+    assert cmd_match_filter.get_match_filter() is cmd_match_filter.DEFAULT_MATCH_FILTER
+    assert cmd_match_filter.get_match_filter(DES_GR) is DES_GR
+    assert get_isochrone() == default_isochrone_grid()[0]
+    assert get_isochrone(ISOCHRONE) is ISOCHRONE

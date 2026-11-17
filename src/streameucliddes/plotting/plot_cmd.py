@@ -17,8 +17,8 @@ from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_COLOR_RANGE,
     DEFAULT_MAG_BIN,
     DEFAULT_MAG_RANGE,
-    DEFAULT_MATCH_FILTER,
     _band_name,
+    get_match_filter,
     hess_diagram,
     isochrone_cmd_track,
     match_filter_cmd_columns,
@@ -28,7 +28,7 @@ from streameucliddes.analysis.cmd_match_filter import (
     on_off_hess,
     select_stars_in_match_filter,
 )
-from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.catalogs.isochrone_parameters import get_isochrone
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
 from streameucliddes.plotting.plot_style import COLORBAR_LABEL_SIZE, CATEGORICAL_COLORS, format_distance_modulus
 from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL, convert_DM_to_kpc, get_isochrone_model
@@ -151,11 +151,11 @@ def plot_match_filter(
     distance_modulus : float
         Distance modulus of the filter.
     isochrone : mapping, optional
-        ``{"age": age (Gyr), "metallicity": Z}``. Default: the first
-        isochrone of ``catalogs.isochrone_parameters.default_isochrone_grid``.
+        ``{"age": age (Gyr), "metallicity": Z}``. Default:
+        ``catalogs.isochrone_parameters.get_isochrone()``.
     match_filter : mapping, optional
         See ``analysis.cmd_match_filter``. Default:
-        ``analysis.cmd_match_filter.DEFAULT_MATCH_FILTER``.
+        ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     catalog : pandas.DataFrame, optional
         Stars, prepared here
         (``analysis.catalog_preparation.prepare_match_filter_catalog``:
@@ -200,8 +200,8 @@ def plot_match_filter(
         Both ``catalog`` and ``stars``; ``cuts`` or ``prepare_kwargs``
         without ``catalog``; not one axes per colour band.
     """
-    isochrone = default_isochrone_grid()[0] if isochrone is None else isochrone
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    isochrone = get_isochrone(isochrone)
+    match_filter = get_match_filter(match_filter)
     if catalog is not None and stars is not None:
         raise ValueError("give catalog or stars, not both")
     if catalog is not None:
@@ -333,9 +333,9 @@ def plot_on_off_cmd(
     distance_modulus : float, optional
         Of the match filter drawn.
     isochrone : mapping, optional
-        ``{"age", "metallicity"}``. Default: that of ``default_isochrone_grid``.
+        ``{"age", "metallicity"}``. Default: ``get_isochrone()``.
     match_filter : mapping, optional
-        Default: ``DEFAULT_MATCH_FILTER``.
+        Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     mag_cols : sequence of pairs of str, optional
         Instead of the match filter: one panel per (magnitude, other
         magnitude) pair, colour their difference. No polygon then.
@@ -354,7 +354,7 @@ def plot_on_off_cmd(
     fig : matplotlib.figure.Figure
     axes : list of matplotlib.axes.Axes
     """
-    isochrone = default_isochrone_grid()[0] if isochrone is None else isochrone
+    isochrone = get_isochrone(isochrone)
     pairs, draw_filter = _cmd_pairs(match_filter, mag_cols, distance_modulus)
     fig, axes = cmd_panel_axes(axes, len(pairs))
     on = np.asarray(on_mask, dtype=bool)
@@ -437,7 +437,7 @@ def plot_on_off_hess_per_color(
     ValueError
         Not one row of axes per colour.
     """
-    isochrone = default_isochrone_grid()[0] if isochrone is None else isochrone
+    isochrone = get_isochrone(isochrone)
     pairs, draw_filter = _cmd_pairs(match_filter, mag_cols, distance_modulus)
     n_columns = 4 if smoothed_difference else 3
     if axes is None:
@@ -691,7 +691,7 @@ def plot_match_filter_polygon(
     isochrone : mapping, optional
         ``{"age", "metallicity"}`` (see ``match_filter_polygons``).
     match_filter : mapping, optional
-        Default: ``DEFAULT_MATCH_FILTER``.
+        Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     color_index : int, optional
         Colour band: ``match_filter["color_bands"][color_index]``.
     **line_kwargs

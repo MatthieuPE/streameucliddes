@@ -521,7 +521,7 @@ class CandidateInvestigation:
     distance_moduli : sequence of float, optional
         Grid of the scan. Default: that of ``prepare_search``.
     match_filter : dict, optional
-        See ``analysis.cmd_match_filter``. Default: ``DEFAULT_MATCH_FILTER``.
+        See ``analysis.cmd_match_filter``. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     padding_phi1_deg, padding_phi2_deg, min_phi2_half_width_deg : float, optional
         Window around the endpoints (``stream_frames.phi12_window_around``).
     on_n_sigma : float, optional

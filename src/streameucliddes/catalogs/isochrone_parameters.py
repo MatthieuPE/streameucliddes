@@ -95,6 +95,25 @@ def with_isochrone_model(isochrones: Iterable[Mapping[str, Any]], isochrone_mode
 # ===================================================
 
 
+def get_isochrone(isochrone: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    """The isochrone to use: the one given, else the first of ``default_isochrone_grid()``.
+
+    The single place where the default isochrone is chosen: functions take
+    ``isochrone=None`` and call this.
+
+    Parameters
+    ----------
+    isochrone : mapping, optional
+        ``{"age": age (Gyr), "metallicity": Z}``, with an optional ``"isochrone_model"``.
+
+    Returns
+    -------
+    isochrone : mapping
+        ``isochrone`` itself, or a new default isochrone.
+    """
+    return default_isochrone_grid()[0] if isochrone is None else isochrone
+
+
 def default_isochrone_grid(
     ages_gyr: Sequence[float] | None = None,
     metallicities: Sequence[float] | None = None,

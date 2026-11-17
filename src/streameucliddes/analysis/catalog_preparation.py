@@ -14,7 +14,7 @@ import numpy as np
 import pandas as pd
 
 from streameucliddes.analysis.cmd_match_filter import (
-    DEFAULT_MATCH_FILTER,
+    get_match_filter,
     match_filter_columns,
     select_stars_in_match_filter,
 )
@@ -49,7 +49,7 @@ def default_error_cuts(match_filter: Mapping[str, Any] | None = None) -> dict[st
     Parameters
     ----------
     match_filter : mapping, optional
-        See ``cmd_match_filter``. Default: ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
+        See ``cmd_match_filter``. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
 
     Returns
     -------
@@ -57,7 +57,7 @@ def default_error_cuts(match_filter: Mapping[str, Any] | None = None) -> dict[st
         ``{"<namespace>_<band>_err": DEFAULT_ERR_CUT}`` for the reference band
         and each colour band (format of ``catalogs.catalog_cuts.get_cut_mask``).
     """
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    match_filter = get_match_filter(match_filter)
     bands = [match_filter["reference_band"], *match_filter["color_bands"]]
     return {f"{namespace}_{band}_err": DEFAULT_ERR_CUT for namespace, band in bands}
 
@@ -123,7 +123,7 @@ def prepare_match_filter_catalog(
     catalog : pandas.DataFrame
         Stars, e.g. ``catalogs.euclid_catalog.get_euclid_stars()``.
     match_filter : mapping, optional
-        See ``cmd_match_filter``. Default: ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
+        See ``cmd_match_filter``. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     cuts : mapping, optional
         Format of ``catalogs.catalog_cuts.get_cut_mask``. They update the
         default error cuts ``default_error_cuts(match_filter)``, which are
@@ -168,7 +168,7 @@ def prepare_match_filter_catalog(
         raise ValueError("a window needs a stream_frame")
     if excluded_pixels is not None and excluded_pixels_nest is None:
         raise ValueError("excluded_pixels needs excluded_pixels_nest")
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    match_filter = get_match_filter(match_filter)
     cuts = {**default_error_cuts(match_filter), **(cuts or {})}  # given cuts replace the defaults
 
     columns = match_filter_columns(match_filter)
@@ -243,10 +243,10 @@ def catalog_match_filter_mask(
     distance_modulus : float
         Distance modulus of the filter.
     isochrone : mapping, optional
-        ``{"age", "metallicity"}``. Default: the first isochrone of
-        ``catalogs.isochrone_parameters.default_isochrone_grid``.
+        ``{"age", "metallicity"}``. Default:
+        ``catalogs.isochrone_parameters.get_isochrone()``.
     match_filter : mapping, optional
-        See ``cmd_match_filter``. Default: ``DEFAULT_MATCH_FILTER``.
+        See ``cmd_match_filter``. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     cuts : mapping, optional
         See ``prepare_match_filter_catalog``.
     mask : array_like of bool, optional

@@ -37,7 +37,7 @@ import pandas as pd
 from streamobs.match_filter import _isochrone_locus, build_match_filter, is_in_match_filter
 from ugali.isochrone import factory as isochrone_factory
 
-from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.catalogs.isochrone_parameters import get_isochrone
 from streameucliddes.unit_conversions import convert_FeH_to_z, get_isochrone_model
 
 if TYPE_CHECKING:
@@ -46,7 +46,7 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike, NDArray
 
-# Euclid VIS vs VIS - H
+# Euclid VIS vs VIS - H: the default match filter, read through get_match_filter
 DEFAULT_MATCH_FILTER = {
     "name": "default_euclid_vis_h",
     "reference_band": ("euclid_q1", "VIS"),
@@ -144,7 +144,7 @@ def match_filter_columns(match_filter: Mapping[str, Any] | None = None) -> list[
     ----------
     match_filter : mapping, optional
         Match filter (see the module docstring). Default:
-        ``DEFAULT_MATCH_FILTER``.
+        ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
 
     Returns
     -------
@@ -152,9 +152,29 @@ def match_filter_columns(match_filter: Mapping[str, Any] | None = None) -> list[
         ``<namespace>_<band>_obs`` of the reference band, then of each colour
         band.
     """
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    match_filter = get_match_filter(match_filter)
     bands = [match_filter["reference_band"], *match_filter["color_bands"]]
     return [f"{namespace}_{band}_obs" for namespace, band in bands]
+
+
+def get_match_filter(match_filter: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    """The match filter to use: the one given, else ``DEFAULT_MATCH_FILTER``.
+
+    The single place where the default is chosen: functions take
+    ``match_filter=None`` and call this. The default is shared: copy it
+    before changing it.
+
+    Parameters
+    ----------
+    match_filter : mapping, optional
+        See the module docstring.
+
+    Returns
+    -------
+    match_filter : mapping
+        ``match_filter`` itself, or ``DEFAULT_MATCH_FILTER``.
+    """
+    return DEFAULT_MATCH_FILTER if match_filter is None else match_filter
 
 
 def match_filter_cmd_columns(match_filter: Mapping[str, Any] | None = None) -> list[tuple[str, str]]:
@@ -166,7 +186,7 @@ def match_filter_cmd_columns(match_filter: Mapping[str, Any] | None = None) -> l
     Parameters
     ----------
     match_filter : mapping, optional
-        Default: ``DEFAULT_MATCH_FILTER``.
+        Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
 
     Returns
     -------
@@ -214,10 +234,10 @@ def match_filter_polygons(
     isochrone : mapping, optional
         ``{"age": age (Gyr), "metallicity": Z}``, with an optional
         ``"isochrone_model"`` (name of the ugali isochrone model, read with
-        ``unit_conversions.get_isochrone_model``; Z on its scale). Default: the
-        first isochrone of ``catalogs.isochrone_parameters.default_isochrone_grid``.
+        ``unit_conversions.get_isochrone_model``; Z on its scale). Default:
+        ``catalogs.isochrone_parameters.get_isochrone()``.
     match_filter : mapping, optional
-        See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
+        See the module docstring. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
 
     Returns
     -------
@@ -227,8 +247,8 @@ def match_filter_polygons(
         magnitude ``reference_band`` (``streamobs.match_filter.build_match_filter``).
         Read-only: shared between calls.
     """
-    isochrone = default_isochrone_grid()[0] if isochrone is None else isochrone
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    isochrone = get_isochrone(isochrone)
+    match_filter = get_match_filter(match_filter)
     namespace_1, band_1 = match_filter["reference_band"]
     return [
         build_match_filter_polygon(
@@ -270,10 +290,10 @@ def select_stars_in_match_filter(
     distance_modulus : float
         Distance modulus of the filter.
     isochrone : mapping, optional
-        ``{"age": age (Gyr), "metallicity": Z}``. Default: the first
-        isochrone of ``catalogs.isochrone_parameters.default_isochrone_grid``.
+        ``{"age": age (Gyr), "metallicity": Z}``. Default:
+        ``catalogs.isochrone_parameters.get_isochrone()``.
     match_filter : mapping, optional
-        See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
+        See the module docstring. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     mask : array_like of bool, optional
         Stars to consider (e.g. the observed ones); the others are not
         selected.
@@ -288,7 +308,7 @@ def select_stars_in_match_filter(
     Rockosi et al. 2002, AJ 124, 349. Grillmair 2009, ApJ 693, 1118.
     Shipp et al. 2018, ApJ 862, 114.
     """
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    match_filter = get_match_filter(match_filter)
     reference_column, *color_columns = match_filter_columns(match_filter)
     polygons = match_filter_polygons(distance_modulus, isochrone, match_filter)
 
@@ -335,7 +355,7 @@ def isochrone_cmd_track(
         [Fe/H], converted to Z on the scale of the isochrone model
         (``unit_conversions.convert_FeH_to_z``).
     match_filter : mapping, optional
-        See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
+        See the module docstring. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     color_index : int, optional
         Colour band: ``match_filter["color_bands"][color_index]``.
     isochrone_model : str, optional
@@ -363,7 +383,7 @@ def isochrone_cmd_track(
         raise ValueError("Give exactly one of metallicity (Z) and feh.")
     isochrone_model = get_isochrone_model(isochrone_model)
     z = convert_FeH_to_z(feh, isochrone_model) if feh is not None else float(metallicity)
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    match_filter = get_match_filter(match_filter)
     namespace_1, band_1 = match_filter["reference_band"]
     namespace_2, band_2 = match_filter["color_bands"][color_index]
     survey_1, survey_2 = _isochrone_survey(namespace_1), _isochrone_survey(namespace_2)
