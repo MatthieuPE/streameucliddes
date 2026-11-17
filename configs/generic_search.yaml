@@ -20,8 +20,8 @@ search: generic
 # default_grid:                # one set of maps per isochrone
 #   - {age: 13.0, metallicity: 0.0002}
 #
-# isochrone_model: Dotter2016  # ugali isochrone model of the match filters; default Marigo2017 (null). Z of the
-#                              # default grid and of the stream table converted to it (same [Fe/H])
+# isochrone_model: Dotter2016  # name of the ugali isochrone model of the match filters; default Marigo2017 (null).
+#                              # Z of the default grid and of the stream table converted to it (same [Fe/H])
 #
 # nside: 512
 # mask_lmc: true               # mask the LMC, the SMC, the dwarf galaxies, the globular clusters (LVDB),

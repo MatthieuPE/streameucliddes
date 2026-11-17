@@ -253,11 +253,12 @@ def prepare_search(
         search without a stream. Default:
         ``catalogs.isochrone_parameters.default_isochrone_grid()``.
     isochrone_model : str, optional
-        ugali isochrone model of the isochrones, e.g. ``"Dotter2016"``: those
-        of the stream and of the default grid (their Z converted to it,
-        ``catalogs.isochrone_parameters.convert_metallicity``), and those
-        given (``isochrone``, ``default_grid``) without their own ``"isochrone_model"``.
-        None: ``DEFAULT_ISOCHRONE_MODEL`` (Marigo2017).
+        Name of the ugali isochrone model of the isochrones, e.g.
+        ``"Dotter2016"``: those of the stream and of the default grid (their Z
+        converted to it, ``unit_conversions.convert_metallicity``), and those
+        given (``isochrone``, ``default_grid``) without their own
+        ``"isochrone_model"``. None: ``unit_conversions.get_isochrone_model()``
+        (Marigo2017 by default).
     bin_size_deg : float, optional
         Bin size of the grid (deg).
     footprint_mask : numpy.ndarray of bool, optional

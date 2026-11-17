@@ -6,7 +6,7 @@ import pytest
 from streamobs.match_filter import build_match_filter, is_in_match_filter
 
 from streameucliddes.analysis import cmd_match_filter
-from streameucliddes.catalogs.isochrone_parameters import DEFAULT_ISOCHRONE_MODEL, feh_to_z
+from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL, convert_FeH_to_z
 from streameucliddes.analysis.cmd_match_filter import (
     difference_hess,
     hess_diagram,
@@ -378,7 +378,7 @@ def test_match_filter_polygons_model():
 def test_isochrone_cmd_track_model():
     track = isochrone_cmd_track(17.0, 13.0, feh=-1.9, isochrone_model="Dotter2016")
     assert track["isochrone_model"] == "Dotter2016"
-    assert track["metallicity"] == pytest.approx(feh_to_z(-1.9, "Dotter2016"))
+    assert track["metallicity"] == pytest.approx(convert_FeH_to_z(-1.9, "Dotter2016"))
     default = isochrone_cmd_track(17.0, 13.0, feh=-1.9)
     assert default["isochrone_model"] == DEFAULT_ISOCHRONE_MODEL
     assert not np.array_equal(track["color"], default["color"])

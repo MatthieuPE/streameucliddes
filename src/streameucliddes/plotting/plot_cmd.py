@@ -28,14 +28,10 @@ from streameucliddes.analysis.cmd_match_filter import (
     on_off_hess,
     select_stars_in_match_filter,
 )
-from streameucliddes.catalogs.isochrone_parameters import (
-    DEFAULT_ISOCHRONE_MODEL,
-    default_isochrone_grid,
-    get_isochrone_model,
-)
+from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
 from streameucliddes.plotting.plot_style import COLORBAR_LABEL_SIZE, CATEGORICAL_COLORS, format_distance_modulus
-from streameucliddes.unit_conversions import convert_DM_to_kpc
+from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL, convert_DM_to_kpc, get_isochrone_model
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -288,8 +284,9 @@ def draw_match_filter(
 
 
 def _isochrone_model_prefix(isochrone_model: str | None) -> str:
-    """The isochrone model for a label, only when not the default one: "Dotter2016, "."""
-    return "" if isochrone_model in (None, DEFAULT_ISOCHRONE_MODEL) else f"{isochrone_model}, "
+    """Name of the isochrone model for a label, only when not the default one: "Dotter2016, "."""
+    isochrone_model = get_isochrone_model(isochrone_model)
+    return "" if isochrone_model == DEFAULT_ISOCHRONE_MODEL else f"{isochrone_model}, "
 
 
 def _cmd_pairs(

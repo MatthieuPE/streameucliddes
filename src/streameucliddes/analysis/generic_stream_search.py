@@ -169,9 +169,10 @@ def prepare_generic_search(
         The isochrones otherwise. Default:
         ``catalogs.isochrone_parameters.default_isochrone_grid()``.
     isochrone_model : str, optional
-        ugali isochrone model of the isochrones, e.g. ``"Dotter2016"``: those
-        of the default grid (its Z converted to it), and those given without
-        their own ``"isochrone_model"``. None: ``DEFAULT_ISOCHRONE_MODEL`` (Marigo2017).
+        Name of the ugali isochrone model of the isochrones, e.g.
+        ``"Dotter2016"``: those of the default grid (its Z converted to it),
+        and those given without their own ``"isochrone_model"``. None:
+        ``unit_conversions.get_isochrone_model()`` (Marigo2017 by default).
     distance_moduli : iterable of float, optional
         Grid of the scan. Default: ``stream_frame_search.DEFAULT_DISTANCE_MODULI``
         (15 to 22, every 0.1).

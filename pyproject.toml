@@ -52,6 +52,7 @@ markers = [
     "injection: injection/ (stream generation and injection)",
     "plot_injected_stream_snr: plotting/plot_injected_stream_snr.py (SNR figures)",
     "package: __init__.py (version)",
+    "unit_conversions: unit_conversions.py (magnitudes, distances, [Fe/H] and Z per isochrone model)",
     "stream_frames: stream_frames.py (rotation matrices, phi1/phi2)",
     "isochrone_parameters: catalogs/isochrone_parameters.py (age and metallicity of the isochrones, literature table)",
     "survey_footprint: catalogs/survey_footprint.py (footprint masks)",

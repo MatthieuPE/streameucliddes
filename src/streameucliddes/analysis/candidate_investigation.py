@@ -508,12 +508,13 @@ class CandidateInvestigation:
         ``metallicity`` and ``feh``; neither: the Z of
         ``DEFAULT_METALLICITIES[0]`` of ``catalogs.isochrone_parameters``.
     feh : float, optional
-        Isochrone [Fe/H], converted to Z on the scale of ``isochrone_model``
-        (``catalogs.isochrone_parameters.feh_to_z``) each time the isochrone
-        is used (``isochrone``).
+        Isochrone [Fe/H], converted to Z on the scale of the isochrone model
+        (``unit_conversions.convert_FeH_to_z``) each time the isochrone is used
+        (``isochrone``).
     isochrone_model : str, optional
-        ugali isochrone model of the match filter and of the isochrone track,
-        e.g. ``"Dotter2016"``. None: ``DEFAULT_ISOCHRONE_MODEL`` (Marigo2017).
+        Name of the ugali isochrone model of the match filter and of the
+        isochrone track, e.g. ``"Dotter2016"``. None:
+        ``unit_conversions.get_isochrone_model()`` (Marigo2017 by default).
     distance_modulus : float, optional
         Distance modulus of the stream, chosen by eye after the scan
         (``scan_distance_moduli``). Needed from ``fit_width`` on.

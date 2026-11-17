@@ -7,8 +7,11 @@ A match filter is ``{"name", "reference_band": (namespace, band),
 "color_bands": [(namespace, band), ...]}``, with optional ``color_cut`` and
 ``red_cap_value`` (arguments of ``streamobs.match_filter.build_match_filter``).
 Its polygons are built for an isochrone ``{"age", "metallicity"}`` with an
-optional ``"isochrone_model"``, the ugali isochrone model (``"Marigo2017"`` by default,
-``"Dotter2016"``...; ``catalogs.isochrone_parameters``).
+optional ``"isochrone_model"``, the name of the ugali isochrone model
+(``"Marigo2017"`` by default, ``"Dotter2016"``...; read with
+``unit_conversions.get_isochrone_model``; ``catalogs.isochrone_parameters``).
+ugali builds from that name a ugali isochrone (``ugali_isochrone``, an
+instance of the ugali class of that name).
 A star is selected when it is inside the polygon of every colour
 ``reference_band - color_band``, the magnitude axis being ``reference_band``.
 Magnitudes are the ``<namespace>_<band>_obs`` columns of
@@ -34,12 +37,8 @@ import pandas as pd
 from streamobs.match_filter import _isochrone_locus, build_match_filter, is_in_match_filter
 from ugali.isochrone import factory as isochrone_factory
 
-from streameucliddes.catalogs.isochrone_parameters import (
-    DEFAULT_ISOCHRONE_MODEL,
-    default_isochrone_grid,
-    feh_to_z,
-    get_isochrone_model,
-)
+from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.unit_conversions import convert_FeH_to_z, get_isochrone_model
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -72,13 +71,15 @@ DEFAULT_CMD_MARGIN_MAG = 0.5
 
 @functools.lru_cache(maxsize=1024)
 def build_match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2, color_cut=True,
-                               red_cap_value=None, isochrone_model=DEFAULT_ISOCHRONE_MODEL):
+                               red_cap_value=None, isochrone_model=None):
     """
     build_match_filter polygon, cached: it only depends on these parameters, which
     repeat over a scan (e.g. the same distance modulus for every surface brightness).
-    ``isochrone_model``: the ugali isochrone model (``"Marigo2017"``, ``"Dotter2016"``...);
-    a warning when its grid has no isochrone near ``age`` and ``metallicity`` (``_check_isochrone_grid``).
+    ``isochrone_model``: name of the ugali isochrone model (``"Marigo2017"``, ``"Dotter2016"``...;
+    None: ``unit_conversions.get_isochrone_model()``); a warning when its grid has no
+    isochrone near ``age`` and ``metallicity`` (``_check_isochrone_grid``).
     """
+    isochrone_model = get_isochrone_model(isochrone_model)
     for survey, band in {survey_1: band_1, survey_2: band_2}.items():  # one grid per survey
         _check_isochrone_grid(isochrone_model, age, metallicity, survey, band)
     mf_polygon = build_match_filter(
@@ -104,7 +105,7 @@ def _check_isochrone_grid(
     """Age and Z of the isochrone ugali uses for this request (the nearest of its grid); a warning when off the grid.
 
     ugali takes, without a warning, the file of its grid nearest to (age,
-    Z): far from the request when the grid of the model for that survey
+    Z): far from the request when the grid of the isochrone model for that survey
     does not reach it (e.g. Z below 1e-4 for Marigo2017) or is sparse (the
     local DES Dotter2016 grid: 10 and 12 Gyr, Z 1e-4 and 2e-4). Warns when
     the age or Z asked is farther than one grid step from the value used
@@ -112,12 +113,14 @@ def _check_isochrone_grid(
     a sparse grid; not for the rounding to the nearest grid value. Cached:
     once per request.
     """
-    isochrone = isochrone_factory(isochrone_model, age=age, z=metallicity, survey=survey, band_1=band, band_2=band)
-    used_age, used_z = (float(value) for value in isochrone.filename2params(isochrone.get_filename()))
-    if _off_grid(age, used_age, isochrone.agrid) or _off_grid(metallicity, used_z, isochrone.zgrid):
+    ugali_isochrone = isochrone_factory(isochrone_model, age=age, z=metallicity, survey=survey, band_1=band,
+                                        band_2=band)  # an instance of the ugali class named isochrone_model
+    used_age, used_z = (float(value) for value in ugali_isochrone.filename2params(ugali_isochrone.get_filename()))
+    if _off_grid(age, used_age, ugali_isochrone.agrid) or _off_grid(metallicity, used_z, ugali_isochrone.zgrid):
         warnings.warn(
             f"No {isochrone_model} isochrone near {age:g} Gyr, Z = {metallicity:.3g} for {survey}: ugali uses the "
-            f"nearest of its grid, {used_age:g} Gyr, Z = {used_z:.3g} ({isochrone.get_dirname()}).", stacklevel=2,
+            f"nearest of its grid, {used_age:g} Gyr, Z = {used_z:.3g} ({ugali_isochrone.get_dirname()}).",
+            stacklevel=2,
         )
     return used_age, used_z
 
@@ -209,10 +212,10 @@ def match_filter_polygons(
     distance_modulus : float
         Distance modulus of the filter.
     isochrone : mapping, optional
-        ``{"age": age (Gyr), "metallicity": Z}``, with an optional ``"isochrone_model"``
-        (ugali isochrone model, ``catalogs.isochrone_parameters.get_isochrone_model``;
-        Z on its scale). Default: the first isochrone of
-        ``catalogs.isochrone_parameters.default_isochrone_grid``.
+        ``{"age": age (Gyr), "metallicity": Z}``, with an optional
+        ``"isochrone_model"`` (name of the ugali isochrone model, read with
+        ``unit_conversions.get_isochrone_model``; Z on its scale). Default: the
+        first isochrone of ``catalogs.isochrone_parameters.default_isochrone_grid``.
     match_filter : mapping, optional
         See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
 
@@ -312,7 +315,7 @@ def isochrone_cmd_track(
     """Colour and magnitude of an isochrone in the bands of a match filter.
 
     The isochrone locus of ``streamobs.match_filter._isochrone_locus``, the
-    one ``build_match_filter`` uses (ugali isochrone model ``isochrone_model``), with
+    one ``build_match_filter`` uses (the ugali isochrone named ``isochrone_model``), with
     the surveys and bands of the polygons (``match_filter_polygons``): colour
     ``reference_band - color_bands[color_index]``, magnitude
     ``reference_band`` plus ``distance_modulus``. The track and the polygon
@@ -326,18 +329,18 @@ def isochrone_cmd_track(
     age : float
         Age (Gyr).
     metallicity : float, optional
-        Z, on the scale of the model. Exactly one of ``metallicity`` and
-        ``feh``.
+        Z, on the scale of the isochrone model. Exactly one of
+        ``metallicity`` and ``feh``.
     feh : float, optional
-        [Fe/H], converted to Z on the scale of the model
-        (``catalogs.isochrone_parameters.feh_to_z``).
+        [Fe/H], converted to Z on the scale of the isochrone model
+        (``unit_conversions.convert_FeH_to_z``).
     match_filter : mapping, optional
         See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
     color_index : int, optional
         Colour band: ``match_filter["color_bands"][color_index]``.
     isochrone_model : str, optional
-        ugali isochrone model, e.g. ``"Dotter2016"``. Default:
-        ``catalogs.isochrone_parameters.DEFAULT_ISOCHRONE_MODEL``.
+        Name of the ugali isochrone model, e.g. ``"Dotter2016"``. None:
+        ``unit_conversions.get_isochrone_model()``.
 
     Returns
     -------
@@ -345,7 +348,7 @@ def isochrone_cmd_track(
         ``{"color", "mag", "age", "metallicity", "feh", "distance_modulus",
         "isochrone_model"}``: ``color`` and ``mag`` arrays (mag) along the isochrone;
         ``metallicity`` the Z used, ``feh`` the [Fe/H] given (None when Z was
-        given), ``model`` the isochrone model.
+        given), ``isochrone_model`` the name of the isochrone model used.
 
     Raises
     ------
@@ -358,8 +361,8 @@ def isochrone_cmd_track(
     """
     if (metallicity is None) == (feh is None):
         raise ValueError("Give exactly one of metallicity (Z) and feh.")
-    isochrone_model = DEFAULT_ISOCHRONE_MODEL if isochrone_model is None else isochrone_model
-    z = feh_to_z(feh, isochrone_model) if feh is not None else float(metallicity)
+    isochrone_model = get_isochrone_model(isochrone_model)
+    z = convert_FeH_to_z(feh, isochrone_model) if feh is not None else float(metallicity)
     match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
     namespace_1, band_1 = match_filter["reference_band"]
     namespace_2, band_2 = match_filter["color_bands"][color_index]

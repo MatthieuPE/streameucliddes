@@ -3,23 +3,17 @@
 import numpy as np
 import pytest
 
-import ugali.isochrone
-
 from streameucliddes.catalogs.isochrone_parameters import (
     DEFAULT_AGES_GYR,
-    DEFAULT_ISOCHRONE_MODEL,
     DEFAULT_METALLICITIES,
-    convert_metallicity,
+    Z_SCALE_ISOCHRONE_MODEL,
     default_isochrone_grid,
-    feh_to_z,
     isochrone_from_feh,
-    with_isochrone_model,
-    get_isochrone_model,
-    z_to_feh,
     known_stream_isochrone_parameters,
     load_stream_population_table,
+    with_isochrone_model,
 )
-from streameucliddes.unit_conversions import convert_FeH_to_z
+from streameucliddes.unit_conversions import convert_FeH_to_z, convert_metallicity
 
 pytestmark = pytest.mark.isochrone_parameters
 
@@ -169,40 +163,12 @@ def test_isochrone_from_feh():
 
 
 # ===================================================
-# Test the isochrone models and their metallicity scales
+# Test the isochrones of an isochrone model
 # ===================================================
 
 
-# Each model its own [Fe/H] <-> Z (ugali's relations): Marigo2017 that of convert_FeH_to_z; arrays and floats;
-# an unknown model refused
-@pytest.mark.parametrize("isochrone_model", ["Marigo2017", "Dotter2016", "Dotter2008", "Bressan2012"])
-def test_feh_to_z(isochrone_model):
-    feh = np.array([-3.0, -2.0, -1.0])
-    z = feh_to_z(feh, isochrone_model)
-    np.testing.assert_allclose(z, getattr(ugali.isochrone, isochrone_model).feh2z(feh))
-    np.testing.assert_allclose(z_to_feh(z, isochrone_model), feh)
-    assert isinstance(feh_to_z(-2.0, isochrone_model), float)
-
-
-def test_feh_to_z_scales():
-    np.testing.assert_allclose(feh_to_z([-2.5, -1.0]), convert_FeH_to_z(np.array([-2.5, -1.0])))  # the default
-    assert feh_to_z(-2.0, "Dotter2016") != pytest.approx(feh_to_z(-2.0, "Marigo2017"), rel=1e-2)
-    with pytest.raises(ValueError, match="Dotter2016"):
-        feh_to_z(-2.0, "Dotter2017")
-
-
-# The same [Fe/H] on another scale; the same model: unchanged
-def test_convert_metallicity():
-    z = convert_metallicity(0.0002, "Marigo2017", "Dotter2016")
-    assert z_to_feh(z, "Dotter2016") == pytest.approx(z_to_feh(0.0002, "Marigo2017"))
-    assert convert_metallicity(0.0002, None, "Marigo2017") == 0.0002
-    assert convert_metallicity(0.0002, "Dotter2016", "Dotter2016") == 0.0002
-
-
-# The model of an isochrone; set on those without one
-def test_get_isochrone_model():
-    assert get_isochrone_model({"age": 13.0}) == DEFAULT_ISOCHRONE_MODEL == get_isochrone_model(None)
-    assert get_isochrone_model({"age": 13.0, "isochrone_model": "Dotter2016"}) == "Dotter2016"
+# Set on the isochrones without their own isochrone model; copies
+def test_with_isochrone_model():
     given = [{"age": 13.0, "metallicity": 0.0002},
              {"age": 12.0, "metallicity": 0.0001, "isochrone_model": "Bressan2012"}]
     assert with_isochrone_model(given, "Dotter2016") == [{**given[0], "isochrone_model": "Dotter2016"}, given[1]]
@@ -213,9 +179,10 @@ def test_get_isochrone_model():
 # "isochrone_model" added; without: no "isochrone_model" key, as before
 def test_isochrones_of_a_model():
     assert isochrone_from_feh(12.0, feh=-2.0, isochrone_model="Dotter2016") == {
-        "age": 12.0, "metallicity": pytest.approx(feh_to_z(-2.0, "Dotter2016")), "isochrone_model": "Dotter2016"}
+        "age": 12.0, "metallicity": pytest.approx(convert_FeH_to_z(-2.0, "Dotter2016")),
+        "isochrone_model": "Dotter2016"}
     assert isochrone_from_feh(metallicity=0.0003, isochrone_model="Dotter2016")["metallicity"] == 0.0003
-    default_z = convert_metallicity(DEFAULT_METALLICITIES[0], DEFAULT_ISOCHRONE_MODEL, "Dotter2016")
+    default_z = convert_metallicity(DEFAULT_METALLICITIES[0], Z_SCALE_ISOCHRONE_MODEL, "Dotter2016")
     assert isochrone_from_feh(isochrone_model="Dotter2016")["metallicity"] == pytest.approx(default_z)
     assert default_isochrone_grid(isochrone_model="Dotter2016") == [
         {"age": DEFAULT_AGES_GYR[0], "metallicity": pytest.approx(default_z), "isochrone_model": "Dotter2016"}]
@@ -225,8 +192,8 @@ def test_isochrones_of_a_model():
     assert "isochrone_model" not in isochrone_from_feh(feh=-2.0)
 
 
-# A known stream: the Z of the table (Marigo et al. 2017 scale), or of the default grid when unknown, converted to the
-# model; the ages unchanged
+# A known stream: the Z of the table (on the scale of Z_SCALE_ISOCHRONE_MODEL), or of the default grid when unknown,
+# converted to the isochrone model; the ages unchanged
 @pytest.mark.parametrize("stream", ["Both", "NoZ"])
 def test_known_stream_isochrones_of_a_model(population_table, stream):
     marigo = known_stream_isochrone_parameters(stream, population_table)
@@ -234,4 +201,5 @@ def test_known_stream_isochrones_of_a_model(population_table, stream):
     assert [isochrone["age"] for isochrone in dotter] == [isochrone["age"] for isochrone in marigo]
     for m, d in zip(marigo, dotter):
         assert d["isochrone_model"] == "Dotter2016"
-        assert d["metallicity"] == pytest.approx(convert_metallicity(m["metallicity"], "Marigo2017", "Dotter2016"))
+        assert d["metallicity"] == pytest.approx(
+            convert_metallicity(m["metallicity"], Z_SCALE_ISOCHRONE_MODEL, "Dotter2016"))
