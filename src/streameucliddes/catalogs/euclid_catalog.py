@@ -29,11 +29,15 @@ compared directly with injected streams:
 - the same default star selection: ``POINT_LIKE_PROB >= 0.5`` and
   ``SPURIOUS_FLAG == 0`` for Euclid, ``0 <= EXT_XGB <= 1`` for DES.
 
-Two Euclid star selections (:data:`STAR_SELECTIONS`, see :func:`default_star_cuts`):
-``"morphology_cuts"`` (default), cuts on the Euclid morphology columns, and
+Three Euclid star selections (:data:`STAR_SELECTIONS`, see :func:`default_star_cuts`):
+``"morphology_cuts"`` (default), cuts on the Euclid morphology columns;
 ``"xgboost_classifier"``, a cut on the star probability of the XGBoost classifier
 trained on Euclid Q1 (:mod:`~streameucliddes.catalogs.star_classifier`), added as
-the column ``xgboost_star_prob`` (:func:`add_xgboost_star_prob`).
+the column ``xgboost_star_prob`` (:func:`add_xgboost_star_prob`); and
+``"gatto_stars_dr1"``, the selection of Gatto et al. (Euclid DR1 dwarf galaxies,
+Sect. 2): a loose ``POINT_LIKE_PROB`` cut and a polygon in the dereddened
+colour-colour plane, flagged in the column ``in_gatto_color_box``
+(:func:`add_gatto_color_box`).
 
 Column documentation:
 
@@ -54,6 +58,7 @@ import pandas as pd
 import pyarrow as pa
 import pyarrow.dataset as ds
 import pyarrow.parquet as pq
+from matplotlib.path import Path as PolygonPath
 from streamobs.surveys import Survey
 
 from streameucliddes.catalogs import star_classifier
@@ -125,7 +130,7 @@ EUCLID_QUALITY_CUTS = {
 }
 
 # Euclid star selections, see default_star_cuts.
-STAR_SELECTIONS = ("morphology_cuts", "xgboost_classifier")
+STAR_SELECTIONS = ("morphology_cuts", "xgboost_classifier", "gatto_stars_dr1")
 # "morphology_cuts": cuts on the Euclid morphology columns.
 MORPHOLOGY_STAR_CUTS = {
     "POINT_LIKE_PROB": (0.5, None),  # point-like
@@ -136,6 +141,23 @@ MORPHOLOGY_STAR_CUTS = {
 # in the column added by add_xgboost_star_prob.
 XGBOOST_MIN_STAR_PROB = 0.9
 XGBOOST_STAR_PROB_COLUMN = "xgboost_star_prob"
+
+# "gatto_stars_dr1": selection of Gatto et al., "Pushing back the borders of the
+# invisible with Euclid" (Euclid DR1 dwarf galaxies, Sect. 2 and Fig. 1),
+# https://pubs.euclid-ec.org/public/dr1/gatto.pdf
+GATTO_STAR_CUTS = {
+    "POINT_LIKE_PROB": (0.05, None),  # point-like (paper: > 0.05)
+}
+# Polygon in the dereddened colour-colour plane x = VIS - H, y = Y - H: keeps the
+# stellar locus, removes the residual compact galaxies. Contains the main sequence,
+# red giant branch and horizontal branch of old isochrones up to [Fe/H] ~ -1.
+GATTO_COLOR_BOX = {
+    "x_bands": ("VIS", "H"),  # x colour: VIS - H
+    "y_bands": ("Y", "H"),  # y colour: Y - H
+    "vertices": ((-1.5, -1.5), (-1.5, -0.4), (0.9, 0.8), (1.4, 0.8), (1.4, -0.4), (0.9, -0.4)),
+}
+# Column added by add_gatto_color_box: True inside GATTO_COLOR_BOX.
+GATTO_COLOR_BOX_COLUMN = "in_gatto_color_box"
 
 # ===================================================
 # Catalog description
@@ -250,7 +272,10 @@ def default_star_cuts(
     - ``"morphology_cuts"``: the cuts of :data:`MORPHOLOGY_STAR_CUTS` on
       ``POINT_LIKE_PROB``, ``ELLIPTICITY`` and ``MUMAX_MINUS_MAG``;
     - ``"xgboost_classifier"``: star probability of the XGBoost classifier
-      (column ``xgboost_star_prob``) at least :data:`XGBOOST_MIN_STAR_PROB`.
+      (column ``xgboost_star_prob``) at least :data:`XGBOOST_MIN_STAR_PROB`;
+    - ``"gatto_stars_dr1"``: the cuts of :data:`GATTO_STAR_CUTS` on
+      ``POINT_LIKE_PROB`` and inside the colour-colour polygon
+      :data:`GATTO_COLOR_BOX` (column ``in_gatto_color_box``).
 
     The returned dict can be edited to change any cut, e.g.
     ``cuts[euclid_column(catalog, "ELLIPTICITY")] = (None, 0.3)``.
@@ -263,17 +288,18 @@ def default_star_cuts(
         One of :data:`STAR_SELECTIONS`.
     min_point_like_prob : float, optional
         Keep ``POINT_LIKE_PROB >= min_point_like_prob``, whatever ``star_selection``
-        (it replaces the ``"morphology_cuts"`` threshold). None: the threshold of
-        the selection, no cut with ``"xgboost_classifier"``.
+        (it replaces the threshold of the selection). None: the threshold of the
+        selection, no cut with ``"xgboost_classifier"``.
     min_xgboost_star_prob : float, optional
         Keep ``xgboost_star_prob >= min_xgboost_star_prob``, whatever
         ``star_selection``. None: :data:`XGBOOST_MIN_STAR_PROB` with
-        ``"xgboost_classifier"``, no cut with ``"morphology_cuts"``.
+        ``"xgboost_classifier"``, no cut with the other selections.
 
     Returns
     -------
     dict
-        ``get_euclid_stars`` adds the ``xgboost_star_prob`` column when a cut uses it.
+        ``get_euclid_stars`` adds the ``xgboost_star_prob`` and
+        ``in_gatto_color_box`` columns when a cut uses them.
     """
     survey = euclid_survey(catalog)
     cuts = {}
@@ -290,6 +316,9 @@ def default_star_cuts(
         cuts.update({euclid_column(catalog, c): spec for c, spec in MORPHOLOGY_STAR_CUTS.items()})
     elif star_selection == "xgboost_classifier":
         cuts[XGBOOST_STAR_PROB_COLUMN] = (XGBOOST_MIN_STAR_PROB, None)
+    elif star_selection == "gatto_stars_dr1":
+        cuts.update({euclid_column(catalog, c): spec for c, spec in GATTO_STAR_CUTS.items()})
+        cuts[GATTO_COLOR_BOX_COLUMN] = True
     else:
         raise ValueError(f"Unknown star_selection {star_selection!r}: choose one of {STAR_SELECTIONS}")
 
@@ -646,20 +675,90 @@ def _xgboost_star_prob(data, catalog):
     return star_classifier.star_probability({name: np.asarray(data[c]) for name, c in columns.items()})
 
 
-def _xgboost_batch_selection(catalog, spec):
-    """
-    ``batch_selection`` of :func:`open_euclid_catalog` for the classifier: keeps the
-    rows whose ``xgboost_star_prob`` passes the cut ``spec``, with that column.
+# ===================================================
+# Colour-colour box
+# ===================================================
 
-    The classifier runs on the pyarrow table: only the kept rows are converted to
-    pandas.
+
+def in_color_box(data, catalog, color_box=GATTO_COLOR_BOX):
+    """
+    Whether each source lies inside a polygon of a Euclid colour-colour plane.
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        With the dereddened Euclid magnitudes of :func:`add_magnitudes`.
+    catalog : str
+        Key of :data:`CATALOGS`.
+    color_box : dict
+        ``x_bands`` and ``y_bands``: the (blue, red) Euclid bands of each colour
+        (``x = blue - red``); ``vertices``: the (x, y) vertices of the polygon.
+        Default: :data:`GATTO_COLOR_BOX`.
+
+    Returns
+    -------
+    np.ndarray of bool
+        False for sources without one of the magnitudes.
+    """
+    namespace = euclid_survey(catalog).namespace
+
+    def color(bands):
+        blue, red = (data[f"{namespace}_{band}_obs"].to_numpy(dtype=float) for band in bands)
+        return blue - red
+
+    points = np.column_stack([color(color_box["x_bands"]), color(color_box["y_bands"])])
+    inside = PolygonPath(color_box["vertices"]).contains_points(points)
+    return inside & np.isfinite(points).all(axis=1)
+
+
+def add_gatto_color_box(data, catalog):
+    """
+    Add the column ``in_gatto_color_box`` in place: True inside the colour-colour
+    polygon :data:`GATTO_COLOR_BOX` (:func:`in_color_box`).
+
+    Parameters
+    ----------
+    data : pd.DataFrame
+        With the dereddened Euclid magnitudes of :func:`add_magnitudes`.
+    catalog : str
+        Key of :data:`CATALOGS`.
+
+    Returns
+    -------
+    pd.DataFrame
+        ``data``, with the new column.
+    """
+    data[GATTO_COLOR_BOX_COLUMN] = in_color_box(data, catalog, GATTO_COLOR_BOX)
+    return data
+
+
+# Columns computed batch by batch while reading (see _batch_selection).
+BATCH_COLUMNS = (XGBOOST_STAR_PROB_COLUMN, GATTO_COLOR_BOX_COLUMN)
+
+
+def _batch_selection(catalog, cuts):
+    """
+    ``batch_selection`` of :func:`open_euclid_catalog` for the cuts on the columns
+    of :data:`BATCH_COLUMNS`: keeps the rows of each batch passing those cuts, with
+    the columns.
+
+    The classifier runs on the pyarrow table, so that only the rows it keeps are
+    converted to pandas; the colour box needs the magnitudes, added to the batch.
     """
     def select(table):
-        probability = _xgboost_star_prob(table, catalog)
-        column = XGBOOST_STAR_PROB_COLUMN
-        keep = get_cut_mask(pd.DataFrame({column: probability}), {column: spec})
-        data = _to_pandas(table.filter(pa.array(keep)))
-        data[XGBOOST_STAR_PROB_COLUMN] = probability[keep]
+        if XGBOOST_STAR_PROB_COLUMN in cuts:
+            probability = _xgboost_star_prob(table, catalog)
+            column = XGBOOST_STAR_PROB_COLUMN
+            keep = get_cut_mask(pd.DataFrame({column: probability}), {column: cuts[column]})
+            table = table.filter(pa.array(keep))
+        data = _to_pandas(table)
+        if XGBOOST_STAR_PROB_COLUMN in cuts:
+            data[XGBOOST_STAR_PROB_COLUMN] = probability[keep]
+        if GATTO_COLOR_BOX_COLUMN in cuts:
+            add_magnitudes(data, catalog)
+            add_gatto_color_box(data, catalog)
+            column = GATTO_COLOR_BOX_COLUMN
+            data = data[get_cut_mask(data, {column: cuts[column]})].reset_index(drop=True)
         return data
 
     return select
@@ -687,8 +786,10 @@ def get_euclid_stars(
     cuts : dict, optional
         Cuts to apply (format of
         :func:`~streameucliddes.catalogs.catalog_cuts.get_cut_mask`); they may use
-        the columns added by :func:`add_magnitudes` and ``xgboost_star_prob``
-        (:func:`add_xgboost_star_prob`, added only when a cut uses it). None applies
+        the columns added by :func:`add_magnitudes`, ``xgboost_star_prob``
+        (:func:`add_xgboost_star_prob`) and ``in_gatto_color_box``
+        (:func:`add_gatto_color_box`), the last two added only when a cut uses
+        them. None applies
         :func:`default_star_cuts`; ``{}`` applies no cut. Other star selections:
         e.g. ``cuts=default_star_cuts(catalog, "xgboost_classifier", min_xgboost_star_prob=0.95)``.
     columns : list of str, "all" or None
@@ -735,21 +836,22 @@ def get_euclid_stars(
                              "'southwest', 'southeast'")
     if data is None:
         names = set(available_columns(catalog, data_path))
-        derived = magnitude_columns(catalog) + [XGBOOST_STAR_PROB_COLUMN]
+        derived = magnitude_columns(catalog) + list(BATCH_COLUMNS)
         unknown = [c for c in cuts if c not in names and c not in derived]
         if unknown:
             raise KeyError(
-                f"Cut column(s) neither in the catalog nor added by add_magnitudes or "
-                f"add_xgboost_star_prob: {unknown}"
+                f"Cut column(s) neither in the catalog nor added by add_magnitudes, "
+                f"add_xgboost_star_prob or add_gatto_color_box: {unknown}"
             )
         # Cuts on catalog columns while reading, the others (magnitudes) after.
         read_cuts = {c: s for c, s in cuts.items() if c in names}
         cuts = {c: s for c, s in cuts.items() if c not in names}
-        # Star classifier: its cut is applied while reading, batch by batch, since
-        # the rows passing only the cuts on catalog columns may not fit in memory.
+        # Star classifier and colour box: their cuts are applied while reading,
+        # batch by batch, since the rows passing only the cuts on catalog columns
+        # may not fit in memory.
         batch_selection = None
-        if XGBOOST_STAR_PROB_COLUMN in cuts:
-            batch_selection = _xgboost_batch_selection(catalog, cuts[XGBOOST_STAR_PROB_COLUMN])
+        if any(c in cuts for c in BATCH_COLUMNS):
+            batch_selection = _batch_selection(catalog, cuts)
         data = open_euclid_catalog(
             catalog, columns=columns, cuts=read_cuts, ra_range=ra_range,
             dec_range=dec_range, data_path=data_path, verbose=verbose,
@@ -763,6 +865,8 @@ def get_euclid_stars(
         add_magnitudes(data, catalog)
     if XGBOOST_STAR_PROB_COLUMN in cuts and XGBOOST_STAR_PROB_COLUMN not in data.columns:
         add_xgboost_star_prob(data, catalog)
+    if GATTO_COLOR_BOX_COLUMN in cuts and GATTO_COLOR_BOX_COLUMN not in data.columns:
+        add_gatto_color_box(data, catalog)
 
     stars = data[get_cut_mask(data, cuts)].reset_index(drop=True)
     if verbose:

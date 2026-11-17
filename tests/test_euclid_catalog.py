@@ -216,6 +216,59 @@ def test_star_selections(catalog):
             == {c: s for c, s in classifier.items() if c != XGBOOST_PROB})
 
 
+COLOR_BOX = euclid_catalog.GATTO_COLOR_BOX_COLUMN
+
+
+@pytest.mark.parametrize("catalog", CATALOG_NAMES)
+def test_gatto_star_selection(catalog):
+    """Same quality cuts as the morphology selection; Gatto cuts and the colour box."""
+    morphology = euclid_catalog.default_star_cuts(catalog)
+    gatto = euclid_catalog.default_star_cuts(catalog, "gatto_stars_dr1")
+    morphology_columns = {euclid_catalog.euclid_column(catalog, c) for c in euclid_catalog.MORPHOLOGY_STAR_CUTS}
+    for column, spec in euclid_catalog.GATTO_STAR_CUTS.items():
+        assert gatto[euclid_catalog.euclid_column(catalog, column)] == spec
+    assert gatto[COLOR_BOX] is True
+    assert COLOR_BOX not in morphology
+    gatto_columns = {euclid_catalog.euclid_column(catalog, c) for c in euclid_catalog.GATTO_STAR_CUTS} | {COLOR_BOX}
+    assert ({c: s for c, s in morphology.items() if c not in morphology_columns}
+            == {c: s for c, s in gatto.items() if c not in gatto_columns})
+
+
+def test_in_color_box():
+    """Colours on the right axes (x = VIS - H, y = Y - H); missing magnitudes are outside."""
+    catalog = CATALOG_NAMES[0]
+    namespace = euclid_catalog.euclid_survey(catalog).namespace
+    # A box wider than high, so that swapping the axes moves a point out of it
+    box = {"x_bands": ("VIS", "H"), "y_bands": ("Y", "H"), "vertices": ((0, 0), (1, 0), (1, 0.3), (0, 0.3))}
+    x = np.array([0.5, 0.2, 0.5, np.nan])  # VIS - H
+    y = np.array([0.2, 0.5, np.nan, 0.2])  # Y - H
+    h = np.full(len(x), 20.0)
+    data = pd.DataFrame({f"{namespace}_VIS_obs": h + x, f"{namespace}_Y_obs": h + y, f"{namespace}_H_obs": h})
+    np.testing.assert_array_equal(euclid_catalog.in_color_box(data, catalog, box), [True, False, False, False])
+    added = euclid_catalog.add_gatto_color_box(data.copy(), catalog)
+    np.testing.assert_array_equal(added[COLOR_BOX], euclid_catalog.in_color_box(data, catalog))
+
+
+def test_stars_gatto_selection(catalog_dir, monkeypatch):
+    """Colour box applied while reading, by batches or not, or on data already read: same stars."""
+    catalog, path, data = catalog_dir
+    cuts = euclid_catalog.default_star_cuts(catalog, "gatto_stars_dr1")
+    all_rows = euclid_catalog.add_gatto_color_box(euclid_catalog.add_magnitudes(data.copy(), catalog), catalog)
+    in_box = all_rows[COLOR_BOX].to_numpy()
+    assert 0 < in_box.sum() < len(in_box)  # the mock colours test the box
+    stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
+    assert stars[COLOR_BOX].all()
+
+    read = euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False)
+    from_data = euclid_catalog.get_euclid_stars(catalog, data=read, cuts=cuts, verbose=False)
+    pd.testing.assert_frame_equal(stars, from_data, check_like=True)  # columns in another order
+
+    monkeypatch.setattr(euclid_catalog, "READ_BATCH_SIZE", len(data) // 20)
+    by_batches = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    pd.testing.assert_frame_equal(by_batches, stars)
+
+
 @pytest.mark.parametrize("star_selection", euclid_catalog.STAR_SELECTIONS)
 def test_star_cut_thresholds(star_selection):
     catalog = CATALOG_NAMES[1]
@@ -281,7 +334,7 @@ def test_stars_xgboost_by_batches(catalog_dir, monkeypatch):
     pd.testing.assert_frame_equal(by_batches, one_batch)
 
 
-@pytest.mark.parametrize("cut", ["catalog column", "magnitude", "classifier"])
+@pytest.mark.parametrize("cut", ["catalog column", "magnitude", "classifier", "color box"])
 def test_stars_none_selected(catalog_dir, cut):
     """No star passes: an empty table with all the columns."""
     catalog, path, _ = catalog_dir
@@ -290,12 +343,17 @@ def test_stars_none_selected(catalog_dir, cut):
         cuts = {euclid_catalog.euclid_column(catalog, "OBJECT_ID"): -1}
     elif cut == "magnitude":  # rows read, none selected
         cuts = {f"{euclid_catalog.euclid_survey(catalog).namespace}_VIS_obs": (100.0, None)}
-    else:  # rows read, none passing the classifier cut
+    elif cut == "classifier":  # rows read, none passing the classifier cut
         cuts = {XGBOOST_PROB: (2.0, None)}
         read_columns = read_columns + [XGBOOST_PROB]  # added while reading
+    else:  # nothing read, colour box computed on the empty batch
+        cuts = {euclid_catalog.euclid_column(catalog, "OBJECT_ID"): -1, COLOR_BOX: True}
     stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
     assert len(stars) == 0
-    assert list(stars.columns) == read_columns + euclid_catalog.magnitude_columns(catalog)
+    expected = read_columns + euclid_catalog.magnitude_columns(catalog)
+    if cut == "color box":  # added while reading, after the magnitudes
+        expected = expected + [COLOR_BOX]
+    assert list(stars.columns) == expected
 
 
 def test_stars_unknown_cut_column(catalog_dir):
