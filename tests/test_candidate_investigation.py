@@ -15,8 +15,9 @@ from streameucliddes.analysis.candidate_investigation import (
     on_off_phi1_profile,
     phi12_density_map,
     phi12_density_profile,
-    region_area_deg2,
+    region_areas,
     region_windows,
+    stream_band_regions,
     stream_regions,
 )
 from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
@@ -89,18 +90,33 @@ def test_region_windows_offsets():
         assert window == pytest.approx((reference[0], reference[1], reference[2] + offset, reference[3] + offset))
 
 
-# No mask: on and off areas of the strip formula; half of the phi1 range masked: half the areas
-def test_region_area_matches_analytic(candidate_endpoints):
-    frame = stream_frame_from_endpoints(*candidate_endpoints)
-    regions = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)}
+def _window_areas(regions, frame, excluded_healpix_mask=None):
+    """Areas of the windows of region_windows outside a mask (unmasked_area_deg2), as region_areas."""
     windows = region_windows(regions)
-    areas = region_area_deg2(regions, frame, None)
-    window_area = lambda window: unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0]  # noqa: E731
-    assert areas["on"] == pytest.approx(window_area(windows["on"]))
-    assert areas["off_below"] == pytest.approx(window_area(windows["off"][0]))
-    assert areas["off_above"] == pytest.approx(window_area(windows["off"][1]))
-    assert areas["off"] == areas["off_below"] + areas["off_above"]
-    half = region_area_deg2(regions, frame, _mask_phi1_below(frame, 512, -0.5))
+    on, below, above = (unmasked_area_deg2(frame, window[:2], window[2:], excluded_healpix_mask)[0, 0]
+                        for window in (windows["on"], *windows["off"]))
+    return {"on": on, "off_below": below, "off_above": above, "off": below + above}
+
+
+# The bands of a straight track are the windows of region_windows: their stars, and the areas of the strip
+# formula; half of the phi1 range masked: half the areas
+def test_stream_band_regions(candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    regions = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0),
+               "on_phi2_offset_deg": 0.1, "off_phi2_offsets_deg": (-0.2, 0.3)}
+    rng = np.random.default_rng(4)
+    ra, dec = phi12_to_radec(rng.uniform(-4.0, 3.0, 20_000), rng.uniform(-2.0, 2.5, 20_000), frame)
+    stars = pd.DataFrame({"ra": ra, "dec": dec})
+    band_regions = stream_band_regions(stars, regions, frame, None)
+    assert band_regions["regions"] == regions
+    windows = region_windows(regions)
+    phi1, phi2 = radec_to_phi12(ra, dec, frame)
+    for name, window in (("on", windows["on"]), ("off_below", windows["off"][0]), ("off_above", windows["off"][1])):
+        np.testing.assert_array_equal(band_regions[name], in_phi12_window(phi1, phi2, window))
+    areas = region_areas(band_regions)
+    for name, area in _window_areas(regions, frame).items():
+        assert areas[name] == pytest.approx(area, rel=1e-3)
+    half = region_areas(stream_band_regions(stars, regions, frame, _mask_phi1_below(frame, 512, -0.5)))
     assert half["on"] == pytest.approx(areas["on"] / 2, rel=0.03) and half["off"] == pytest.approx(areas["off"] / 2, rel=0.03)
 
 
@@ -393,7 +409,9 @@ def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate
     fit, regions = cand.width_fit, cand.regions
     assert regions == stream_regions(cand._endpoints_phi1_range(), fit["phi2_centre"], fit["sigma"], on_n_sigma=1.5,
                                      off_n_sigma=(2.5, 4.0))
-    assert cand.areas == region_area_deg2(regions, cand.stream_frame, cand.excluded_healpix_mask)
+    assert cand.band_regions["regions"] == regions and cand.areas == region_areas(cand.band_regions)
+    for name, area in _window_areas(regions, cand.stream_frame, cand.excluded_healpix_mask).items():
+        assert cand.areas[name] == pytest.approx(area, rel=5e-3)
     assert cand.phi1_profile["edges"][[0, -1]] == pytest.approx(cand.window[:2]) and cand.on_hess is None
     inside = np.abs(cand.phi1_profile["centres"]) < 2.5
     assert np.all(cand.phi1_profile["difference"][inside] > 0)
@@ -420,12 +438,12 @@ def test_compute_hess_areas_outside_footprint_hole(candidate_endpoints, candidat
     hole = (phi1 < 0.0) & (phi2 < -0.5 * (cand.on_n_sigma + cand.off_n_sigma[0]) * sigma)  # between on and off
     cand.prepare(candidate_catalog, footprint_mask=hole, nest=False)
     cand.define_regions(phi2_centre=0.0, sigma=sigma).compute_hess()
-    full = region_area_deg2(cand.regions, cand.stream_frame, None)
+    full = _window_areas(cand.regions, cand.stream_frame)
     below = region_windows(cand.regions)["off"][0]
     full_below = unmasked_area_deg2(cand.stream_frame, below[:2], below[2:], None)[0, 0]
     phi1_min, phi1_max = cand.regions["phi1_range"]
     hole_fraction = (0.0 - phi1_min) / (phi1_max - phi1_min)
-    assert cand.areas["on"] == pytest.approx(full["on"])
+    assert cand.areas["on"] == pytest.approx(full["on"], rel=1e-3)
     assert cand.areas["off"] == pytest.approx(full["off"] - hole_fraction * full_below, rel=0.02)
     n_on, n_off = cand.on_hess["n_stars"], cand.off_hess["n_stars"]
     error = np.sqrt(n_on / cand.areas["on"] ** 2 + n_off / cand.areas["off"] ** 2)
@@ -635,7 +653,7 @@ def test_run_all_steps(candidate_endpoints, candidate_stream_catalog, candidate_
 def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
     keys = {"name", "endpoint_1", "endpoint_2", "window", "age", "metallicity", "feh", "distance_modulus",
             "distance_kpc", "phi2_centre", "sigma", "phi1_range", "area_on_deg2", "area_off_deg2", "n_on", "n_off",
-            "n_excess", "n_excess_error"}
+            "n_excess", "n_excess_error", "snr"}
     cand = CandidateInvestigation("test", *candidate_endpoints, age=12.0, feh=-2.0,
                                   prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
     summary = cand.summary()
@@ -664,6 +682,13 @@ def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream
     assert (summary["n_on"], summary["n_off"]) == (n_on, n_below + n_above)
     assert summary["n_excess"] == pytest.approx(n_on - areas["on"] * off_density)
     assert summary["n_excess_error"] == pytest.approx(np.sqrt(n_on + areas["on"] ** 2 * off_variance))
+    assert summary["snr"] == pytest.approx(summary["n_excess"] / np.sqrt(areas["on"] * off_density))
+
+    # Regions edited by hand: their stars and areas built again
+    cand.regions = stream_regions(cand.regions["phi1_range"], 0.2, 0.5, on_n_sigma=1.5, off_n_sigma=(2.5, 4.0))
+    summary = cand.summary()
+    assert cand.band_regions["regions"] == cand.regions and summary["area_on_deg2"] == pytest.approx(
+        _window_areas(cand.regions, cand.stream_frame, cand.excluded_healpix_mask)["on"], rel=5e-3)
 
 
 # From the id of a listed candidate: its endpoints, best_dm as distance modulus, a default name and its figure

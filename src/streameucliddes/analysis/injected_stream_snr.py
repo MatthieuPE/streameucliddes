@@ -9,6 +9,7 @@ import logging
 
 from streameucliddes.analysis.catalog_preparation import catalog_match_filter_mask, default_error_cuts
 from streameucliddes.analysis.cmd_match_filter import get_match_filter
+from streameucliddes.analysis.on_off_regions import compute_snr
 from streameucliddes.catalogs.catalog_cuts import cut_flow
 from streameucliddes.catalogs.euclid_catalog import get_euclid_stars
 from streameucliddes.injection import inject
@@ -180,20 +181,6 @@ def _count_selected(catalog, cuts, distance_modulus, isochrone, match_filter):
     the preparation and selection of the searches.
     """
     return int(catalog_match_filter_mask(catalog, distance_modulus, isochrone, match_filter, cuts=cuts).sum())
-
-
-def compute_snr(n_stream, n_background):
-    """SNR of ``n_stream`` stream (or excess) stars over ``n_background`` background stars.
-
-    ``n_stream / sqrt(n_background)``; 0 without stream stars, inf without
-    background. Also the SNR of the excess on a known object
-    (``analysis.gc_dwarf_optimization.selection_snr``).
-    """
-    if n_stream == 0:
-        return 0.0  # No stream star selected, even without background
-    if n_background == 0:
-        return np.inf  # Avoid division by zero
-    return n_stream / np.sqrt(n_background)
 
 
 def scan_snr_grid(axes=("surface_brightness", "distance_modulus"), axis_values=None, seed=None, **kwargs):

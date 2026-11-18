@@ -1,4 +1,5 @@
-"""Tests of plotting/plot_gc_dwarf_optimization.py, with uniform mock stars and a cluster on the isochrone."""
+"""Tests of plotting/plot_on_off_regions.py around an object, with uniform mock stars and a cluster on the
+isochrone (along a track: tests/test_stream_optimization.py)."""
 
 import matplotlib
 
@@ -15,16 +16,17 @@ from astropy.coordinates import SkyCoord
 from streameucliddes.analysis.build_masks import elliptical_radius_deg
 from streameucliddes.analysis.catalog_preparation import catalog_match_filter_mask
 from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
-from streameucliddes.analysis.gc_dwarf_optimization import compare_selections, object_regions
-from streameucliddes.plotting.plot_gc_dwarf_optimization import (
-    plot_object_cmd,
-    plot_object_hess,
-    plot_object_map,
+from streameucliddes.analysis.gc_dwarf_optimization import object_regions
+from streameucliddes.analysis.on_off_regions import compare_selections
+from streameucliddes.plotting.plot_on_off_regions import (
+    plot_region_cmd,
+    plot_region_hess,
+    plot_region_map,
     plot_selection_comparison,
 )
 from streameucliddes.stream_frames import phi12_to_radec
 
-pytestmark = pytest.mark.plot_gc_dwarf_optimization
+pytestmark = pytest.mark.plot_on_off_regions
 
 DM = 17.0
 ISOCHRONE = {"age": 12.0, "metallicity": 0.0003}
@@ -69,32 +71,38 @@ def close_figures():
 
 
 # The map of the frame (phi1 east, to the left); the outlines of the regions on their ellipses; the SNR in the title
-def test_plot_object_map(catalog, regions):
+def test_plot_region_map(catalog, regions):
     selected = catalog_match_filter_mask(catalog, DM, ISOCHRONE, VIS_H_J)
-    fig, ax = plot_object_map(regions, selected, bin_size_deg=0.05)
+    fig, ax = plot_region_map(regions, selected, bin_size_deg=0.05)
     assert ax.get_xlim()[0] > ax.get_xlim()[1]  # east to the left
-    outlines = {line.get_label(): line.get_xydata() for line in ax.get_lines() if line.get_label() in ("on", "off")}
-    assert set(outlines) == {"on", "off"}
-    for label, radius in (("on", 2.0), ("off", 10.0)):
-        ra, dec = phi12_to_radec(*outlines[label].T, regions["stream_frame"])
-        np.testing.assert_allclose(elliptical_radius_deg(ra, dec, 50.0, -30.0, 0.4, 30.0), radius * 0.1, rtol=1e-6)
-    assert len(ax.get_lines()) == 3  # on outer edge (inner 0 not drawn), off inner and outer
-    assert "SNR" in ax.get_title() and "Dwarf" in ax.get_title()
+    assert ax.get_xlabel().endswith("(east) [deg]")
+    lines = ax.get_lines()
+    assert [line.get_color() for line in lines].count(lines[0].get_color()) == 1  # on outer edge (inner 0 not drawn)
+    assert len(lines) == 3  # and the off inner and outer edges
+    radii = []
+    for line in lines:
+        ra, dec = phi12_to_radec(*line.get_xydata().T, regions["stream_frame"])
+        radius = elliptical_radius_deg(ra, dec, 50.0, -30.0, 0.4, 30.0)
+        np.testing.assert_allclose(radius, radius[0], rtol=1e-6)
+        radii.append(radius[0] / 0.1)
+    assert radii == pytest.approx([2.0, 5.0, 10.0])
+    assert {"on", "off"} <= {text.get_text() for text in ax.get_legend().get_texts()}
+    assert "SNR" in ax.get_title() and "Dwarf" in ax.get_title() and "dm 17.0" in ax.get_title()
 
 
 # One panel per colour of the match filter; the on stars of the regions
-def test_plot_object_cmd(catalog, regions):
-    fig, axes = plot_object_cmd(catalog, regions, DM, ISOCHRONE, VIS_H_J)
+def test_plot_region_cmd(catalog, regions):
+    fig, axes = plot_region_cmd(catalog, regions, DM, ISOCHRONE, VIS_H_J)
     assert [ax.get_xlabel() for ax in axes] == ["VIS - H", "VIS - J"]
     assert len(axes[0].collections[1].get_offsets()) == regions["on"].sum()
     shown = (catalog[f"{VIS}_obs"] < 22.0).to_numpy()
-    fig, axes = plot_object_cmd(catalog, regions, mag_cols=[(f"{H}_obs", f"{J}_obs")], stars=shown)
+    fig, axes = plot_region_cmd(catalog, regions, mag_cols=[(f"{H}_obs", f"{J}_obs")], stars=shown)
     assert len(axes[0].collections[1].get_offsets()) == (regions["on"] & shown).sum()
 
 
 # One row of on, off, on - off and smoothed per colour
-def test_plot_object_hess(catalog, regions):
-    fig, axes = plot_object_hess(catalog, regions, DM, ISOCHRONE, VIS_H_J)
+def test_plot_region_hess(catalog, regions):
+    fig, axes = plot_region_hess(catalog, regions, DM, ISOCHRONE, VIS_H_J)
     assert [len(row) for row in axes] == [4, 4]
     assert axes[1][0].get_xlabel() == "VIS - J"
 

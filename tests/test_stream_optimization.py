@@ -1,4 +1,4 @@
-"""Tests of analysis/stream_optimization.py and plotting/plot_stream_optimization.py.
+"""Tests of analysis/stream_optimization.py, and of plotting/plot_on_off_regions.py along a track.
 
 A synthetic track along the gala frame of conftest.py (phi2 and distance linear in phi1)
 and stars uniform on the sphere around it: exact areas, and counts in proportion.
@@ -17,17 +17,15 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from astropy.coordinates import angular_separation
+from scipy.integrate import quad
+
 from streameucliddes.analysis import stream_optimization
-from streameucliddes.analysis.gc_dwarf_optimization import selection_snr
-from streameucliddes.analysis.stream_optimization import (
-    stream_density_map,
-    stream_field,
-    stream_regions,
-    track_match_filter_mask,
-)
+from streameucliddes.analysis.on_off_regions import region_density_map, selection_snr
+from streameucliddes.analysis.stream_optimization import stream_field, stream_regions, track_match_filter_mask
+from streameucliddes.catalogs import overlapped_objects
 from streameucliddes.catalogs.galstreams_catalog import galstreams_dm_along_track, galstreams_phi2_along_track
-from streameucliddes.plotting.plot_gc_dwarf_optimization import plot_object_hess
-from streameucliddes.plotting.plot_stream_optimization import plot_stream_map
+from streameucliddes.plotting.plot_on_off_regions import plot_region_hess, plot_region_map
 from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12
 
 pytestmark = pytest.mark.stream_optimization
@@ -74,11 +72,13 @@ def _regions(catalog, track, **kwargs):
     return stream_regions(catalog, track, **kwargs)
 
 
-def _band_area_deg2(edges, centres, low, high):
-    """Exact area of a band following the slices: sum of dphi1 (sin phi2_top - sin phi2_bottom)."""
-    widths = np.radians(np.diff(edges))
-    return float(np.degrees(np.degrees(np.sum(widths * (np.sin(np.radians(centres + high))
-                                                        - np.sin(np.radians(centres + low)))))))
+def _band_area_deg2(track, low, high):
+    """Exact area of a band from low to high off the track over PHI1_ENDS: the integral of
+    dphi1 (sin phi2_top - sin phi2_bottom), in deg²."""
+    def strip(phi1):
+        centre = float(galstreams_phi2_along_track(track, phi1))
+        return np.degrees(np.sin(np.radians(centre + high)) - np.sin(np.radians(centre + low)))
+    return quad(strip, *PHI1_ENDS, limit=200)[0]
 
 
 # ===================================================
@@ -108,41 +108,36 @@ def test_stream_field(track, gc_frame):
 # ===================================================
 
 
-# Slices: the track phi2 and rounded distance modulus at their centres; each star by its offset from its slice
-def test_stream_regions_slices(catalog, track):
-    regions = _regions(catalog, track, slice_deg=0.5, dm_step=0.05)
-    edges = regions["slice_edges"]
-    assert edges.size == 21 and edges[[0, -1]] == pytest.approx(PHI1_ENDS)
-    centres = (edges[:-1] + edges[1:]) / 2
-    np.testing.assert_allclose(regions["slice_phi2"], galstreams_phi2_along_track(track, centres))
-    np.testing.assert_allclose(regions["slice_dm"],
-                               np.round(galstreams_dm_along_track(track, centres) / 0.05) * 0.05)
-
+# Each star by its phi2 offset from the track at its phi1, at the rounded distance modulus of the track there
+def test_stream_regions_track(catalog, track):
+    regions = _regions(catalog, track, dm_step=0.05)
     phi1, delta = regions["phi1"], regions["delta_phi2"]
     in_range = (phi1 >= PHI1_ENDS[0]) & (phi1 <= PHI1_ENDS[1])
     assert np.isnan(delta[~in_range]).all() and np.isnan(regions["star_dm"][~in_range]).all()
-    star_slice = np.clip(np.searchsorted(edges, phi1[in_range], side="right") - 1, 0, edges.size - 2)
-    np.testing.assert_allclose(delta[in_range], regions["phi2"][in_range] - regions["slice_phi2"][star_slice])
+    np.testing.assert_allclose(delta[in_range],
+                               regions["phi2"][in_range] - galstreams_phi2_along_track(track, phi1[in_range]))
+    np.testing.assert_allclose(regions["star_dm"][in_range],
+                               np.round(galstreams_dm_along_track(track, phi1[in_range]) / 0.05) * 0.05)
+    np.testing.assert_allclose(regions["track_phi2"], galstreams_phi2_along_track(track, regions["track_phi1"]))
 
     on_half = regions["on_n_sigma"] * SIGMA
     off_inner, off_outer = (n * SIGMA for n in regions["off_n_sigma"])
-    np.testing.assert_array_equal(regions["on"], np.abs(np.nan_to_num(delta, nan=99.0)) <= on_half)
     distance = np.abs(np.nan_to_num(delta, nan=99.0))
+    np.testing.assert_array_equal(regions["on"], distance <= on_half)
     np.testing.assert_array_equal(regions["off"], (distance >= off_inner) & (distance <= off_outer))
     assert not (regions["on"] & regions["off"]).any() and not (regions["off_below"] & regions["off_above"]).any()
     assert (delta[regions["off_below"]] < 0).all() and (delta[regions["off_above"]] > 0).all()
+    assert regions["track_name"] == "Synthetic-T00" and regions["label"].startswith("Synthetic-T00 (dm ")
 
 
 # Areas exact without a mask; uniform stars in proportion to them; SNR of a uniform field about 0
 def test_stream_regions_areas(catalog, track):
     regions = _regions(catalog, track)
-    edges, centres = regions["slice_edges"], regions["slice_phi2"]
     on_half = regions["on_n_sigma"] * SIGMA
     off_inner, off_outer = (n * SIGMA for n in regions["off_n_sigma"])
-    assert regions["on_area_deg2"] == pytest.approx(_band_area_deg2(edges, centres, -on_half, on_half), rel=1e-3)
-    off = (_band_area_deg2(edges, centres, -off_outer, -off_inner)
-           + _band_area_deg2(edges, centres, off_inner, off_outer))
-    assert regions["off_area_deg2"] == pytest.approx(off, rel=1e-3)
+    assert regions["on_area_deg2"] == pytest.approx(_band_area_deg2(track, -on_half, on_half), rel=2e-3)
+    off = _band_area_deg2(track, -off_outer, -off_inner) + _band_area_deg2(track, off_inner, off_outer)
+    assert regions["off_area_deg2"] == pytest.approx(off, rel=2e-3)
     assert regions["on_area_fraction"] == pytest.approx(1.0) and regions["off_area_fraction"] == pytest.approx(1.0)
 
     density_on = regions["on"].sum() / regions["on_area_deg2"]
@@ -162,13 +157,31 @@ def test_stream_regions_footprint_hole(catalog, track, gc_frame):
     assert (regions["phi1"][regions["on"] | regions["off"]] < pixel_deg).all()
 
 
+# Known objects masked by their exact ellipses: the stars within the mask radius of a cluster on the track excluded
+def test_stream_regions_object_ellipses(catalog, track, gc_frame, monkeypatch):
+    (ra,), (dec,) = phi12_to_radec(np.array([1.0]), galstreams_phi2_along_track(track, [1.0]), gc_frame)
+    cluster = {"key": "gc_a", "name": "GC A", "ra": ra, "dec": dec, "radius_arcmin": 1.0, "ellipticity": np.nan,
+               "position_angle": np.nan, "distance_kpc": 20.0, "distance_modulus": 16.5, "feh": -2.0,
+               "age_gyr": 12.0, "apparent_magnitude_v": 9.0}
+    monkeypatch.setattr(overlapped_objects, "get_globular_clusters", lambda: pd.DataFrame([cluster]))
+    regions = _regions(catalog, track, object_masks="ellipses", masked_object_types=("gc",))
+    assert regions["masked_objects"]["key"].tolist() == ["gc_a"]
+    radius_deg = regions["masked_objects"]["mask_radius_arcmin"][0] / 60.0
+    separation = np.degrees(angular_separation(*np.radians([ra, dec]), np.radians(catalog["ra"].to_numpy()),
+                                               np.radians(catalog["dec"].to_numpy())))
+    np.testing.assert_array_equal(regions["excluded"], separation <= radius_deg)
+    assert regions["on_area_deg2"] < _regions(catalog, track)["on_area_deg2"]
+    with pytest.raises(ValueError, match="object_masks"):
+        _regions(catalog, track, object_masks="squares")
+
+
 # An offset moves the regions, not the track: the same stars as the regions of a track shifted by it, the same areas
 # (the track is far from the poles of the frame), and the field window shifted too
 def test_stream_regions_phi2_offset(catalog, track):
     offset = 0.6
     regions = _regions(catalog, track)
     shifted = _regions(catalog, track, phi2_offset_deg=offset)
-    np.testing.assert_allclose(shifted["slice_phi2"], regions["slice_phi2"] + offset)
+    np.testing.assert_allclose(shifted["track_phi2"], regions["track_phi2"] + offset)
     np.testing.assert_allclose(shifted["delta_phi2"], regions["delta_phi2"] - offset)
     on_half = regions["on_n_sigma"] * SIGMA
     np.testing.assert_array_equal(shifted["on"], np.abs(np.nan_to_num(regions["delta_phi2"] - offset, nan=99.0)) <= on_half)
@@ -176,6 +189,7 @@ def test_stream_regions_phi2_offset(catalog, track):
     assert shifted["phi2_offset_deg"] == offset and "+0.6 deg" in shifted["label"]
     field, field_shifted = stream_field(track, sigma_deg=SIGMA), stream_field(track, sigma_deg=SIGMA, phi2_offset_deg=offset)
     assert np.array(field_shifted["window"][2:]) == pytest.approx(np.array(field["window"][2:]) + offset)
+
 
 def test_stream_regions_errors(catalog, track):
     with pytest.raises(ValueError, match="sigma_deg"):
@@ -194,7 +208,7 @@ def test_stream_regions_errors(catalog, track):
 # ===================================================
 
 
-# One match filter per distance modulus of the slices, at that distance plus the offset; nothing outside the range
+# One match filter per distance modulus of the stars, at that distance plus the offset; nothing outside the range
 def test_track_match_filter_mask(catalog, track, monkeypatch):
     regions = _regions(catalog, track)
     calls = []
@@ -205,14 +219,15 @@ def test_track_match_filter_mask(catalog, track, monkeypatch):
 
     monkeypatch.setattr(stream_optimization, "catalog_match_filter_mask", fake_mask)
     selected = track_match_filter_mask(catalog, regions, ISOCHRONE, MATCH_FILTER, dm_offset=0.3)
-    distinct = np.unique(regions["slice_dm"])
+    star_dm = regions["star_dm"]
+    distinct = np.unique(star_dm[np.isfinite(star_dm)])
     assert sorted(dm for dm, _ in calls) == pytest.approx(sorted(distinct + 0.3))
     groups = np.array([mask for _, mask in calls])
     assert (groups.sum(axis=0) <= 1).all()  # each star in one group at most
-    np.testing.assert_array_equal(selected, np.isfinite(regions["star_dm"]))
+    np.testing.assert_array_equal(selected, np.isfinite(star_dm))
 
 
-# The real match filter: stars inside it at the distance of their slice
+# The real match filter: stars inside it at the distance of the track where they are
 def test_track_match_filter_mask_real(catalog, track):
     regions = _regions(catalog, track)
     selected = track_match_filter_mask(catalog, regions, ISOCHRONE, MATCH_FILTER)
@@ -222,8 +237,9 @@ def test_track_match_filter_mask_real(catalog, track):
 
 def test_stream_density_map(catalog, track):
     regions = _regions(catalog, track)
-    density_map = stream_density_map(regions, regions["on"], bin_size_deg=0.1)
+    density_map = region_density_map(regions, regions["on"])
     assert density_map["n_selected"] == regions["on"].sum()
+    assert density_map["bin_size_deg"] == stream_optimization.DEFAULT_MAP_BIN_DEG
     assert density_map["density"].shape == (density_map["phi1_centres"].size, density_map["phi2_centres"].size)
 
 
@@ -232,12 +248,13 @@ def test_stream_density_map(catalog, track):
 # ===================================================
 
 
-# Map: the edges of the on (2) and off (4) regions slice by slice, and the track; Hess diagrams titled by the label
+# Map: the outlines of the on band and of the two off bands, and the track; Hess diagrams titled by the label
 def test_plot_stream_map_and_hess(catalog, track):
     regions = _regions(catalog, track)
-    fig, ax = plot_stream_map(regions, smoothing_deg=0.1)
-    assert len(ax.patches) == 6
-    labels = [text.get_text() for text in ax.get_legend().get_texts()]
-    assert {"on", "off", "Synthetic-T00"} <= set(labels)
-    fig, _ = plot_object_hess(catalog, regions, float(np.mean(regions["slice_dm"])), ISOCHRONE, MATCH_FILTER)
+    fig, ax = plot_region_map(regions, smoothing_deg=0.1)
+    labels = [line.get_label() for line in ax.get_lines()]
+    assert labels.count("on") == 1 and labels.count("off") == 1 and len(ax.get_lines()) == 4  # on, 2 off, track
+    assert {"on", "off", "Synthetic-T00"} <= {text.get_text() for text in ax.get_legend().get_texts()}
+    assert fig.get_size_inches()[0] > fig.get_size_inches()[1] * 2  # a long map
+    fig, axes = plot_region_hess(catalog, regions, float(np.mean(regions["track_dm"])), ISOCHRONE, MATCH_FILTER)
     assert "Synthetic" in fig._suptitle.get_text()

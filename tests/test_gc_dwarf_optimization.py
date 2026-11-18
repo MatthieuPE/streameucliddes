@@ -7,17 +7,14 @@ import pandas as pd
 import pytest
 from astropy.coordinates import SkyCoord, angular_separation
 
-from streameucliddes.analysis import gc_dwarf_optimization
 from streameucliddes.analysis.build_masks import elliptical_radius_deg, mask_radius_scales
 from streameucliddes.analysis.gc_dwarf_optimization import (
-    compare_selections,
-    object_density_map,
     object_field_radius_deg,
     object_field_window,
     object_radec_box,
     object_regions,
-    selection_snr,
 )
+from streameucliddes.analysis.on_off_regions import region_density_map
 from streameucliddes.catalogs import overlapped_objects
 from streameucliddes.stream_frames import frame_centred_on_point, phi12_bin_centres, phi12_to_radec, radec_to_phi12
 
@@ -149,12 +146,11 @@ def test_object_regions(stars, target):
 
 
 # A large field (5 deg): the areas those of the circles on the sphere, 2 pi (1 - cos r); a flat annulus from 3 to
-# 5 deg is off by 9e-4; pieces fine enough for the edge effects to be smaller
-def test_object_regions_large_field(stars, monkeypatch):
-    monkeypatch.setattr(gc_dwarf_optimization, "AREA_PIECES_ACROSS_ON", 100)
+# 5 deg is off by 9e-4; pieces fine enough for the edge effects to be smaller (100 across the on region)
+def test_object_regions_large_field(stars):
     obj = pd.Series(_object("big", *CENTRE, 30.0))  # a circle of 30 arcmin
     regions = object_regions(stars, obj, on_radii=(0.0, 4.0), off_radii=(6.0, 10.0), masked_object_types=(),
-                             footprint_mask=_no_footprint_hole())
+                             footprint_mask=_no_footprint_hole(), area_step_deg=0.02)
 
     def cap(radius_deg):
         return 2 * np.pi * (1 - np.cos(np.radians(radius_deg))) * np.degrees(1.0) ** 2
@@ -235,11 +231,12 @@ def test_object_regions_errors(stars, target):
         _regions(stars, no_radius)
 
 
-# The map: the stars not excluded in the window, binned; the bins whose centre is on the masked cluster masked
+# The map: the stars not excluded in the window, binned; the bins whose centre is on the masked cluster masked;
+# by default 60 bins across the field
 def test_object_density_map(stars, target):
     regions = _regions(stars, target)
     bin_size = 0.02
-    density_map = object_density_map(regions, bin_size_deg=bin_size)
+    density_map = region_density_map(regions, bin_size_deg=bin_size)
     phi1_centres, phi2_centres = phi12_bin_centres(regions["window"], bin_size)
     np.testing.assert_array_equal(density_map["phi1_centres"], phi1_centres)
     density = density_map["density"]
@@ -257,31 +254,5 @@ def test_object_density_map(stars, target):
     # stars of the masked bins not counted: those of the bins around the cluster's mask
     assert density.sum() <= counted and density.sum() > 0.99 * counted
     selected = regions["on"]
-    assert object_density_map(regions, selected, bin_size_deg=bin_size)["density"].sum() == regions["on"].sum()
-
-
-# ===================================================
-# SNR
-# ===================================================
-
-
-# Background on the object: the off count scaled by the areas
-def test_selection_snr():
-    on = np.array([1, 1, 1, 1, 1, 0, 0, 0, 0, 0, 0, 0], dtype=bool)
-    off = ~on
-    regions = {"on": on, "off": off, "on_area_deg2": 1.0, "off_area_deg2": 7.0}
-    snr = selection_snr(regions)
-    assert snr["n_on"] == 5 and snr["n_off"] == 7
-    assert snr["n_background_on"] == pytest.approx(1.0)
-    assert snr["n_signal"] == pytest.approx(4.0)
-    assert snr["snr"] == pytest.approx(4.0)
-    assert snr["n_signal_error"] == pytest.approx(np.sqrt(5 + 7 / 49))
-    assert snr["background_density"] == pytest.approx(1.0)
-    selected = np.zeros(12, dtype=bool)
-    selected[:2] = True
-    assert selection_snr(regions, selected)["snr"] == np.inf  # no background
-    assert selection_snr(regions, np.zeros(12, dtype=bool))["snr"] == 0.0
-
-    table = compare_selections(regions, {"all": np.ones(12, dtype=bool), "two": selected})
-    assert table.index.tolist() == ["all", "two"]
-    assert table.loc["two", "n_on"] == 2
+    assert region_density_map(regions, selected, bin_size_deg=bin_size)["density"].sum() == regions["on"].sum()
+    assert region_density_map(regions)["bin_size_deg"] == pytest.approx(2 * OFF_RADII[1] * RHALF_ARCMIN / 60.0 / 60)

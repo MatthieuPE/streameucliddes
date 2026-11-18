@@ -580,8 +580,32 @@ def mean_off_density(
     n_regions : numpy.ndarray of int
         Number of off regions in the mean: 2, 1 (one has no area) or 0.
     """
-    densities = np.stack([np.asarray(density_below, dtype=float), np.asarray(density_above, dtype=float)])
-    errors = np.stack([np.asarray(error_below, dtype=float), np.asarray(error_above, dtype=float)])
+    return mean_density_of_off_parts([density_below, density_above], [error_below, error_above])
+
+
+def mean_density_of_off_parts(
+    densities: Sequence[ArrayLike], errors: Sequence[ArrayLike]
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.int64]]:
+    """Off density: the mean of the densities of any number of off regions (``mean_off_density`` for two).
+
+    One region (an annulus around an object): its density. Regions with no
+    area (density NaN) are left out of the mean.
+
+    Parameters
+    ----------
+    densities, errors : sequence of array_like
+        Density and Poisson error (stars/deg²) of each off region, all of the
+        same shape; NaN where a region has no area.
+
+    Returns
+    -------
+    density, error : numpy.ndarray
+        The mean and its error; NaN where no region has an area.
+    n_regions : numpy.ndarray of int
+        Number of off regions in the mean.
+    """
+    densities = np.stack([np.asarray(density, dtype=float) for density in densities])
+    errors = np.stack([np.asarray(error, dtype=float) for error in errors])
     with_area = np.isfinite(densities)
     n_regions = with_area.sum(axis=0)
     with np.errstate(divide="ignore", invalid="ignore"):

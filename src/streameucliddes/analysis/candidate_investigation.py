@@ -4,7 +4,7 @@ Two layers, in this module:
 
 - plain functions returning plain dicts, each callable alone and tunable:
   the on and off regions (``stream_regions``, ``region_windows``,
-  ``region_area_deg2``), the densities (``phi12_density_map``,
+  ``stream_band_regions``), the densities (``phi12_density_map``,
   ``phi12_density_profile``, ``on_off_phi1_profile``); the width fit is in
   ``analysis.fit_stream`` (``fit_stream_width``, ``stream_width_model``);
 - ``CandidateInvestigation``, which holds the inputs (two endpoints, the
@@ -27,10 +27,12 @@ one below and one above the track, from ``off_n_sigma[0] * sigma`` to
 ``off_n_sigma[1] * sigma``; all over ``phi1_range``. The off density is the
 mean of the densities of the two off regions (``mean_off_density``), so that
 a linear field gradient across the track cancels even where the masks cut
-one more than the other. Each region is a phi1/phi2 window
-(``region_windows``), so the window functions of ``stream_frames`` select
-their stars, draw them and, with ``catalogs.survey_footprint.unmasked_area_deg2``,
-give their areas. Areas and densities are outside the excluded mask
+one more than the other. The stars and areas of the regions are those of the
+bands along a straight track of ``analysis.on_off_regions.track_band_regions``
+(``stream_band_regions``), shared with the tuning on known objects and
+streams; its ``selection_snr`` gives the excess and SNR of ``summary``. Each
+region is also a phi1/phi2 window (``region_windows``), for the outlines and
+the phi1 profile. Areas and densities are outside the excluded mask
 (footprint OR masked objects, ``analysis.build_masks.excluded_healpix_mask``),
 so that the stars, the maps and the areas see the same masks.
 
@@ -68,13 +70,19 @@ import numpy as np
 from streameucliddes.analysis.build_masks import excluded_healpix_mask
 from streameucliddes.analysis.cmd_match_filter import (
     isochrone_cmd_track,
-    match_filter_columns,
+    match_filter_cmd_columns,
     mean_off_density,
-    on_off_hess,
     select_stars_in_match_filter,
 )
 from streameucliddes.analysis.fit_stream import DEFAULT_SIGMA_GUESS_DEG, fit_stream_width
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
+from streameucliddes.analysis.on_off_regions import (
+    DEFAULT_OFF_N_SIGMA,
+    DEFAULT_ON_N_SIGMA,
+    region_on_off_hess,
+    selection_snr,
+    track_band_regions,
+)
 from streameucliddes.analysis.stream_frame_search import (
     prepare_search,
     stream_frame_search_dm_scan,
@@ -87,7 +95,6 @@ from streameucliddes.stream_frames import (
     DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
     DEFAULT_PADDING_PHI1_DEG,
     DEFAULT_PADDING_PHI2_DEG,
-    in_phi12_window,
     phi12_to_radec,
     phi12_window_around,
     phi12_window_radec_box,
@@ -105,8 +112,6 @@ if TYPE_CHECKING:
 
     from streameucliddes.analysis.stream_frame_search import PreparedSearch
 
-DEFAULT_ON_N_SIGMA = 1.4  # user choice
-DEFAULT_OFF_N_SIGMA = (3.5, 6)  # user choice
 DEFAULT_PHI2_BIN_DEG = 0.05  # bins of the phi2 profile
 DEFAULT_PHI1_BIN_DEG = 0.5  # bins of the phi1 profile
 DEFAULT_WIDTH_MAP_BINS_DEG = (0.5, 0.2)  # (phi1, phi2) cells of the 2D map of the width fit
@@ -124,11 +129,12 @@ RUN_ALL_STEPS = ("compute_sky_map", "compute_zoom_map", "scan_distance_moduli", 
 WINDOW_FIELDS = ("padding_phi1_deg", "padding_phi2_deg", "min_phi2_half_width_deg")
 # Results that depend on the frame: cleared by prepare and set_endpoints (not sky_map nor isochrone_track)
 FRAME_RESULTS = ("search", "excluded_healpix_mask", "stars_not_excluded", "zoom_map", "maps", "phi2_profile", "width_fit", "width_map",
-                 "regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
+                 "regions", "band_regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
 # Results computed from the distance modulus (the stars in the match filter, from fit_width on)
-DISTANCE_MODULUS_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "areas", "phi1_profile", "on_hess",
+DISTANCE_MODULUS_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
+                            "on_hess",
                             "off_hess", "diff_hess", "isochrone_track")
-REGION_RESULTS = ("regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
+REGION_RESULTS = ("regions", "band_regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
 # Results cleared when an input changes after a step: those computed from it (the maps and the zoom map carry their
 # own distance modulus; prepare_search keeps the isochrone only as a default the candidate never uses)
 INPUT_RESULTS = {
@@ -244,18 +250,21 @@ def region_windows(regions: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def region_area_deg2(
+def stream_band_regions(
+    stars: pd.DataFrame,
     regions: dict[str, Any],
     stream_frame: coord.BaseCoordinateFrame,
     excluded_healpix_mask: NDArray[np.bool_] | None,
-) -> dict[str, float]:
-    """Areas of the on and off regions outside an excluded HEALPix mask.
+) -> dict[str, Any]:
+    """Stars and areas of the regions: the bands along a straight track of ``on_off_regions.track_band_regions``.
 
-    ``catalogs.survey_footprint.unmasked_area_deg2`` of each window of
-    ``region_windows``.
+    The track is at ``phi2_centre`` over ``phi1_range``; the bands are the
+    windows of ``region_windows``, offsets included.
 
     Parameters
     ----------
+    stars : pandas.DataFrame
+        Stars, with ``ra`` and ``dec``. Not copied.
     regions : dict
         From ``stream_regions``.
     stream_frame : astropy.coordinates.BaseCoordinateFrame
@@ -265,14 +274,25 @@ def region_area_deg2(
 
     Returns
     -------
-    areas : dict
-        ``{"on", "off_below", "off_above", "off"}`` (deg²); ``"off"`` is the
-        sum of the two off regions.
+    band_regions : dict
+        Those of ``track_band_regions`` (per star ``on``, ``off_below``,
+        ``off_above``, ``off``; ``<region>_area_deg2``...), plus ``regions``
+        (a copy of the regions they were built from).
     """
-    windows = region_windows(regions)
-    on, below, above = (float(unmasked_area_deg2(stream_frame, window[:2], window[2:], excluded_healpix_mask)[0, 0])
-                        for window in (windows["on"], *windows["off"]))
-    return {"on": on, "off_below": below, "off_above": above, "off": below + above}
+    band_regions = track_band_regions(
+        stars, stream_frame, regions["phi2_centre"], regions["phi1_range"], regions["sigma"],
+        on_n_sigma=regions["on_n_sigma"], off_n_sigma=regions["off_n_sigma"],
+        on_phi2_offset_deg=regions.get("on_phi2_offset_deg", 0.0),
+        off_phi2_offsets_deg=regions.get("off_phi2_offsets_deg", (0.0, 0.0)),
+        excluded_healpix_mask=excluded_healpix_mask,
+    )
+    band_regions["regions"] = dict(regions)
+    return band_regions
+
+
+def region_areas(band_regions: Mapping[str, Any]) -> dict[str, float]:
+    """``{"on", "off_below", "off_above", "off"}`` areas (deg²) of ``stream_band_regions``; ``"off"`` their sum."""
+    return {name: band_regions[f"{name}_area_deg2"] for name in ("on", "off_below", "off_above", "off")}
 
 
 # ===================================================
@@ -570,9 +590,12 @@ class CandidateInvestigation:
     phi2_profile, width_fit, width_map : dict
         ``phi12_density_profile`` (along phi2), ``fit_stream_width`` and
         ``phi12_density_map`` (the same stars in 2D) results.
-    regions, areas, phi1_profile : dict
-        ``stream_regions``, ``region_area_deg2`` and ``on_off_phi1_profile``
-        results.
+    regions, phi1_profile : dict
+        ``stream_regions`` and ``on_off_phi1_profile`` results.
+    band_regions, areas : dict
+        The stars and areas of the regions (``stream_band_regions``, built
+        again when ``regions`` is changed by hand) and their areas
+        (``region_areas``).
     on_hess, off_hess, diff_hess : dict
         ``hess_diagram`` and ``difference_hess`` results.
     isochrone_track : dict
@@ -614,6 +637,7 @@ class CandidateInvestigation:
     width_fit: dict | None = None
     width_map: dict | None = None
     regions: dict | None = None
+    band_regions: dict | None = None
     areas: dict | None = None
     phi1_profile: dict | None = None
     on_hess: dict | None = None
@@ -949,13 +973,18 @@ class CandidateInvestigation:
         )
         return float(phi1[0]), float(phi1[1])
 
-    def _region_star_masks(self) -> tuple[NDArray[np.bool_], NDArray[np.bool_], NDArray[np.bool_]]:
-        """Prepared stars outside the excluded mask in the on region, the off region below and the off region above."""
-        stars = self.search.stars
-        phi1, phi2 = stars["phi1"].to_numpy(), stars["phi2"].to_numpy()
-        windows = region_windows(self.regions)
-        return tuple(self.stars_not_excluded & in_phi12_window(phi1, phi2, window)
-                     for window in (windows["on"], *windows["off"]))
+    def _band_regions(self) -> dict[str, Any]:
+        """The stars and areas of ``regions`` (``stream_band_regions``), built again when ``regions`` changed.
+
+        Also sets ``areas``. ``regions`` can so be edited by hand after
+        ``define_regions`` (e.g. ``cand.regions = stream_regions(...)``).
+        """
+        self._require("regions", "define_regions")
+        if self.band_regions is None or self.band_regions["regions"] != self.regions:
+            self.band_regions = stream_band_regions(self.search.stars, self.regions, self.stream_frame,
+                                                    self.excluded_healpix_mask)
+            self.areas = region_areas(self.band_regions)
+        return self.band_regions
 
     def stars_in_match_filter(self) -> NDArray[np.bool_]:
         """Prepared stars outside the excluded mask, in the match filter at ``distance_modulus``
@@ -1109,7 +1138,8 @@ class CandidateInvestigation:
         """On and off regions, their areas and the phi1 profile.
 
         ``stream_regions`` (with ``on_n_sigma`` and ``off_n_sigma`` of the
-        object), ``region_area_deg2`` (outside ``excluded_healpix_mask``) and
+        object), ``stream_band_regions`` (its stars and areas, outside
+        ``excluded_healpix_mask``; ``areas``) and
         ``on_off_phi1_profile`` of the stars in the match filter at
         ``distance_modulus``, its bins over the whole window: where the stream
         starts and stops, to choose ``phi1_range``. The Hess diagrams of
@@ -1159,7 +1189,7 @@ class CandidateInvestigation:
         stars = self.search.stars
         self._clear_results(("on_hess", "off_hess", "diff_hess"))
         self.regions = regions
-        self.areas = region_area_deg2(regions, self.stream_frame, self.excluded_healpix_mask)
+        self._band_regions()
         self.phi1_profile = on_off_phi1_profile(
             stars["phi1"].to_numpy()[selected], stars["phi2"].to_numpy()[selected], regions, self.stream_frame,
             self.excluded_healpix_mask, phi1_range=self.window[:2], bin_deg=bin_deg,
@@ -1172,12 +1202,12 @@ class CandidateInvestigation:
         """On, off and on - off Hess diagrams (``hess_diagram``, ``difference_hess``).
 
         Every prepared star of the on region and of the two off regions
-        (``region_windows``, ``in_phi12_window``) outside the excluded mask
-        (``stars_not_excluded``), not only those in the match filter; colour
-        ``reference_band - color_bands[color_index]`` of the match filter and
-        magnitude ``reference_band``; densities per deg² with the areas of
-        ``define_regions``. The off diagram is the mean of those of the two
-        off regions (``on_off_hess``, ``mean_off_hess``).
+        (``stream_band_regions``) outside the excluded mask, not only those
+        in the match filter; colour ``reference_band -
+        color_bands[color_index]`` of the match filter and magnitude
+        ``reference_band``; densities per deg² with the areas of the regions.
+        The off diagram is the mean of those of the two off regions
+        (``on_off_regions.region_on_off_hess``, ``mean_off_hess``).
 
         Parameters
         ----------
@@ -1196,13 +1226,10 @@ class CandidateInvestigation:
         ValueError
             ``define_regions`` not done.
         """
-        self._require("regions", "define_regions")
-        stars = self.search.stars
-        on, below, above = self._region_star_masks()
-        reference, *colors = match_filter_columns(self.search.match_filter)
-        self.on_hess, self.off_hess, self.diff_hess = on_off_hess(
-            stars, (reference, colors[color_index]), on, self.areas["on"], (below, above),
-            (self.areas["off_below"], self.areas["off_above"]), color_bins=color_bins, mag_bins=mag_bins,
+        band_regions = self._band_regions()
+        self.on_hess, self.off_hess, self.diff_hess = region_on_off_hess(
+            self.search.stars, match_filter_cmd_columns(self.search.match_filter)[color_index], band_regions,
+            color_bins=color_bins, mag_bins=mag_bins,
         )
         return self
 
@@ -1356,14 +1383,16 @@ class CandidateInvestigation:
             ``{"name", "endpoint_1", "endpoint_2", "window", "age",
             "metallicity", "feh", "distance_modulus", "distance_kpc",
             "phi2_centre", "sigma", "phi1_range", "area_on_deg2",
-            "area_off_deg2", "n_on", "n_off", "n_excess", "n_excess_error"}``;
-            None for the steps not done. ``metallicity`` is the Z used
-            (``isochrone``). ``n_on`` and ``n_off``: stars in the match
+            "area_off_deg2", "n_on", "n_off", "n_excess", "n_excess_error",
+            "snr"}``; None for the steps not done. ``metallicity`` is the Z
+            used (``isochrone``). ``n_on`` and ``n_off``: stars in the match
             filter at ``distance_modulus`` outside the excluded mask, in the
             on region and in the two off regions; ``n_excess = area_on * (n_on
             / area_on - off density)``, the off density the mean of the two
-            off regions (``mean_off_density``), and its Poisson error
-            ``n_excess_error``.
+            off regions, its Poisson error ``n_excess_error`` and ``snr``,
+            ``n_excess`` over the square root of the background on the on
+            region (``on_off_regions.selection_snr``, as the tuning on known
+            objects and streams).
         """
         summary: dict[str, Any] = {
             "name": self.name, "endpoint_1": tuple(self.endpoint_1), "endpoint_2": tuple(self.endpoint_2),
@@ -1374,23 +1403,18 @@ class CandidateInvestigation:
             else float(convert_DM_to_kpc(self.distance_modulus).value),
         }
         fit = self.width_fit if self.regions is None else self.regions
+        if self.regions is not None and self.search is not None:
+            self._band_regions()  # the areas of regions edited by hand
         summary.update({
             "phi2_centre": None if fit is None else float(fit["phi2_centre"]),
             "sigma": None if fit is None else float(fit["sigma"]),
             "phi1_range": None if self.regions is None else self.regions["phi1_range"],
             "area_on_deg2": None if self.areas is None else self.areas["on"],
             "area_off_deg2": None if self.areas is None else self.areas["off"],
-            "n_on": None, "n_off": None, "n_excess": None, "n_excess_error": None,
+            "n_on": None, "n_off": None, "n_excess": None, "n_excess_error": None, "snr": None,
         })
         if self.regions is not None and self.distance_modulus is not None:
-            selected = self.stars_in_match_filter()
-            n_on, n_below, n_above = (int((selected & mask).sum()) for mask in self._region_star_masks())
-            areas = self.areas
-            below, above = ((count / area, np.sqrt(count) / area) if area > 0 else (np.nan, np.nan)
-                            for count, area in ((n_below, areas["off_below"]), (n_above, areas["off_above"])))
-            off_density, off_error, _ = mean_off_density(*below, *above)
-            summary.update({
-                "n_on": n_on, "n_off": n_below + n_above, "n_excess": float(n_on - areas["on"] * off_density),
-                "n_excess_error": float(np.sqrt(n_on + (areas["on"] * off_error) ** 2)),
-            })
+            snr = selection_snr(self._band_regions(), self.stars_in_match_filter())
+            summary.update({"n_on": snr["n_on"], "n_off": snr["n_off"], "n_excess": snr["n_signal"],
+                            "n_excess_error": snr["n_signal_error"], "snr": snr["snr"]})
         return summary
