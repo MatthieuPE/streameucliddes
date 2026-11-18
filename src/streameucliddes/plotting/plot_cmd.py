@@ -61,7 +61,7 @@ def plot_CMD(
     fig: Figure | None = None,
     ax: Axes | None = None,
     mag_cols: Sequence[str] = ("mag_g", "mag_r"),
-    ylim: tuple[float, float] = (15, 28),
+    ylim: tuple[float, float] = (15, 26),
     xlim: tuple[float | None, float | None] | None = (0.1, 1.2),
     xlabel: str | None = r"$g-r$",
     ylabel: str | None = r"$g$",

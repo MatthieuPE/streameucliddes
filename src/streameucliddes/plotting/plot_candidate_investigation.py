@@ -382,6 +382,8 @@ def plot_candidate_map(
     show_regions: bool = True,
     phi1_range: tuple[float, float] | None = None,
     phi2_range: tuple[float, float] | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> tuple[Figure, Axes]:
     """Matched-filter map in the frame, with the track and the regions.
 
@@ -417,7 +419,7 @@ def plot_candidate_map(
         No map: neither ``maps`` nor a ``zoom_map`` at this distance modulus.
     """
     fig, ax = plot_stream_frame_search_single_dm(_candidate_map(cand, distance_modulus), ax=ax,
-                                                 phi1_range=phi1_range, phi2_range=phi2_range)
+                                                 phi1_range=phi1_range, phi2_range=phi2_range, vmin=vmin, vmax=vmax,)
     draw_stream_track(ax, *cand.track_phi12(), label="track" if cand.regions is not None else "endpoints arc")
     if show_regions and cand.regions is not None:
         draw_stream_regions(ax, cand.regions)
