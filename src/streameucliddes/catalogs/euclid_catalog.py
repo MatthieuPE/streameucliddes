@@ -24,8 +24,11 @@ compared directly with injected streams:
   namespace of the streamobs survey (``euclid_q1``, ``euclid_dr1``, ``des_yr6``);
 - the photometry of the streamobs selection functions: Euclid ``FLUX_VIS_PSF`` and
   ``FLUX_{Y,J,H}_TEMPLFIT``, DES ``BDF_MAG_*``;
-- Euclid magnitudes dereddened with E(B-V) of Schlegel et al. 1998 (SFD98) and the
-  streamobs extinction coefficients; DES magnitudes are already dereddened by DES;
+- Euclid magnitudes dereddened with the E(B-V) and coefficients of a dust correction
+  (:data:`DUST_CORRECTIONS`): ``"SFD98"`` (Schlegel et al. 1998, default) or
+  ``"PLANCK"`` (the Euclid ``GAL_EBV`` column, Planck 2013 map, as Gatto et al.);
+  DES magnitudes come dereddened by DES (SFD98); with another dust correction, its
+  E(B-V) replaces SFD98 with the DES coefficients of streamobs;
 - the same default star selection: ``POINT_LIKE_PROB >= 0.5`` and
   ``SPURIOUS_FLAG == 0`` for Euclid, ``0 <= EXT_XGB <= 1`` for DES.
 
@@ -77,6 +80,7 @@ CATALOGS = {
     "euclid_dr1_des": {"euclid_release": "dr1", "with_des": True, "data_path": DATA_DIR / "euclid_dr1_des"},
 }
 
+DES_RELEASE = "yr6"  # streamobs DES release (extinction coefficients, see des_survey)
 DES_NAMESPACE = "des_yr6"
 DES_BANDS = ("g", "r", "i", "z")
 # DES magnitudes outside this range are sentinels (-99, 37.5, -9.999e9).
@@ -86,14 +90,23 @@ DES_VALID_MAG_RANGE = (0.0, 37.5)
 READ_BATCH_SIZE = 1_000_000
 
 # Euclid fluxes and errors per band, in micro-Jansky. There is no FLUX_VIS_TEMPLFIT:
-# the template fitting measures the NISP bands with the VIS image as prior, VIS being
-# measured by PSF fitting.
+# TPHOT measures VIS on the VIS image PSF-matched to each other band, so that a
+# colour VIS - Y uses FLUX_VIS_TO_Y_TEMPLFIT and FLUX_Y_TEMPLFIT (DR1 only, added by
+# scripts/download_euclid_dr1.py --add-columns). "VIS" is the PSF-fitting flux.
+VIS_TEMPLFIT_PARTNER_BANDS = ("Y", "J", "H")  # bands of the FLUX_VIS_TO_<band>_TEMPLFIT columns
 EUCLID_FLUX_COLUMNS = {
     "VIS": ("FLUX_VIS_PSF", "FLUXERR_VIS_PSF"),  # VIS PSF-fitting flux
     "Y": ("FLUX_Y_TEMPLFIT", "FLUXERR_Y_TEMPLFIT"),  # NISP Y template-fitting flux
     "J": ("FLUX_J_TEMPLFIT", "FLUXERR_J_TEMPLFIT"),  # NISP J template-fitting flux
     "H": ("FLUX_H_TEMPLFIT", "FLUXERR_H_TEMPLFIT"),  # NISP H template-fitting flux
+    # VIS template-fitting fluxes, PSF-matched to Y, J, H (DR1 only)
+    **{f"VIS_TO_{band}": (f"FLUX_VIS_TO_{band}_TEMPLFIT", f"FLUXERR_VIS_TO_{band}_TEMPLFIT")
+       for band in VIS_TEMPLFIT_PARTNER_BANDS},
 }
+# VIS photometry of a match filter (see vis_band): "psf", the "VIS" magnitudes, or
+# "templfit", the "VIS_TO_<band>" magnitudes, <band> being the other band of the colour.
+VIS_PHOTOMETRIES = ("psf", "templfit")
+DEFAULT_VIS_PHOTOMETRY = "psf"
 # Euclid columns read by default, besides the fluxes, RA/Dec and E(B-V).
 EUCLID_DEFAULT_COLUMNS = [
     "OBJECT_ID",  # Euclid unique source identifier
@@ -159,6 +172,38 @@ GATTO_COLOR_BOX = {
 # Column added by add_gatto_color_box: True inside GATTO_COLOR_BOX.
 GATTO_COLOR_BOX_COLUMN = "in_gatto_color_box"
 
+
+# Dust correction of the Euclid magnitudes (add_magnitudes), chosen by name: the
+# E(B-V) column (Euclid-only catalog name; crossmatched catalogs: see ebv_column)
+# and the extinction coefficients A_band / E(B-V) of the Euclid bands.
+# - "SFD98": E(B-V) of Schlegel, Finkbeiner & Davis (1998), column added by
+#   scripts/download_euclid_dr1.py (crossmatched catalogs: the DES column).
+# - "PLANCK": the Euclid GAL_EBV column, the E(B-V) map of Planck Collaboration:
+#   Abergel et al. 2014 (A&A 571, A11; HFI_CompMap_ThermalDustModel_2048_R1.20), as
+#   in Gatto et al. (Euclid DR1 dwarf galaxies, Sect. 2). GAL_EBV equals dustmaps'
+#   PlanckQuery of that map on 20,003 DR1 sources (checked on 2026-11-18).
+COEFF_SFD98 = {
+    "VIS": 1.790,  # A_VIS / E(B-V)_SFD98
+    "Y": 0.879,  # A_Y / E(B-V)_SFD98
+    "J": 0.595,  # A_J / E(B-V)_SFD98
+    "H": 0.400,  # A_H / E(B-V)_SFD98
+}
+
+# Gatto et al. (Sect. 2): from the PARSEC A_band / A_V (Cardelli et al. 1989,
+# O'Donnell 1994), R_V = 3.1.
+COEFF_PLANCK = {
+    "VIS": 2.28,  # A_VIS / E(B-V)_PLANCK
+    "Y": 1.14,  # A_Y / E(B-V)_PLANCK
+    "J": 0.79,  # A_J / E(B-V)_PLANCK
+    "H": 0.51,  # A_H / E(B-V)_PLANCK
+}
+DUST_CORRECTIONS = {
+    "SFD98": {"ebv_column": "EBV_SFD98", "coefficients": COEFF_SFD98},
+    "PLANCK": {"ebv_column": "GAL_EBV", "coefficients": COEFF_PLANCK},
+}
+DEFAULT_DUST_CORRECTION = "SFD98"
+
+
 # ===================================================
 # Catalog description
 # ===================================================
@@ -176,8 +221,9 @@ def euclid_survey(catalog):
     """
     streamobs Euclid survey of the catalog's release.
 
-    Its namespace names the magnitude columns, and its extinction coefficients and
-    VIS saturation are used here, so they follow any update of streamobs.
+    Its namespace names the magnitude columns, and its VIS saturation is used here,
+    so it follows any update of streamobs. The extinction coefficients are those of
+    :data:`DUST_CORRECTIONS`.
 
     Parameters
     ----------
@@ -192,14 +238,32 @@ def euclid_survey(catalog):
     return Survey.load("euclid", release=release, verbose=False)
 
 
+@functools.cache
+def des_survey():
+    """
+    streamobs DES survey (release :data:`DES_RELEASE`).
+
+    Its extinction coefficients A_band / E(B-V)_SFD98 are those DES used to deredden
+    the ``BDF_MAG_*_CORRECTED`` magnitudes; :func:`add_magnitudes` uses them to
+    change the dust correction of the DES bands.
+
+    Returns
+    -------
+    streamobs.surveys.Survey
+    """
+    return Survey.load("des", release=DES_RELEASE, verbose=False)
+
+
 def euclid_column(catalog, name):
     """Name of the Euclid column ``name`` in ``catalog`` (``_euclid`` suffix if crossmatched)."""
     return f"{name}_euclid" if _catalog_info(catalog)["with_des"] else name
 
 
-def catalog_columns(catalog):
+def euclid_bands(catalog):
     """
-    Names of the columns with a role in ``catalog``.
+    Euclid bands of ``catalog`` (keys of :data:`EUCLID_FLUX_COLUMNS`).
+
+    The VIS template-fitting bands ``VIS_TO_<band>`` are only in DR1.
 
     Parameters
     ----------
@@ -208,22 +272,105 @@ def catalog_columns(catalog):
 
     Returns
     -------
+    tuple of str
+    """
+    dr1 = _catalog_info(catalog)["euclid_release"] == "dr1"
+    return tuple(band for band in EUCLID_FLUX_COLUMNS if dr1 or not band.startswith("VIS_TO_"))
+
+
+def vis_band(other_band, vis_photometry=DEFAULT_VIS_PHOTOMETRY):
+    """
+    Euclid band of the VIS magnitude in a colour with ``other_band``.
+
+    Parameters
+    ----------
+    other_band : str
+        The other band of the colour, e.g. ``"H"`` for VIS - H.
+    vis_photometry : str
+        ``"psf"``: the PSF-fitting magnitude, ``"VIS"``; ``"templfit"``: the
+        template-fitting magnitude on the VIS image PSF-matched to ``other_band``,
+        ``"VIS_TO_<other_band>"`` (``other_band`` in
+        :data:`VIS_TEMPLFIT_PARTNER_BANDS`, DR1 only).
+
+    Returns
+    -------
+    str
+        Key of :data:`EUCLID_FLUX_COLUMNS`; the magnitude column of
+        :func:`add_magnitudes` is ``<namespace>_<band>_obs``.
+    """
+    if vis_photometry not in VIS_PHOTOMETRIES:
+        raise ValueError(f"Unknown VIS photometry {vis_photometry!r}: choose one of {VIS_PHOTOMETRIES}")
+    if vis_photometry == "psf":
+        return "VIS"
+    if other_band not in VIS_TEMPLFIT_PARTNER_BANDS:
+        raise ValueError(f"No VIS template-fitting magnitude for a colour with {other_band!r}: "
+                         f"only with {VIS_TEMPLFIT_PARTNER_BANDS}")
+    return f"VIS_TO_{other_band}"
+
+
+def _extinction_band(band):
+    """Band of the extinction coefficient of a Euclid band: ``"VIS_TO_H"`` -> ``"VIS"``."""
+    return band.split("_TO_")[0]
+
+
+def _dust_correction(dust_correction):
+    """Entry of :data:`DUST_CORRECTIONS`, with a clear error for an unknown name."""
+    if dust_correction not in DUST_CORRECTIONS:
+        raise ValueError(f"Unknown dust correction {dust_correction!r}: "
+                         f"choose one of {list(DUST_CORRECTIONS)}")
+    return DUST_CORRECTIONS[dust_correction]
+
+
+def ebv_column(catalog, dust_correction=DEFAULT_DUST_CORRECTION):
+    """
+    Name of the E(B-V) column of a dust correction in ``catalog``.
+
+    Parameters
+    ----------
+    catalog : str
+        Key of :data:`CATALOGS`.
+    dust_correction : str
+        Key of :data:`DUST_CORRECTIONS`.
+
+    Returns
+    -------
+    str
+        Crossmatched catalogs: the DES column for SFD98 (``_des`` suffix), the Euclid
+        column otherwise (``_euclid`` suffix).
+    """
+    name = _dust_correction(dust_correction)["ebv_column"]
+    if dust_correction == "SFD98" and _catalog_info(catalog)["with_des"]:
+        return f"{name}_des"
+    return euclid_column(catalog, name)
+
+
+def catalog_columns(catalog, dust_correction=DEFAULT_DUST_CORRECTION):
+    """
+    Names of the columns with a role in ``catalog``.
+
+    Parameters
+    ----------
+    catalog : str
+        Key of :data:`CATALOGS`.
+    dust_correction : str
+        Key of :data:`DUST_CORRECTIONS`: gives the ``ebv`` column.
+
+    Returns
+    -------
     dict
-        ``ra``, ``dec``: Euclid source barycentre [deg]; ``ebv``: SFD98 E(B-V) (the
-        streamobs coefficients are A_band / E(B-V)_SFD, so the Euclid ``GAL_EBV``
-        column does not apply); ``euclid_fluxes``: ``{band: (flux, error)}``;
-        ``des_magnitudes``: ``{band: (magnitude, error)}``, empty without DES.
+        ``ra``, ``dec``: Euclid source barycentre [deg]; ``ebv``: E(B-V) of the
+        dust correction (:func:`ebv_column`); ``euclid_fluxes``: ``{band: (flux,
+        error)}`` of the bands of :func:`euclid_bands`; ``des_magnitudes``: ``{band:
+        (magnitude, error)}``, empty without DES.
     """
     with_des = _catalog_info(catalog)["with_des"]
     return {
         "ra": euclid_column(catalog, "RIGHT_ASCENSION"),
         "dec": euclid_column(catalog, "DECLINATION"),
-        # Euclid-only catalogs: added by scripts/download_euclid_dr1.py;
-        # crossmatched catalogs: the DES column.
-        "ebv": "EBV_SFD98_des" if with_des else "EBV_SFD98",
+        "ebv": ebv_column(catalog, dust_correction),
         "euclid_fluxes": {
-            band: (euclid_column(catalog, flux), euclid_column(catalog, error))
-            for band, (flux, error) in EUCLID_FLUX_COLUMNS.items()
+            band: tuple(euclid_column(catalog, column) for column in EUCLID_FLUX_COLUMNS[band])
+            for band in euclid_bands(catalog)
         },
         # BDF_MAG_<B>_CORRECTED: DES bulge+disk model magnitude, dereddened by DES (SFD98)
         "des_magnitudes": {
@@ -233,27 +380,38 @@ def catalog_columns(catalog):
     }
 
 
-def default_columns(catalog):
+def default_columns(catalog, vis_photometry=DEFAULT_VIS_PHOTOMETRY):
     """
     Columns read by default: identifiers, positions, classification, quality flags
-    and the photometry used by :func:`add_magnitudes`.
+    and the photometry used by :func:`add_magnitudes`, with the E(B-V) of every
+    dust correction (:data:`DUST_CORRECTIONS`).
 
     Parameters
     ----------
     catalog : str
         Key of :data:`CATALOGS`.
+    vis_photometry : str
+        ``"psf"``: the VIS PSF flux only; ``"templfit"``: also the VIS
+        template-fitting fluxes ``FLUX_VIS_TO_<band>_TEMPLFIT`` (DR1), read only on
+        demand (6 more columns for every star).
 
     Returns
     -------
     list of str
     """
+    if vis_photometry not in VIS_PHOTOMETRIES:
+        raise ValueError(f"Unknown VIS photometry {vis_photometry!r}: choose one of {VIS_PHOTOMETRIES}")
     roles = catalog_columns(catalog)
+    if vis_photometry == "templfit" and not any(b.startswith("VIS_TO_") for b in roles["euclid_fluxes"]):
+        raise ValueError(f"{catalog} has no VIS template-fitting fluxes (DR1 only)")
+    fluxes = {band: pair for band, pair in roles["euclid_fluxes"].items()
+              if vis_photometry == "templfit" or not band.startswith("VIS_TO_")}
     columns = [euclid_column(catalog, "OBJECT_ID"), roles["ra"], roles["dec"]]
     columns += [euclid_column(catalog, c) for c in EUCLID_DEFAULT_COLUMNS[1:]]
     if roles["des_magnitudes"]:
         columns += DES_DEFAULT_COLUMNS
-    columns.append(roles["ebv"])
-    columns += [c for pair in roles["euclid_fluxes"].values() for c in pair]
+    columns += [ebv_column(catalog, name) for name in DUST_CORRECTIONS]
+    columns += [c for pair in fluxes.values() for c in pair]
     columns += [c for pair in roles["des_magnitudes"].values() for c in pair]
     return columns
 
@@ -545,14 +703,17 @@ def _to_pandas(table):
 # ===================================================
 
 
-def magnitude_columns(catalog):
+def magnitude_columns(catalog, vis_photometry=DEFAULT_VIS_PHOTOMETRY):
     """
-    Columns added by :func:`add_magnitudes` with its default bands.
+    Columns added by :func:`add_magnitudes` with its default bands, to the columns
+    of ``default_columns(catalog, vis_photometry)``.
 
     Parameters
     ----------
     catalog : str
         Key of :data:`CATALOGS`.
+    vis_photometry : str
+        ``"templfit"``: with the VIS template-fitting magnitudes.
 
     Returns
     -------
@@ -560,22 +721,30 @@ def magnitude_columns(catalog):
         ``ra``, ``dec`` and the ``<namespace>_<band>_obs`` / ``_err`` columns.
     """
     namespace = euclid_survey(catalog).namespace
+    bands = [band for band in euclid_bands(catalog)
+             if vis_photometry == "templfit" or not band.startswith("VIS_TO_")]
     columns = ["ra", "dec"]
     for prefix, bands in [(DES_NAMESPACE, catalog_columns(catalog)["des_magnitudes"]),
-                          (namespace, EUCLID_FLUX_COLUMNS)]:
+                          (namespace, bands)]:
         columns += [f"{prefix}_{band}_{kind}" for band in bands for kind in ("obs", "err")]
     return columns
 
 
-def add_magnitudes(data, catalog, euclid_bands=tuple(EUCLID_FLUX_COLUMNS), des_bands=None):
+def add_magnitudes(
+    data, catalog, bands=None, des_bands=None, dust_correction=DEFAULT_DUST_CORRECTION,
+):
     """
     Add harmonised, dereddened magnitudes and ``ra``/``dec`` columns, in place.
 
     Adds ``<euclid namespace>_<band>_obs`` / ``_err`` from the Euclid fluxes
-    (non-positive fluxes set to NaN), dereddened with the SFD98 E(B-V) and the
-    extinction coefficients of the streamobs Euclid survey, and, for crossmatched
-    catalogs, ``des_yr6_<band>_obs`` / ``_err`` from the DES BDF magnitudes
-    (sentinels set to NaN). ``ra``/``dec`` are the Euclid positions.
+    (non-positive fluxes set to NaN), dereddened with the E(B-V) column and the
+    extinction coefficients of ``dust_correction`` (the VIS coefficient for the
+    VIS template-fitting bands ``VIS_TO_<band>``), and, for crossmatched catalogs,
+    ``des_yr6_<band>_obs`` / ``_err`` from the DES BDF magnitudes (sentinels set to
+    NaN). DES dereddened them with SFD98 and the DES coefficients
+    (:func:`des_survey`); the E(B-V) of ``dust_correction`` replaces SFD98 with the
+    same DES coefficients: ``mag + R_DES * (E(B-V)_SFD98 - E(B-V))``, unchanged for
+    ``"SFD98"``. ``ra``/``dec`` are the Euclid positions.
 
     Parameters
     ----------
@@ -583,36 +752,54 @@ def add_magnitudes(data, catalog, euclid_bands=tuple(EUCLID_FLUX_COLUMNS), des_b
         Catalog read with :func:`open_euclid_catalog`.
     catalog : str
         Key of :data:`CATALOGS`.
-    euclid_bands : sequence of str
-        Euclid bands to convert.
+    bands : sequence of str, optional
+        Euclid bands to convert; None: those of :func:`euclid_bands`, the VIS
+        template-fitting ones only when their fluxes were read
+        (``default_columns(catalog, "templfit")``).
     des_bands : sequence of str, optional
         DES bands to convert; None: all of them with DES, none without.
+    dust_correction : str
+        Key of :data:`DUST_CORRECTIONS`: ``"SFD98"`` or ``"PLANCK"``.
 
     Returns
     -------
     pd.DataFrame
         ``data``, with the new columns.
     """
-    roles = catalog_columns(catalog)
+    coefficients = _dust_correction(dust_correction)["coefficients"]
+    roles = catalog_columns(catalog, dust_correction)
+    if bands is None:
+        euclid_bands = tuple(band for band, (flux, _) in roles["euclid_fluxes"].items()
+                             if not band.startswith("VIS_TO_") or flux in data.columns)
+    else:
+        euclid_bands = bands
     if des_bands is None:
         des_bands = tuple(roles["des_magnitudes"])
     elif des_bands and not roles["des_magnitudes"]:
         raise ValueError(f"{catalog} has no DES magnitudes")
     needed = [roles["ra"], roles["dec"]]
     needed += [c for b in des_bands for c in roles["des_magnitudes"][b]]
+    if des_bands:
+        needed += [ebv_column(catalog, "SFD98"), roles["ebv"]]
     if euclid_bands:
         needed += [c for b in euclid_bands for c in roles["euclid_fluxes"][b]] + [roles["ebv"]]
-    missing = [c for c in needed if c not in data.columns]
+    missing = list(dict.fromkeys(c for c in needed if c not in data.columns))
     if missing:
         raise KeyError(f"Column(s) needed to compute the magnitudes are missing: {missing}")
 
     data["ra"] = data[roles["ra"]]
     data["dec"] = data[roles["dec"]]
 
+    if des_bands:
+        des_coefficients = des_survey().coeff_extinc
+        # E(B-V) of DES's correction minus the chosen one: 0 for SFD98
+        ebv_change = (data[ebv_column(catalog, "SFD98")].to_numpy(dtype=float)
+                      - data[roles["ebv"]].to_numpy(dtype=float))
     for band in des_bands:
         mag_col, err_col = roles["des_magnitudes"][band]
         mag = data[mag_col].to_numpy(dtype=float)
         valid = (mag > DES_VALID_MAG_RANGE[0]) & (mag < DES_VALID_MAG_RANGE[1])
+        mag = mag + des_coefficients[band] * ebv_change
         data[f"{DES_NAMESPACE}_{band}_obs"] = np.where(valid, mag, np.nan)
         data[f"{DES_NAMESPACE}_{band}_err"] = np.where(valid, data[err_col], np.nan)
 
@@ -627,7 +814,7 @@ def add_magnitudes(data, catalog, euclid_bands=tuple(EUCLID_FLUX_COLUMNS), des_b
         with np.errstate(divide="ignore", invalid="ignore"):
             mag = flux_to_mag(np.where(valid, flux, np.nan) * 1e-6)  # micro-Jy -> Jy
             mag_err = 2.5 / np.log(10) * flux_err / flux
-        data[f"{survey.namespace}_{band}_obs"] = mag - survey.coeff_extinc[band] * ebv
+        data[f"{survey.namespace}_{band}_obs"] = mag - coefficients[_extinction_band(band)] * ebv
         data[f"{survey.namespace}_{band}_err"] = np.where(valid, mag_err, np.nan)
 
     return data
@@ -736,14 +923,15 @@ def add_gatto_color_box(data, catalog):
 BATCH_COLUMNS = (XGBOOST_STAR_PROB_COLUMN, GATTO_COLOR_BOX_COLUMN)
 
 
-def _batch_selection(catalog, cuts):
+def _batch_selection(catalog, cuts, dust_correction=DEFAULT_DUST_CORRECTION):
     """
     ``batch_selection`` of :func:`open_euclid_catalog` for the cuts on the columns
     of :data:`BATCH_COLUMNS`: keeps the rows of each batch passing those cuts, with
     the columns.
 
     The classifier runs on the pyarrow table, so that only the rows it keeps are
-    converted to pandas; the colour box needs the magnitudes, added to the batch.
+    converted to pandas; the colour box needs the magnitudes, added to the batch
+    with ``dust_correction``.
     """
     def select(table):
         if XGBOOST_STAR_PROB_COLUMN in cuts:
@@ -755,7 +943,7 @@ def _batch_selection(catalog, cuts):
         if XGBOOST_STAR_PROB_COLUMN in cuts:
             data[XGBOOST_STAR_PROB_COLUMN] = probability[keep]
         if GATTO_COLOR_BOX_COLUMN in cuts:
-            add_magnitudes(data, catalog)
+            add_magnitudes(data, catalog, dust_correction=dust_correction)
             add_gatto_color_box(data, catalog)
             column = GATTO_COLOR_BOX_COLUMN
             data = data[get_cut_mask(data, {column: cuts[column]})].reset_index(drop=True)
@@ -771,7 +959,8 @@ def _batch_selection(catalog, cuts):
 
 def get_euclid_stars(
     catalog, data=None, cuts=None, columns=None, ra_range=None, dec_range=None,
-    data_path=None, verbose=True, subset=None,
+    data_path=None, verbose=True, subset=None, dust_correction=DEFAULT_DUST_CORRECTION,
+    vis_photometry=DEFAULT_VIS_PHOTOMETRY,
 ):
     """
     Get the stars of a Euclid catalog, with harmonised magnitudes.
@@ -801,12 +990,24 @@ def get_euclid_stars(
         Folder containing the HATS catalog, when ``data`` is None.
     verbose : bool
         Print the number of selected stars.
+    dust_correction : str
+        Key of :data:`DUST_CORRECTIONS` used by :func:`add_magnitudes`
+        (``"SFD98"`` or ``"PLANCK"``); not applied to a ``data`` that has the
+        magnitudes already.
+    vis_photometry : str
+        ``"templfit"``: also read the VIS template-fitting fluxes and add their
+        magnitudes ``<namespace>_VIS_TO_<band>_obs`` (DR1), for a match filter
+        with ``"vis_photometry": "templfit"``; ``"psf"``: only the PSF VIS.
+        When ``data`` is None and ``columns`` is None (see :func:`default_columns`).
 
     Returns
     -------
     pd.DataFrame
         The selected rows, with the :func:`add_magnitudes` columns.
     """
+    _dust_correction(dust_correction)  # unknown name: fail before reading
+    if columns is None and data is None:
+        columns = default_columns(catalog, vis_photometry)
     cuts = default_star_cuts(catalog) if cuts is None else cuts
 
     if subset is not None:
@@ -836,7 +1037,7 @@ def get_euclid_stars(
                              "'southwest', 'southeast'")
     if data is None:
         names = set(available_columns(catalog, data_path))
-        derived = magnitude_columns(catalog) + list(BATCH_COLUMNS)
+        derived = magnitude_columns(catalog, vis_photometry) + list(BATCH_COLUMNS)
         unknown = [c for c in cuts if c not in names and c not in derived]
         if unknown:
             raise KeyError(
@@ -851,7 +1052,7 @@ def get_euclid_stars(
         # may not fit in memory.
         batch_selection = None
         if any(c in cuts for c in BATCH_COLUMNS):
-            batch_selection = _batch_selection(catalog, cuts)
+            batch_selection = _batch_selection(catalog, cuts, dust_correction)
         data = open_euclid_catalog(
             catalog, columns=columns, cuts=read_cuts, ra_range=ra_range,
             dec_range=dec_range, data_path=data_path, verbose=verbose,
@@ -862,7 +1063,7 @@ def get_euclid_stars(
         n_input = len(data)
 
     if f"{euclid_survey(catalog).namespace}_VIS_obs" not in data.columns:
-        add_magnitudes(data, catalog)
+        add_magnitudes(data, catalog, dust_correction=dust_correction)
     if XGBOOST_STAR_PROB_COLUMN in cuts and XGBOOST_STAR_PROB_COLUMN not in data.columns:
         add_xgboost_star_prob(data, catalog)
     if GATTO_COLOR_BOX_COLUMN in cuts and GATTO_COLOR_BOX_COLUMN not in data.columns:

@@ -9,7 +9,13 @@ A match filter is ``{"name", "reference_band": (namespace, band),
 ``streamobs.match_filter.build_match_filter``; the width of the polygon is
 ``error_multiplier`` times the photometric error plus ``color_spread``, each
 (blue side, red side); default: those of streamobs, ``(0.05, 0.05)`` mag and
-``(2, 2)``).
+``(2, 2)``), and ``vis_photometry``, the photometry of the Euclid VIS magnitudes:
+``"psf"`` (default) or ``"templfit"``, the template-fitting magnitude of VIS
+PSF-matched to the other band of each colour (``catalogs.euclid_catalog.vis_band``;
+VIS - H uses ``VIS_TO_H``, DR1 only). The isochrone and the polygons do not depend
+on it: only the catalog columns do (``match_filter_cmd_columns``). Injected stars
+have one simulated VIS, copied to their ``VIS_TO_<band>`` columns
+(``injection.inject.add_vis_templfit_magnitudes``).
 Its polygons are built for an isochrone ``{"age", "metallicity"}`` with an
 optional ``"isochrone_model"``, the name of the ugali isochrone model
 (``"Marigo2017"`` by default, ``"Dotter2016"``...; read with
@@ -20,7 +26,8 @@ A star is selected when it is inside the polygon of every colour
 ``reference_band - color_band``, the magnitude axis being ``reference_band``.
 Magnitudes are the ``<namespace>_<band>_obs`` columns of
 ``catalogs.euclid_catalog`` (the streamobs convention), used as they are:
-the catalog magnitudes are already dereddened.
+the catalog magnitudes are already dereddened. The columns of each colour come
+from ``match_filter_cmd_columns``.
 
 Also the colour-magnitude diagrams of a set of stars, computed here and drawn
 by ``plotting.plot_cmd``: 2D histograms of colour ``mag_cols[0] -
@@ -41,6 +48,7 @@ import pandas as pd
 from streamobs.match_filter import _isochrone_locus, build_match_filter, is_in_match_filter
 from ugali.isochrone import factory as isochrone_factory
 
+from streameucliddes.catalogs.euclid_catalog import DEFAULT_VIS_PHOTOMETRY, vis_band
 from streameucliddes.catalogs.isochrone_parameters import get_isochrone
 from streameucliddes.unit_conversions import convert_FeH_to_z, get_isochrone_model
 
@@ -147,7 +155,7 @@ def _off_grid(asked: float, used: float, grid_values: ArrayLike) -> bool:
 
 
 def match_filter_columns(match_filter: Mapping[str, Any] | None = None) -> list[str]:
-    """Magnitude columns read by a match filter.
+    """Magnitude columns read by a match filter, each once.
 
     Parameters
     ----------
@@ -158,12 +166,30 @@ def match_filter_columns(match_filter: Mapping[str, Any] | None = None) -> list[
     Returns
     -------
     columns : list of str
-        ``<namespace>_<band>_obs`` of the reference band, then of each colour
-        band.
+        The reference column of the first colour (the magnitude axis), the
+        colour-band columns, then the reference columns of the other colours
+        when they differ (VIS template fits with several colours): see
+        ``match_filter_cmd_columns``.
     """
-    match_filter = get_match_filter(match_filter)
-    bands = [match_filter["reference_band"], *match_filter["color_bands"]]
-    return [f"{namespace}_{band}_obs" for namespace, band in bands]
+    pairs = match_filter_cmd_columns(match_filter)
+    columns = [pairs[0][0], *(color for _, color in pairs), *(reference for reference, _ in pairs[1:])]
+    return list(dict.fromkeys(columns))
+
+
+def _magnitude_column(band: tuple[str, str], other_band: tuple[str, str], vis_photometry: str) -> str:
+    """Catalog column of the magnitude of ``band`` in a colour with ``other_band``, both ``(namespace, band)``.
+
+    A Euclid VIS band follows ``vis_photometry`` (``catalogs.euclid_catalog.vis_band``);
+    with ``"templfit"``, the other band must be a Euclid band of the same namespace.
+    """
+    namespace, name = band
+    if name == "VIS" and namespace.startswith("euclid"):
+        other_namespace, other_name = other_band
+        if vis_photometry != DEFAULT_VIS_PHOTOMETRY and other_namespace != namespace:
+            raise ValueError(f"VIS {vis_photometry} magnitudes need a colour with a {namespace} band, "
+                             f"not {other_band}")
+        name = vis_band(other_name, vis_photometry)
+    return f"{namespace}_{name}_obs"
 
 
 def get_match_filter(match_filter: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
@@ -191,6 +217,9 @@ def match_filter_cmd_columns(match_filter: Mapping[str, Any] | None = None) -> l
 
     Colour ``reference - colour band``, magnitude ``reference``: the
     convention of the polygons, and the ``mag_cols`` of ``hess_diagram``.
+    ``<namespace>_<band>_obs`` columns, the Euclid VIS one following the
+    ``vis_photometry`` of the match filter: with ``"templfit"``, the reference
+    VIS of the colour VIS - H is ``<namespace>_VIS_TO_H_obs``.
 
     Parameters
     ----------
@@ -201,8 +230,11 @@ def match_filter_cmd_columns(match_filter: Mapping[str, Any] | None = None) -> l
     -------
     pairs : list of tuple of str
     """
-    reference_column, *color_columns = match_filter_columns(match_filter)
-    return [(reference_column, color_column) for color_column in color_columns]
+    match_filter = get_match_filter(match_filter)
+    vis_photometry = match_filter.get("vis_photometry", DEFAULT_VIS_PHOTOMETRY)
+    reference = match_filter["reference_band"]
+    return [(_magnitude_column(reference, color, vis_photometry), _magnitude_column(color, reference, vis_photometry))
+            for color in match_filter["color_bands"]]
 
 
 def match_filter_cmd_limits(
@@ -328,15 +360,14 @@ def select_stars_in_match_filter(
     Shipp et al. 2018, ApJ 862, 114.
     """
     match_filter = get_match_filter(match_filter)
-    reference_column, *color_columns = match_filter_columns(match_filter)
     polygons = match_filter_polygons(distance_modulus, isochrone, match_filter)
 
     selected = np.ones(len(catalog), dtype=bool) if mask is None else np.array(mask, dtype=bool)
-    reference_mag = catalog[reference_column].to_numpy()
-    for polygon, color_column in zip(polygons, color_columns):
+    for polygon, (reference_column, color_column) in zip(polygons, match_filter_cmd_columns(match_filter)):
         idx = np.flatnonzero(selected)
         selected[idx] = is_in_match_filter(
-            reference_mag[idx], catalog[color_column].to_numpy()[idx], polygon_vertices=polygon
+            catalog[reference_column].to_numpy()[idx], catalog[color_column].to_numpy()[idx],
+            polygon_vertices=polygon,
         )
     return selected
 
@@ -693,5 +724,5 @@ def difference_hess(on_hess: Mapping[str, Any], off_hess: Mapping[str, Any]) -> 
 
 
 def _band_name(column: str) -> str:
-    """Band of a magnitude column: "euclid_dr1_VIS_obs" -> "VIS"."""
-    return column.removesuffix("_obs").rsplit("_", 1)[-1]
+    """Band of a magnitude column: "euclid_dr1_VIS_obs" -> "VIS", "euclid_dr1_VIS_TO_H_obs" -> "VIS"."""
+    return column.removesuffix("_obs").split("_TO_")[0].rsplit("_", 1)[-1]

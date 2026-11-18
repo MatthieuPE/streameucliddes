@@ -54,12 +54,13 @@ def default_error_cuts(match_filter: Mapping[str, Any] | None = None) -> dict[st
     Returns
     -------
     cuts : dict
-        ``{"<namespace>_<band>_err": DEFAULT_ERR_CUT}`` for the reference band
-        and each colour band (format of ``catalogs.catalog_cuts.get_cut_mask``).
+        ``{"<namespace>_<band>_err": DEFAULT_ERR_CUT}`` for each magnitude column
+        of ``match_filter_columns`` (the reference band and each colour band; with
+        VIS template fits, the ``VIS_TO_<band>`` errors), format of
+        ``catalogs.catalog_cuts.get_cut_mask``.
     """
-    match_filter = get_match_filter(match_filter)
-    bands = [match_filter["reference_band"], *match_filter["color_bands"]]
-    return {f"{namespace}_{band}_err": DEFAULT_ERR_CUT for namespace, band in bands}
+    columns = match_filter_columns(match_filter)
+    return {f"{column.removesuffix('_obs')}_err": DEFAULT_ERR_CUT for column in columns}
 
 
 def check_columns(catalog: pd.DataFrame, columns: Iterable[str]) -> None:

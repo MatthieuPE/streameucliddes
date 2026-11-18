@@ -81,6 +81,9 @@ FRAMES = {
 # Errors <= 0.2 on every band of the match filter
 def test_default_error_cuts():
     assert default_error_cuts() == {"euclid_q1_VIS_err": DEFAULT_ERR_CUT, "euclid_q1_H_err": DEFAULT_ERR_CUT}
+    templfit = {"name": "vis_h_templfit", "reference_band": ("euclid_dr1", "VIS"),
+                "color_bands": [("euclid_dr1", "H")], "vis_photometry": "templfit"}
+    assert list(default_error_cuts(templfit)) == ["euclid_dr1_VIS_TO_H_err", "euclid_dr1_H_err"]
     assert list(default_error_cuts(DES_GR_MATCH_FILTER)) == ["des_yr6_g_err", "des_yr6_r_err"]
     assert DEFAULT_ERR_CUT == (None, 0.2)
     assert list(default_error_cuts(MATCH_FILTER_GRI)) == ["des_yr6_g_err", "des_yr6_r_err", "des_yr6_i_err"]

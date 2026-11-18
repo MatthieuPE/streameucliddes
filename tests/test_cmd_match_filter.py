@@ -81,6 +81,10 @@ def _polygon(dm, isochrone, band_2):
 
 
 # Magnitude columns: the reference band, then the colour bands
+MATCH_FILTER_VIS_TEMPLFIT = {"name": "vis_h_templfit", "reference_band": ("euclid_dr1", "VIS"),
+                             "color_bands": [("euclid_dr1", "H")], "vis_photometry": "templfit"}
+
+
 def test_match_filter_columns():
     assert cmd_match_filter.match_filter_columns() == ["euclid_q1_VIS_obs", "euclid_q1_H_obs"]
     assert cmd_match_filter.match_filter_columns(DES_GR) == ["des_yr6_g_obs", "des_yr6_r_obs"]
@@ -440,3 +444,56 @@ def test_get_match_filter_and_isochrone():
     assert cmd_match_filter.get_match_filter(DES_GR) is DES_GR
     assert get_isochrone() == default_isochrone_grid()[0]
     assert get_isochrone(ISOCHRONE) is ISOCHRONE
+
+
+# ===================================================
+# Test the VIS photometry of the match filters
+# ===================================================
+
+
+# With VIS template fits, VIS paired with a band uses the VIS magnitude PSF-matched to it
+def test_vis_templfit_columns():
+    assert match_filter_cmd_columns(MATCH_FILTER_VIS_TEMPLFIT) == [("euclid_dr1_VIS_TO_H_obs", "euclid_dr1_H_obs")]
+    assert cmd_match_filter.match_filter_columns(MATCH_FILTER_VIS_TEMPLFIT) == [
+        "euclid_dr1_VIS_TO_H_obs", "euclid_dr1_H_obs"]
+    psf = {**MATCH_FILTER_VIS_TEMPLFIT, "vis_photometry": "psf"}
+    assert cmd_match_filter.match_filter_columns(psf) == ["euclid_dr1_VIS_obs", "euclid_dr1_H_obs"]
+    # several colours: one VIS per colour; VIS as colour band too
+    several = {**MATCH_FILTER_VIS_TEMPLFIT, "color_bands": [("euclid_dr1", "Y"), ("euclid_dr1", "H")]}
+    assert match_filter_cmd_columns(several) == [("euclid_dr1_VIS_TO_Y_obs", "euclid_dr1_Y_obs"),
+                                                 ("euclid_dr1_VIS_TO_H_obs", "euclid_dr1_H_obs")]
+    assert cmd_match_filter.match_filter_columns(several) == [
+        "euclid_dr1_VIS_TO_Y_obs", "euclid_dr1_Y_obs", "euclid_dr1_H_obs", "euclid_dr1_VIS_TO_H_obs"]
+    reversed_bands = {**MATCH_FILTER_VIS_TEMPLFIT, "reference_band": ("euclid_dr1", "J"),
+                      "color_bands": [("euclid_dr1", "VIS")]}
+    assert match_filter_cmd_columns(reversed_bands) == [("euclid_dr1_J_obs", "euclid_dr1_VIS_TO_J_obs")]
+    # DES bands are not affected; no VIS template fit with a DES band
+    assert cmd_match_filter.match_filter_columns({**DES_GR, "vis_photometry": "templfit"}) == [
+        "des_yr6_g_obs", "des_yr6_r_obs"]
+    with pytest.raises(ValueError, match="need a colour with a euclid_dr1 band"):
+        match_filter_cmd_columns({**MATCH_FILTER_VIS_TEMPLFIT, "color_bands": [("des_yr6", "r")]})
+
+
+def test_vis_templfit_band_name():
+    assert cmd_match_filter._band_name("euclid_dr1_VIS_TO_H_obs") == "VIS"
+    assert cmd_match_filter._band_name("euclid_dr1_VIS_obs") == "VIS"
+    assert cmd_match_filter._band_name("des_yr6_g_obs") == "g"
+
+
+# The selection reads the VIS template-fitting column; the polygons are those of VIS
+def test_select_stars_vis_templfit(stars):
+    psf = {**MATCH_FILTER_VIS_TEMPLFIT, "vis_photometry": "psf"}
+    vis, h = cmd_match_filter.match_filter_columns(psf)
+    catalog = pd.DataFrame({
+        "euclid_dr1_VIS_TO_H_obs": stars[cmd_match_filter.match_filter_columns()[0]].to_numpy(),
+        h: stars[cmd_match_filter.match_filter_columns()[1]].to_numpy(),
+    })
+    catalog[vis] = catalog["euclid_dr1_VIS_TO_H_obs"] + 5.0  # PSF magnitudes far off the isochrone
+    templfit = cmd_match_filter.select_stars_in_match_filter(catalog, 16.8, match_filter=MATCH_FILTER_VIS_TEMPLFIT)
+    renamed = catalog.rename(columns={vis: "unused", "euclid_dr1_VIS_TO_H_obs": vis})
+    np.testing.assert_array_equal(
+        templfit, cmd_match_filter.select_stars_in_match_filter(renamed, 16.8, match_filter=psf))
+    assert templfit.any()
+    with pytest.raises(KeyError):
+        cmd_match_filter.select_stars_in_match_filter(catalog.drop(columns="euclid_dr1_VIS_TO_H_obs"), 16.8,
+                                                      match_filter=MATCH_FILTER_VIS_TEMPLFIT)

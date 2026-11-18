@@ -6,6 +6,7 @@ colour-magnitude space, so the tests neither need the real catalog nor depend on
 """
 
 import copy
+import warnings
 
 import astropy.coordinates as coord
 import astropy.units as u
@@ -15,6 +16,7 @@ import pandas as pd
 import pytest
 
 from streameucliddes.analysis import injected_stream_snr
+from streameucliddes.injection import inject
 
 pytestmark = pytest.mark.injected_stream_snr
 
@@ -311,3 +313,18 @@ def test_match_filter_of_the_injected_model(mock_background, monkeypatch):
                                        match_filter_list=MATCH_FILTER_LIST[:1])
     assert isochrones and all(isochrone == {"age": 12.0, "metallicity": 0.0002, "isochrone_model": "Dotter2016"}
                               for isochrone in isochrones)
+
+
+# A match filter with VIS template fits warns that the injected stars have one VIS
+def test_snr_vis_templfit_warning(mock_background):
+    mock_background["euclid_q1_VIS_TO_H_obs"] = mock_background["euclid_q1_VIS_obs"] - 0.07
+    mock_background["euclid_q1_VIS_TO_H_err"] = mock_background["euclid_q1_VIS_err"]
+    vis_h = {"name": "vis_h", "reference_band": ("euclid_q1", "VIS"), "color_bands": [("euclid_q1", "H")]}
+    templfit = {**vis_h, "name": "vis_h_templfit", "vis_photometry": "templfit"}
+    with pytest.warns(UserWarning, match="one VIS magnitude"):
+        results, _ = injected_stream_snr.get_stream_snr(seed=SEED, match_filter_list=[vis_h, templfit])
+    assert set(results) == {"vis_h", "vis_h_templfit"}
+    assert inject.INJECTED_VIS_TEMPLFIT_WARNING.startswith("Injected stars have one VIS magnitude")
+    with warnings.catch_warnings():
+        warnings.filterwarnings("error", message="Injected stars")
+        injected_stream_snr.get_stream_snr(seed=SEED, match_filter_list=[vis_h])  # PSF only: no warning

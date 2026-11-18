@@ -1,5 +1,7 @@
 import numpy as np
 import pandas as pd
+
+from streameucliddes.catalogs.euclid_catalog import VIS_TEMPLFIT_PARTNER_BANDS
 import pytest
 import astropy.coordinates as coord
 import astropy.units as u
@@ -250,3 +252,17 @@ def test_inject_stream_output_content():
         assert (
             col in injected_catalog
         ), f"Expected column {col} is missing from the injected catalog."
+
+
+# Injected stars: VIS template-fitting magnitudes, copies of VIS, for each Euclid namespace
+def test_inject_stream_vis_templfit_copies():
+    injected_catalog, _ = inject.inject_stream(stream_config=STREAM_CONFIG, seed=42, gc_frame=GC_FRAME)
+    namespaces = [c.removesuffix("_VIS_obs") for c in injected_catalog.columns
+                  if c.startswith("euclid") and c.endswith("_VIS_obs")]
+    assert namespaces
+    for namespace in namespaces:
+        for band in VIS_TEMPLFIT_PARTNER_BANDS:
+            for kind in ("obs", "err"):
+                pd.testing.assert_series_equal(injected_catalog[f"{namespace}_VIS_TO_{band}_{kind}"],
+                                               injected_catalog[f"{namespace}_VIS_{kind}"], check_names=False)
+    assert not any("des" in c and "_TO_" in c for c in injected_catalog.columns)  # Euclid only

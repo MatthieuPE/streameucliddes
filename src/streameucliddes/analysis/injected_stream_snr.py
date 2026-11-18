@@ -1,6 +1,8 @@
 """SNR of mock streams injected in the Euclid x DES stars."""
 
 import copy
+import warnings
+
 import numpy as np
 import astropy.coordinates as coord
 import astropy.units as u
@@ -11,7 +13,7 @@ from streameucliddes.analysis.catalog_preparation import catalog_match_filter_ma
 from streameucliddes.analysis.cmd_match_filter import get_match_filter
 from streameucliddes.analysis.on_off_regions import compute_snr
 from streameucliddes.catalogs.catalog_cuts import cut_flow
-from streameucliddes.catalogs.euclid_catalog import get_euclid_stars
+from streameucliddes.catalogs.euclid_catalog import DEFAULT_VIS_PHOTOMETRY, get_euclid_stars
 from streameucliddes.injection import inject
 
 # Euclid x DES stars used as background by get_stream_snr: read on first use (see
@@ -128,6 +130,9 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
     isochrone = {"age": stream_config["isochrone"]["age"], "metallicity": stream_config["isochrone"]["z"],
                  "isochrone_model": stream_config["isochrone"]["name"]}
     phi2_max = PHI2_WIDTH_FACTOR * stream_config["stream_width"]
+
+    if any(mf.get("vis_photometry", DEFAULT_VIS_PHOTOMETRY) == "templfit" for mf in match_filter_list):
+        warnings.warn(inject.INJECTED_VIS_TEMPLFIT_WARNING, stacklevel=2)
 
     snr_results = {}
     for match_filter in match_filter_list:
