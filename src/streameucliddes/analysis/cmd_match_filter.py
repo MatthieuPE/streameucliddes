@@ -11,9 +11,10 @@ A match filter is ``{"name", "reference_band": (namespace, band),
 (blue side, red side); absent: those of streamobs, ``(0.05, 0.05)`` mag and
 ``(2, 2)``; ``DEFAULT_MATCH_FILTER`` sets its own ``error_multiplier`` and
 ``red_cap_value``), and ``vis_photometry``, the photometry of the Euclid VIS magnitudes:
-``"psf"`` (default) or ``"templfit"``, the template-fitting magnitude of VIS
-PSF-matched to the other band of each colour (``catalogs.euclid_catalog.vis_band``;
-VIS - H uses ``VIS_TO_H``, DR1 only). The isochrone and the polygons do not depend
+``"psf"`` or ``"templfit"`` (default: ``catalogs.euclid_catalog.DEFAULT_VIS_PHOTOMETRY``),
+the template-fitting magnitude of VIS PSF-matched to the other band of each colour
+(``catalogs.euclid_catalog.vis_band``; VIS - H uses ``VIS_TO_H``, DR1 only: a Q1 match
+filter or a colour with a band other than Y, J, H needs ``"psf"``). The isochrone and the polygons do not depend
 on it: only the catalog columns do (``match_filter_cmd_columns``). Injected stars
 have one simulated VIS, copied to their ``VIS_TO_<band>`` columns
 (``injection.inject.add_vis_templfit_magnitudes``).
@@ -60,13 +61,14 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike, NDArray
 
-# Euclid VIS vs VIS - H: the default match filter, read through get_match_filter. Its width and red cap: the best SNR
+# Euclid DR1 VIS vs VIS - H: the default match filter, read through get_match_filter; VIS the template-fitting
+# magnitude of DEFAULT_VIS_PHOTOMETRY (VIS_TO_H, DR1 only). Its width and red cap: the best SNR
 # on Aliqa Uma in Euclid DR1 (notebooks/optimization/stream_optimization.ipynb), error_multiplier 3 instead of the 2
 # of streamobs and red_cap_value 0.55 mag of VIS - H instead of color_max - 0.25 = 0.75 (Euclid colours only)
 DEFAULT_MATCH_FILTER = {
     "name": "default_euclid_vis_h",
-    "reference_band": ("euclid_q1", "VIS"),
-    "color_bands": [("euclid_q1", "H")],
+    "reference_band": ("euclid_dr1", "VIS"),
+    "color_bands": [("euclid_dr1", "H")],
     "error_multiplier": (3.0, 3.0),
     "red_cap_value": 0.55,
 }
@@ -191,7 +193,7 @@ def _magnitude_column(band: tuple[str, str], other_band: tuple[str, str], vis_ph
     namespace, name = band
     if name == "VIS" and namespace.startswith("euclid"):
         other_namespace, other_name = other_band
-        if vis_photometry != DEFAULT_VIS_PHOTOMETRY and other_namespace != namespace:
+        if vis_photometry == "templfit" and other_namespace != namespace:
             raise ValueError(f"VIS {vis_photometry} magnitudes need a colour with a {namespace} band, "
                              f"not {other_band}")
         name = vis_band(other_name, vis_photometry)

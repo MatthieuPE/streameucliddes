@@ -44,6 +44,17 @@ CATALOG_NAMES = ["euclid_dr1", "euclid_q1_des"]  # Euclid only, crossmatched wit
 PASS_FRACTION = 0.8  # of the mock sources, for each default cut
 
 
+def _vis_photometry(catalog):
+    """VIS photometry readable in a catalog: the default one, PSF for Q1 (no VIS template fit, DR1 only)."""
+    templfit = any(band.startswith("VIS_TO_") for band in euclid_catalog.euclid_bands(catalog))
+    return euclid_catalog.DEFAULT_VIS_PHOTOMETRY if templfit else "psf"
+
+
+def _default_columns(catalog):
+    """Default columns of a catalog, with its readable VIS photometry."""
+    return euclid_catalog.default_columns(catalog, _vis_photometry(catalog))
+
+
 def _mock_ebv(dust_correction):
     """E(B-V) of the mock catalogs for a dust correction: one value per correction."""
     return 0.1 + 0.05 * list(euclid_catalog.DUST_CORRECTIONS).index(dust_correction)
@@ -122,7 +133,7 @@ def test_catalog_point_map(tmp_path):
 
 def test_column_names():
     dr1 = euclid_catalog.default_columns("euclid_dr1")
-    crossmatch = euclid_catalog.default_columns("euclid_q1_des")
+    crossmatch = _default_columns("euclid_q1_des")
     assert not any(c.endswith(("_euclid", "_des")) for c in dr1)
     assert all(c.endswith(("_euclid", "_des")) or c.startswith("_") for c in crossmatch)
     assert euclid_catalog.catalog_columns("euclid_dr1")["des_magnitudes"] == {}
@@ -131,8 +142,9 @@ def test_column_names():
 def test_open_with_cuts(catalog_dir):
     catalog, path, data = catalog_dir
     spurious = euclid_catalog.euclid_column(catalog, "SPURIOUS_FLAG")
-    read = euclid_catalog.open_euclid_catalog(catalog, data_path=path, cuts={spurious: 0}, verbose=False)
-    assert list(read.columns) == euclid_catalog.default_columns(catalog)
+    read = euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog),
+                                              data_path=path, cuts={spurious: 0}, verbose=False)
+    assert list(read.columns) == _default_columns(catalog)
     assert len(read) == (data[spurious] == 0).sum()
 
 
@@ -142,7 +154,8 @@ def test_open_sky_box(catalog_dir, ra_range):
     columns = euclid_catalog.catalog_columns(catalog)
     dec_range = (-50.0, -40.0)
     read = euclid_catalog.open_euclid_catalog(
-        catalog, data_path=path, ra_range=ra_range, dec_range=dec_range, verbose=False
+        catalog, columns=_default_columns(catalog), data_path=path, ra_range=ra_range, dec_range=dec_range,
+        verbose=False,
     )
     ra, dec = data[columns["ra"]], data[columns["dec"]]
     in_ra = (ra >= ra_range[0]) & (ra <= ra_range[1]) if ra_range[0] <= ra_range[1] else (
@@ -175,7 +188,8 @@ def test_magnitudes(catalog_dir, dust_correction):
     columns = euclid_catalog.catalog_columns(catalog, dust_correction)
     survey = euclid_catalog.euclid_survey(catalog)
     read = euclid_catalog.add_magnitudes(
-        euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False), catalog,
+        euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog),
+                                           data_path=path, verbose=False), catalog,
         dust_correction=dust_correction,
     )
     flux = data[columns["euclid_fluxes"]["VIS"][0]].to_numpy()
@@ -201,7 +215,8 @@ def test_magnitudes(catalog_dir, dust_correction):
 def test_stars(catalog_dir):
     catalog, path, data = catalog_dir
     cuts = euclid_catalog.default_star_cuts(catalog)
-    stars = euclid_catalog.get_euclid_stars(catalog, data_path=path, verbose=False)
+    stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                            data_path=path, verbose=False)
     all_rows = euclid_catalog.add_magnitudes(data.copy(), catalog)
     assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
     assert get_cut_mask(stars, cuts).all()
@@ -225,7 +240,8 @@ def test_stars_default_cuts_no_warning(catalog_dir, star_selection):
     cuts = euclid_catalog.default_star_cuts(catalog, star_selection)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+        euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                        cuts=cuts, data_path=path, verbose=False)
 
 
 XGBOOST_PROB = euclid_catalog.XGBOOST_STAR_PROB_COLUMN
@@ -285,16 +301,19 @@ def test_stars_gatto_selection(catalog_dir, monkeypatch):
     all_rows = euclid_catalog.add_gatto_color_box(euclid_catalog.add_magnitudes(data.copy(), catalog), catalog)
     in_box = all_rows[COLOR_BOX].to_numpy()
     assert 0 < in_box.sum() < len(in_box)  # the mock colours test the box
-    stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                            cuts=cuts, data_path=path, verbose=False)
     assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
     assert stars[COLOR_BOX].all()
 
-    read = euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False)
-    from_data = euclid_catalog.get_euclid_stars(catalog, data=read, cuts=cuts, verbose=False)
+    read = euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog), data_path=path, verbose=False)
+    from_data = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                                data=read, cuts=cuts, verbose=False)
     pd.testing.assert_frame_equal(stars, from_data, check_like=True)  # columns in another order
 
     monkeypatch.setattr(euclid_catalog, "READ_BATCH_SIZE", len(data) // 20)
-    by_batches = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    by_batches = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                                 cuts=cuts, data_path=path, verbose=False)
     pd.testing.assert_frame_equal(by_batches, stars)
 
 
@@ -341,12 +360,14 @@ def test_stars_xgboost_classifier(catalog_dir):
     all_rows = euclid_catalog.add_xgboost_star_prob(euclid_catalog.add_magnitudes(data.copy(), catalog), catalog)
     cuts = _median_xgboost_cuts(catalog, data)
     threshold = cuts[XGBOOST_PROB][0]
-    stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                            cuts=cuts, data_path=path, verbose=False)
     assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
     assert (stars[XGBOOST_PROB] >= threshold).all()
 
-    read = euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False)
-    from_data = euclid_catalog.get_euclid_stars(catalog, data=read, cuts=cuts, verbose=False)
+    read = euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog), data_path=path, verbose=False)
+    from_data = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                                data=read, cuts=cuts, verbose=False)
     pd.testing.assert_frame_equal(stars, from_data, check_like=True)  # columns in another order
 
 
@@ -354,11 +375,11 @@ def test_stars_xgboost_by_batches(catalog_dir, monkeypatch):
     """Classifier selection: small batches give the stars of a single batch, 64-bit ids included."""
     catalog, path, data = catalog_dir
     cuts = _median_xgboost_cuts(catalog, data)
-    columns = euclid_catalog.default_columns(catalog) + [euclid_catalog.euclid_column(catalog, "GAIA_ID")]
+    columns = _default_columns(catalog) + [euclid_catalog.euclid_column(catalog, "GAIA_ID")]
     kwargs = dict(cuts=cuts, columns=columns, data_path=path, verbose=False)
-    one_batch = euclid_catalog.get_euclid_stars(catalog, **kwargs)
+    one_batch = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog), **kwargs)
     monkeypatch.setattr(euclid_catalog, "READ_BATCH_SIZE", len(data) // 20)
-    by_batches = euclid_catalog.get_euclid_stars(catalog, **kwargs)
+    by_batches = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog), **kwargs)
     assert len(by_batches) > 0
     pd.testing.assert_frame_equal(by_batches, one_batch)
 
@@ -367,7 +388,7 @@ def test_stars_xgboost_by_batches(catalog_dir, monkeypatch):
 def test_stars_none_selected(catalog_dir, cut):
     """No star passes: an empty table with all the columns."""
     catalog, path, _ = catalog_dir
-    read_columns = euclid_catalog.default_columns(catalog)
+    read_columns = _default_columns(catalog)
     if cut == "catalog column":  # nothing read
         cuts = {euclid_catalog.euclid_column(catalog, "OBJECT_ID"): -1}
     elif cut == "magnitude":  # rows read, none selected
@@ -377,9 +398,10 @@ def test_stars_none_selected(catalog_dir, cut):
         read_columns = read_columns + [XGBOOST_PROB]  # added while reading
     else:  # nothing read, colour box computed on the empty batch
         cuts = {euclid_catalog.euclid_column(catalog, "OBJECT_ID"): -1, COLOR_BOX: True}
-    stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                            cuts=cuts, data_path=path, verbose=False)
     assert len(stars) == 0
-    expected = read_columns + euclid_catalog.magnitude_columns(catalog)
+    expected = read_columns + euclid_catalog.magnitude_columns(catalog, _vis_photometry(catalog))
     if cut == "color box":  # added while reading, after the magnitudes
         expected = expected + [COLOR_BOX]
     assert list(stars.columns) == expected
@@ -388,7 +410,8 @@ def test_stars_none_selected(catalog_dir, cut):
 def test_stars_unknown_cut_column(catalog_dir):
     catalog, path, _ = catalog_dir
     with pytest.raises(KeyError, match="NOT_A_COLUMN"):
-        euclid_catalog.get_euclid_stars(catalog, cuts={"NOT_A_COLUMN": 0}, data_path=path)
+        euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                        cuts={"NOT_A_COLUMN": 0}, data_path=path)
 
 
 def test_match_columns(download):
@@ -648,17 +671,19 @@ def test_ebv_columns():
 @pytest.mark.parametrize("dust_correction", list(euclid_catalog.DUST_CORRECTIONS))
 def test_stars_dust_correction(catalog_dir, dust_correction):
     catalog, path, _ = catalog_dir
-    data = euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False)
+    data = euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog), data_path=path, verbose=False)
     expected = euclid_catalog.add_magnitudes(data, catalog, dust_correction=dust_correction)
     column = f"{euclid_catalog.euclid_survey(catalog).namespace}_VIS_obs"
     expected = expected.set_index(euclid_catalog.euclid_column(catalog, "OBJECT_ID"))[column]
     for cuts in ({}, {euclid_catalog.GATTO_COLOR_BOX_COLUMN: True}):
-        stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False,
+        stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                                cuts=cuts, data_path=path, verbose=False,
                                                 dust_correction=dust_correction)
         stars = stars.set_index(euclid_catalog.euclid_column(catalog, "OBJECT_ID"))[column]
         np.testing.assert_allclose(stars, expected.loc[stars.index])
     with pytest.raises(ValueError, match="Unknown dust correction"):
-        euclid_catalog.get_euclid_stars(catalog, data_path=path, dust_correction="SFD")
+        euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                        data_path=path, dust_correction="SFD")
 
 
 def test_euclid_bands():
@@ -669,7 +694,7 @@ def test_euclid_bands():
 
 
 def test_vis_band():
-    assert euclid_catalog.vis_band("H") == "VIS"  # PSF by default
+    assert euclid_catalog.vis_band("H") == euclid_catalog.vis_band("H", euclid_catalog.DEFAULT_VIS_PHOTOMETRY)
     assert euclid_catalog.vis_band("H", "psf") == "VIS"
     for band in euclid_catalog.VIS_TEMPLFIT_PARTNER_BANDS:
         assert euclid_catalog.vis_band(band, "templfit") == f"VIS_TO_{band}"
@@ -699,11 +724,12 @@ def test_vis_templfit_magnitudes(tmp_path, rng, dust_correction):
         assert f"{namespace}_VIS_TO_{band}_err" in read.columns
 
 
-# get_euclid_stars reads and converts the VIS template fits only on demand
+# get_euclid_stars reads and converts the VIS template fits only with them
 def test_stars_vis_photometry(tmp_path, rng):
     _mock_catalog("euclid_dr1", tmp_path, rng)
     namespace = euclid_catalog.euclid_survey("euclid_dr1").namespace
-    psf = euclid_catalog.get_euclid_stars("euclid_dr1", cuts={}, data_path=tmp_path, verbose=False)
+    psf = euclid_catalog.get_euclid_stars("euclid_dr1", cuts={}, data_path=tmp_path, verbose=False,
+                                          vis_photometry="psf")
     assert not any(c.startswith("FLUX_VIS_TO_") or "_VIS_TO_" in c for c in psf.columns)
     templfit = euclid_catalog.get_euclid_stars("euclid_dr1", cuts={}, data_path=tmp_path, verbose=False,
                                                vis_photometry="templfit")

@@ -12,6 +12,7 @@ import pandas as pd
 import pytest
 from streamobs.match_filter import is_in_match_filter
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis import catalog_preparation, generic_stream_search
 from streameucliddes.analysis.build_masks import mask_radius_scales, objects_healpix_mask
 from streameucliddes.catalogs import overlapped_objects
@@ -26,7 +27,7 @@ from streameucliddes.analysis.generic_stream_search import (
     prepare_generic_search,
 )
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
-from streameucliddes.analysis.cmd_match_filter import get_match_filter
+from streameucliddes.analysis.cmd_match_filter import get_match_filter, match_filter_columns
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 
@@ -34,7 +35,7 @@ pytestmark = pytest.mark.generic_stream_search
 
 NSIDE = 64  # pixels of 0.9 deg
 SMOOTHING = 1.0
-VIS, H = "euclid_q1_VIS_obs", "euclid_q1_H_obs"
+VIS, H = "euclid_dr1_VIS_obs", "euclid_dr1_H_obs"
 ISOCHRONE = default_isochrone_grid()[0]
 
 
@@ -52,10 +53,10 @@ def _catalog(rng, n, ra=None, dec=None):
     n = ra.size
     vis = rng.uniform(18.0, 26.0, n)
     errors = np.where(np.arange(n) % 20 == 0, 0.5, 0.02)
-    return pd.DataFrame({
+    return add_vis_templfit_magnitudes(pd.DataFrame({
         "ra": ra, "dec": dec, VIS: vis, H: vis - rng.uniform(-1.0, 1.5, n),
-        "euclid_q1_VIS_err": errors, "euclid_q1_H_err": errors,
-    })
+        "euclid_dr1_VIS_err": errors, "euclid_dr1_H_err": errors,
+    }))
 
 
 def _in_filter(n, rng, dm):
@@ -95,7 +96,7 @@ def test_prepare(catalog, monkeypatch):
     before = catalog.copy()
     search = prepare_generic_search(catalog, nside=NSIDE)
     finite = np.isfinite(catalog["ra"]) & np.isfinite(catalog["dec"])
-    errors_ok = (catalog["euclid_q1_VIS_err"] <= 0.2) & (catalog["euclid_q1_H_err"] <= 0.2)
+    errors_ok = (catalog["euclid_dr1_VIS_err"] <= 0.2) & (catalog["euclid_dr1_H_err"] <= 0.2)
     np.testing.assert_array_equal(search.keep, finite & errors_ok)
     expected_pixels = hp.ang2pix(NSIDE, catalog["ra"][finite], catalog["dec"][finite], lonlat=True, nest=False)
     np.testing.assert_array_equal(search.pixels[finite.to_numpy()], expected_pixels)
@@ -173,7 +174,7 @@ def _with_cluster(rng, catalog, n=20_000, dm=17.0, sigma_deg=0.3):
     ra = (CLUSTER_RA + rng.normal(0.0, sigma_deg, n) / np.cos(np.radians(dec))) % 360.0
     cluster = _catalog(rng, 0, ra, dec)
     cluster[VIS], cluster[H] = _in_filter(n, rng, dm)
-    cluster[["euclid_q1_VIS_err", "euclid_q1_H_err"]] = 0.02
+    cluster[["euclid_dr1_VIS_err", "euclid_dr1_H_err"]] = 0.02
     return pd.concat([catalog, cluster], ignore_index=True)
 
 
@@ -305,10 +306,10 @@ def test_single_dm_finds_a_stream():
     background = _catalog(rng, 300_000)
     n_stream = 4000
     vis, h = _in_filter(n_stream, rng, 17.0)
-    stream = pd.DataFrame({
+    stream = add_vis_templfit_magnitudes(pd.DataFrame({
         "ra": rng.uniform(-10.0, 10.0, n_stream) % 360.0, "dec": rng.normal(-20.0, 0.3, n_stream),
-        VIS: vis, H: h, "euclid_q1_VIS_err": 0.02, "euclid_q1_H_err": 0.02,
-    })
+        VIS: vis, H: h, "euclid_dr1_VIS_err": 0.02, "euclid_dr1_H_err": 0.02,
+    }))
     search = prepare_generic_search(pd.concat([background, stream], ignore_index=True), nside=NSIDE)
     lon, lat = hp.pix2ang(NSIDE, np.arange(hp.nside2npix(NSIDE)), lonlat=True)
     inside = ~search.footprint_mask
@@ -402,11 +403,11 @@ def test_cmd_stars(catalog, search):
     stars = generic_search_cmd_stars(search, max_stars=1000)
     assert 850 <= len(stars) <= 1000
     pd.testing.assert_frame_equal(generic_search_cmd_stars(search, max_stars=1000), stars)
-    assert list(stars.columns) == [VIS, H]
+    assert list(stars.columns) == match_filter_columns(search.match_filter)
     rows = catalog.index.get_indexer(stars.index)
     assert search.keep[rows].all()
     assert rows.max() > 0.9 * len(catalog)  # spread over the catalog, not its first rows
-    pd.testing.assert_frame_equal(stars, catalog.loc[stars.index, [VIS, H]])
+    pd.testing.assert_frame_equal(stars, catalog.loc[stars.index, match_filter_columns(search.match_filter)])
     assert len(generic_search_cmd_stars(search, max_stars=10 * len(catalog))) == search.keep.sum()
 
 

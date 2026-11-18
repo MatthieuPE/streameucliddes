@@ -6,7 +6,9 @@ import pytest
 from matplotlib.path import Path as MplPath
 from streamobs.match_filter import build_match_filter, is_in_match_filter
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis import cmd_match_filter
+from streameucliddes.catalogs.euclid_catalog import DEFAULT_VIS_PHOTOMETRY, vis_band
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid, get_isochrone
 from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL, convert_FeH_to_z, get_isochrone_model
 from streameucliddes.analysis.cmd_match_filter import (
@@ -73,10 +75,10 @@ def stars(rng):
     g = rng.uniform(17.0, 25.0, n)
     r = g - rng.uniform(-0.5, 1.5, n)
     vis = rng.uniform(18.0, 26.0, n)
-    return pd.DataFrame({
+    return add_vis_templfit_magnitudes(pd.DataFrame({
         "des_yr6_g_obs": g, "des_yr6_r_obs": r, "des_yr6_i_obs": r - rng.uniform(-0.5, 1.0, n),
-        "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
-    })
+        "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+    }))
 
 
 def _polygon(dm, isochrone, band_2):
@@ -105,7 +107,10 @@ MATCH_FILTER_VIS_TEMPLFIT = {"name": "vis_h_templfit", "reference_band": ("eucli
 
 
 def test_match_filter_columns():
-    assert cmd_match_filter.match_filter_columns() == ["euclid_q1_VIS_obs", "euclid_q1_H_obs"]
+    vis = vis_band("H", DEFAULT_VIS_PHOTOMETRY)  # the default VIS photometry
+    assert cmd_match_filter.match_filter_columns() == [f"euclid_dr1_{vis}_obs", "euclid_dr1_H_obs"]
+    assert (cmd_match_filter.match_filter_columns({**cmd_match_filter.DEFAULT_MATCH_FILTER, "vis_photometry": "psf"})
+            == ["euclid_dr1_VIS_obs", "euclid_dr1_H_obs"])
     assert cmd_match_filter.match_filter_columns(DES_GR) == ["des_yr6_g_obs", "des_yr6_r_obs"]
     assert cmd_match_filter.match_filter_columns(MATCH_FILTER_GRI) == ["des_yr6_g_obs", "des_yr6_r_obs", "des_yr6_i_obs"]
 
@@ -191,7 +196,7 @@ def test_select_stars_defaults(stars):
     assert 0 < default.sum() < len(stars)
     # The default is Euclid VIS vs VIS - H: the polygon of streamobs for those bands
     vis_h_polygon = _default_match_filter_polygon(16.8, default_isochrone_grid()[0])
-    expected = is_in_match_filter(stars["euclid_q1_VIS_obs"], stars["euclid_q1_H_obs"], polygon_vertices=vis_h_polygon)
+    expected = is_in_match_filter(stars["euclid_dr1_VIS_obs"], stars["euclid_dr1_H_obs"], polygon_vertices=vis_h_polygon)
     np.testing.assert_array_equal(default, expected)
 
 
@@ -282,8 +287,8 @@ def test_hess_counts_without_area():
 
 # One star in a 2 deg^2 region: density 0.5 in one bin, 0 elsewhere; default bins
 def test_hess_single_star_density():
-    stars = pd.DataFrame({"euclid_q1_VIS_obs": [22.0], "euclid_q1_H_obs": [21.7]})
-    hess = hess_diagram(stars, ("euclid_q1_VIS_obs", "euclid_q1_H_obs"), area_deg2=2.0)
+    stars = pd.DataFrame({"euclid_dr1_VIS_obs": [22.0], "euclid_dr1_H_obs": [21.7]})
+    hess = hess_diagram(stars, ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs"), area_deg2=2.0)
     assert hess["density"].sum() == 0.5 and np.count_nonzero(hess["density"]) == 1
     assert hess["error"].max() == pytest.approx(0.5) and hess["area_deg2"] == 2.0
     assert hess["density"].shape == (hess["color_edges"].size - 1, hess["mag_edges"].size - 1)
@@ -291,23 +296,23 @@ def test_hess_single_star_density():
 
 # Only the stars of mask are counted
 def test_hess_mask_selects_stars():
-    stars = pd.DataFrame({"euclid_q1_VIS_obs": [20.0, 21.0, 22.0], "euclid_q1_H_obs": [19.5, 20.5, 21.5]})
-    hess = hess_diagram(stars, ("euclid_q1_VIS_obs", "euclid_q1_H_obs"), mask=[True, False, True])
+    stars = pd.DataFrame({"euclid_dr1_VIS_obs": [20.0, 21.0, 22.0], "euclid_dr1_H_obs": [19.5, 20.5, 21.5]})
+    hess = hess_diagram(stars, ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs"), mask=[True, False, True])
     assert hess["n_stars"] == 2
 
 
 # area_deg2 <= 0: ValueError
 def test_hess_rejects_non_positive_area():
-    stars = pd.DataFrame({"euclid_q1_VIS_obs": [20.0], "euclid_q1_H_obs": [19.5]})
+    stars = pd.DataFrame({"euclid_dr1_VIS_obs": [20.0], "euclid_dr1_H_obs": [19.5]})
     with pytest.raises(ValueError, match="area_deg2"):
-        hess_diagram(stars, ("euclid_q1_VIS_obs", "euclid_q1_H_obs"), area_deg2=0.0)
+        hess_diagram(stars, ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs"), area_deg2=0.0)
 
 
 # On and off from the same uniform population, areas 1 and 3: on - off consistent with 0 (pulls ~ N(0, 1));
 # the errors in quadrature, the area of the on region
 def test_difference_hess_consistent_with_zero():
     rng = np.random.default_rng(4)
-    columns = ("euclid_q1_VIS_obs", "euclid_q1_H_obs")
+    columns = ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs")
     bins = {"color_bins": np.linspace(-1.0, 1.5, 11), "mag_bins": np.linspace(18.0, 26.0, 9)}
 
     def population(n):
@@ -327,8 +332,8 @@ def test_difference_hess_consistent_with_zero():
 
 # Different bin edges, or a diagram without area: ValueError
 def test_difference_hess_rejects_different_bins():
-    stars = pd.DataFrame({"euclid_q1_VIS_obs": [20.0], "euclid_q1_H_obs": [19.5]})
-    columns = ("euclid_q1_VIS_obs", "euclid_q1_H_obs")
+    stars = pd.DataFrame({"euclid_dr1_VIS_obs": [20.0], "euclid_dr1_H_obs": [19.5]})
+    columns = ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs")
     on = hess_diagram(stars, columns, area_deg2=1.0)
     with pytest.raises(ValueError, match="mag_edges"):
         difference_hess(on, hess_diagram(stars, columns, area_deg2=1.0, mag_bins=np.linspace(17.0, 27.0, 11)))
@@ -351,7 +356,7 @@ def test_mean_off_density():
 # / 5 deg²), their errors combined, the counts, stars and areas summed; an off region without area: the other
 # alone; different bins or no area at all: ValueError
 def test_mean_off_hess():
-    columns = ("euclid_q1_VIS_obs", "euclid_q1_H_obs")
+    columns = ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs")
     bins = {"color_bins": [0.0, 1.0], "mag_bins": [20.0, 21.0]}
 
     def stars(n):
@@ -388,7 +393,7 @@ def test_match_filter_cmd_columns_and_limits():
 
 # One off region: its own diagram; two: their mean (mean_off_hess); then the difference
 def test_on_off_hess(stars, rng):
-    mag_cols = ("euclid_q1_VIS_obs", "euclid_q1_H_obs")
+    mag_cols = ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs")
     region = rng.integers(0, 3, len(stars))
     on, below, above = (region == i for i in range(3))
     on_hess, off_hess, difference = on_off_hess(stars, mag_cols, on, 1.0, [below], [2.0])

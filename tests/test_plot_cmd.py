@@ -9,11 +9,13 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.catalog_preparation import default_error_cuts, prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_MATCH_FILTER,
     default_hess_bins,
     hess_diagram,
+    match_filter_cmd_columns,
     match_filter_polygons,
     select_stars_in_match_filter,
 )
@@ -37,13 +39,13 @@ pytestmark = pytest.mark.plot_cmd
 
 DM = 17.0
 ISOCHRONE = {"age": 12.0, "metallicity": 0.0003}
-VIS, H, J = "euclid_q1_VIS", "euclid_q1_H", "euclid_q1_J"
+VIS, H, J = "euclid_dr1_VIS", "euclid_dr1_H", "euclid_dr1_J"
 COLOR_LIM = (-0.6, 0.9)  # VIS - H
 MAG_LIM = (19.0, 26.0)  # VIS
 VIS_H_J_MATCH_FILTER = {
     "name": "vis_h_j",
-    "reference_band": ("euclid_q1", "VIS"),
-    "color_bands": [("euclid_q1", "H"), ("euclid_q1", "J")],
+    "reference_band": ("euclid_dr1", "VIS"),
+    "color_bands": [("euclid_dr1", "H"), ("euclid_dr1", "J")],
 }
 
 
@@ -56,16 +58,18 @@ def catalog(gc_frame):
     ra, dec = phi12_to_radec(phi1, phi2, gc_frame)
     vis = rng.uniform(18.0, 27.0, n)
     errors = np.where(np.arange(n) % 10 == 0, 0.5, 0.02)
-    return pd.DataFrame({
+    return add_vis_templfit_magnitudes(pd.DataFrame({
         "ra": ra, "dec": dec,
         f"{VIS}_obs": vis, f"{H}_obs": vis - rng.uniform(-1.0, 1.5, n), f"{J}_obs": vis - rng.uniform(-1.0, 1.5, n),
         f"{VIS}_err": errors, f"{H}_err": errors, f"{J}_err": errors,
-    })
+    }))
 
 
 def _expected_counts(stars, color_column, color_lim, mag_lim):
-    """2D histogram of (VIS - colour band, VIS), with the bins of plot_CMD."""
-    vis = stars[f"{VIS}_obs"].to_numpy()
+    """2D histogram of (VIS - colour band, VIS), with the bins of plot_CMD; VIS that of the match filter for the
+    colour (match_filter_cmd_columns: its VIS photometry)."""
+    reference = {color: mag for mag, color in match_filter_cmd_columns(VIS_H_J_MATCH_FILTER)}[color_column]
+    vis = stars[reference].to_numpy()
     counts, _, _ = np.histogram2d(vis - stars[color_column].to_numpy(), vis,
                                   bins=[np.arange(*color_lim, 0.01), np.arange(*mag_lim, 0.1)])
     return counts.T

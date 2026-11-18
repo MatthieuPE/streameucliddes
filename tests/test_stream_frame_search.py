@@ -16,6 +16,7 @@ import pandas as pd
 import pytest
 from streamobs.match_filter import is_in_match_filter
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.build_masks import mask_radius_scales, object_mask_nside, objects_healpix_mask
 from streameucliddes.analysis.catalog_preparation import prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
@@ -51,7 +52,7 @@ BIN = 0.2
 SMOOTHING = 0.4
 STREAM_DM = 17.0
 ISOCHRONE = default_isochrone_grid()[0]
-VIS, H = "euclid_q1_VIS", "euclid_q1_H"
+VIS, H = "euclid_dr1_VIS", "euclid_dr1_H"
 
 
 def _cmd_in_polygon(rng, n, dm):
@@ -89,11 +90,11 @@ def _catalog(rng, frame, stream_dm_of_phi1, n_background=60_000, n_stream=3000):
     h = np.concatenate([h, *stream_h])
 
     ra, dec = phi12_to_radec(phi1, phi2, frame)
-    return pd.DataFrame({
+    return add_vis_templfit_magnitudes(pd.DataFrame({
         "ra": ra, "dec": dec, f"{VIS}_obs": vis, f"{H}_obs": h,
         f"{VIS}_err": np.full(vis.size, 0.02), f"{H}_err": np.full(vis.size, 0.02),
         "is_stream": np.arange(vis.size) >= n_background,
-    })
+    }))
 
 
 @pytest.fixture(scope="module")

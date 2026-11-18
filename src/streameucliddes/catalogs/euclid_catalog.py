@@ -105,8 +105,10 @@ EUCLID_FLUX_COLUMNS = {
 }
 # VIS photometry of a match filter (see vis_band): "psf", the "VIS" magnitudes, or
 # "templfit", the "VIS_TO_<band>" magnitudes, <band> being the other band of the colour.
+# Default templfit: DR1 only, and only in a colour with Y, J or H; the Q1 catalogs and the
+# colours with other bands need "psf" explicitly.
 VIS_PHOTOMETRIES = ("psf", "templfit")
-DEFAULT_VIS_PHOTOMETRY = "psf"
+DEFAULT_VIS_PHOTOMETRY = "templfit"
 # Euclid columns read by default, besides the fluxes, RA/Dec and E(B-V).
 EUCLID_DEFAULT_COLUMNS = [
     "OBJECT_ID",  # Euclid unique source identifier
@@ -201,7 +203,7 @@ DUST_CORRECTIONS = {
     "SFD98": {"ebv_column": "EBV_SFD98", "coefficients": COEFF_SFD98},
     "PLANCK": {"ebv_column": "GAL_EBV", "coefficients": COEFF_PLANCK},
 }
-DEFAULT_DUST_CORRECTION = "SFD98"
+DEFAULT_DUST_CORRECTION = "PLANCK"
 
 
 # ===================================================
@@ -391,9 +393,9 @@ def default_columns(catalog, vis_photometry=DEFAULT_VIS_PHOTOMETRY):
     catalog : str
         Key of :data:`CATALOGS`.
     vis_photometry : str
-        ``"psf"``: the VIS PSF flux only; ``"templfit"``: also the VIS
-        template-fitting fluxes ``FLUX_VIS_TO_<band>_TEMPLFIT`` (DR1), read only on
-        demand (6 more columns for every star).
+        ``"psf"``: the VIS PSF flux only; ``"templfit"`` (:data:`DEFAULT_VIS_PHOTOMETRY`):
+        also the VIS template-fitting fluxes ``FLUX_VIS_TO_<band>_TEMPLFIT`` (DR1 only:
+        a Q1 catalog needs ``"psf"``; 6 more columns for every star).
 
     Returns
     -------
@@ -997,7 +999,8 @@ def get_euclid_stars(
     vis_photometry : str
         ``"templfit"``: also read the VIS template-fitting fluxes and add their
         magnitudes ``<namespace>_VIS_TO_<band>_obs`` (DR1), for a match filter
-        with ``"vis_photometry": "templfit"``; ``"psf"``: only the PSF VIS.
+        with ``"vis_photometry": "templfit"``; ``"psf"``: only the PSF VIS (a Q1
+        catalog: no VIS template fit). Default: :data:`DEFAULT_VIS_PHOTOMETRY`.
         When ``data`` is None and ``columns`` is None (see :func:`default_columns`).
 
     Returns

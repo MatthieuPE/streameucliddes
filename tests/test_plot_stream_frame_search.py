@@ -15,6 +15,7 @@ import pandas as pd
 import pytest
 import skyproj
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_along_track,
     stream_frame_search_single_dm,
@@ -72,10 +73,10 @@ def search(gc_frame):
     n = 30_000
     ra, dec = phi12_to_radec(rng.uniform(-11.0, 11.0, n), rng.uniform(-4.0, 4.0, n), gc_frame)
     vis = rng.uniform(18.0, 26.0, n)
-    catalog = pd.DataFrame({
-        "ra": ra, "dec": dec, "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
-        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
-    })
+    catalog = add_vis_templfit_magnitudes(pd.DataFrame({
+        "ra": ra, "dec": dec, "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
+    }))
     phi1_centres, phi2_centres = phi12_bin_centres(WINDOW, BIN)
     footprint = np.broadcast_to(phi1_centres[:, None] > 8.0, (phi1_centres.size, phi2_centres.size))
     return prepare_search(catalog, gc_frame, WINDOW, bin_size_deg=BIN, footprint_mask=footprint)

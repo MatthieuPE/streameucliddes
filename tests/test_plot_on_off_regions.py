@@ -13,6 +13,7 @@ import pandas as pd
 import pytest
 from astropy.coordinates import SkyCoord
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.build_masks import elliptical_radius_deg
 from streameucliddes.analysis.catalog_preparation import catalog_match_filter_mask
 from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
@@ -30,9 +31,9 @@ pytestmark = pytest.mark.plot_on_off_regions
 
 DM = 17.0
 ISOCHRONE = {"age": 12.0, "metallicity": 0.0003}
-VIS, H, J = "euclid_q1_VIS", "euclid_q1_H", "euclid_q1_J"
-VIS_H_J = {"name": "vis_h_j", "reference_band": ("euclid_q1", "VIS"),
-           "color_bands": [("euclid_q1", "H"), ("euclid_q1", "J")]}
+VIS, H, J = "euclid_dr1_VIS", "euclid_dr1_H", "euclid_dr1_J"
+VIS_H_J = {"name": "vis_h_j", "reference_band": ("euclid_dr1", "VIS"),
+           "color_bands": [("euclid_dr1", "H"), ("euclid_dr1", "J")]}
 OBJECT = pd.Series({"key": "dwarf_a", "name": "Dwarf_A", "ra": 50.0, "dec": -30.0, "radius_arcmin": 6.0,
                     "ellipticity": 0.4, "position_angle": 30.0, "distance_modulus": DM, "feh": -2.0})
 
@@ -54,8 +55,8 @@ def catalog():
                                     color_index=color_index)
         order = np.argsort(track["mag"])
         band[n_field:] = vis[n_field:] - np.interp(vis[n_field:], track["mag"][order], track["color"][order])
-    return pd.DataFrame({"ra": sky.ra.deg, "dec": sky.dec.deg, f"{VIS}_obs": vis, f"{H}_obs": h, f"{J}_obs": j,
-                         **{f"{band}_err": np.full(vis.size, 0.02) for band in (VIS, H, J)}})
+    return add_vis_templfit_magnitudes(pd.DataFrame({"ra": sky.ra.deg, "dec": sky.dec.deg, f"{VIS}_obs": vis, f"{H}_obs": h, f"{J}_obs": j,
+                         **{f"{band}_err": np.full(vis.size, 0.02) for band in (VIS, H, J)}}))
 
 
 @pytest.fixture(scope="module")

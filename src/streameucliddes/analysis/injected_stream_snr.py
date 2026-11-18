@@ -44,7 +44,10 @@ STREAM_CONFIG = {
     }
 }
 
-DEFAULT_MATCH_FILTERS = [get_match_filter()]
+# The injection simulates Euclid Q1 (inject.inject_stream_catalog) in the Q1 x DES stars: the default match filter
+# (its width and red cap) on the Q1 bands, with the PSF VIS (Q1 has no VIS template-fitting magnitude)
+DEFAULT_MATCH_FILTERS = [{**get_match_filter(), "reference_band": ("euclid_q1", "VIS"),
+                          "color_bands": [("euclid_q1", "H")], "vis_photometry": "psf"}]
 # Default phi2 window: +- 1.4 stream_width, maximizes the SNR of a gaussian signal on
 # a uniform background
 PHI2_WIDTH_FACTOR = 1.4
@@ -165,7 +168,7 @@ def _get_background(gc_frame, reload_data=False):
     """
     global STARS_BACKGROUND, _BACKGROUND_FRAME
     if STARS_BACKGROUND is None or reload_data:
-        STARS_BACKGROUND = get_euclid_stars("euclid_q1_des")
+        STARS_BACKGROUND = get_euclid_stars("euclid_q1_des", vis_photometry="psf")  # Q1: no VIS template fit
         _BACKGROUND_FRAME = None
 
     if _BACKGROUND_FRAME is None or not gc_frame.is_equivalent_frame(_BACKGROUND_FRAME):

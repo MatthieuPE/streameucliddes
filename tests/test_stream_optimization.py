@@ -20,6 +20,7 @@ import pytest
 from astropy.coordinates import angular_separation
 from scipy.integrate import quad
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis import stream_optimization
 from streameucliddes.analysis.on_off_regions import region_density_map, selection_snr
 from streameucliddes.analysis.stream_optimization import stream_field, stream_regions, track_match_filter_mask
@@ -34,8 +35,8 @@ PHI1_ENDS, PHI2_ENDS, DISTANCE_KPC = (-5.0, 5.0), (-0.5, 0.5), (20.0, 25.0)
 SIGMA = 0.2
 NSIDE = 256  # footprints of the tests: pixels of 0.23 deg
 N_STARS = 400_000
-VIS, H = "euclid_q1_VIS", "euclid_q1_H"
-MATCH_FILTER = {"name": "vis_h", "reference_band": ("euclid_q1", "VIS"), "color_bands": [("euclid_q1", "H")]}
+VIS, H = "euclid_dr1_VIS", "euclid_dr1_H"
+MATCH_FILTER = {"name": "vis_h", "reference_band": ("euclid_dr1", "VIS"), "color_bands": [("euclid_dr1", "H")]}
 ISOCHRONE = {"age": 12.0, "metallicity": 0.0003}
 
 
@@ -58,8 +59,8 @@ def catalog(gc_frame):
     phi2 = np.degrees(np.arcsin(rng.uniform(np.sin(np.radians(-3.0)), np.sin(np.radians(3.0)), N_STARS)))
     ra, dec = phi12_to_radec(phi1, phi2, gc_frame)
     vis = rng.uniform(18.0, 26.0, N_STARS)
-    return pd.DataFrame({"ra": ra, "dec": dec, f"{VIS}_obs": vis, f"{H}_obs": vis - rng.uniform(-1.0, 1.5, N_STARS),
-                         f"{VIS}_err": 0.02, f"{H}_err": 0.02})
+    return add_vis_templfit_magnitudes(pd.DataFrame({"ra": ra, "dec": dec, f"{VIS}_obs": vis, f"{H}_obs": vis - rng.uniform(-1.0, 1.5, N_STARS),
+                         f"{VIS}_err": 0.02, f"{H}_err": 0.02}))
 
 
 def _no_footprint_hole():

@@ -6,6 +6,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis import stream_frame_search as stream_frame_search_module
 from streameucliddes.analysis.build_masks import object_mask_nside
 from streameucliddes.analysis.candidate_investigation import (
@@ -470,9 +471,9 @@ def test_off_density_cancels_gradient_with_hole(candidate_endpoints, no_object_m
     keep = rng.uniform(0.0, 1.0 + gradient * phi2_half, 2 * n) < 1.0 + gradient * phi2
     ra, dec = phi12_to_radec(phi1[keep], phi2[keep], frame)
     vis = rng.uniform(18.0, 26.0, ra.size)
-    catalog = pd.DataFrame({"ra": ra, "dec": dec, "euclid_q1_VIS_obs": vis,
-                            "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, ra.size),
-                            "euclid_q1_VIS_err": np.full(ra.size, 0.02), "euclid_q1_H_err": np.full(ra.size, 0.02)})
+    catalog = add_vis_templfit_magnitudes(pd.DataFrame({"ra": ra, "dec": dec, "euclid_dr1_VIS_obs": vis,
+                            "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, ra.size),
+                            "euclid_dr1_VIS_err": np.full(ra.size, 0.02), "euclid_dr1_H_err": np.full(ra.size, 0.02)}))
     cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0,
                                   prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
     nside, sigma = 256, 0.4

@@ -12,6 +12,7 @@ import pytest
 from astropy.coordinates import angular_separation
 from scipy.integrate import quad
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.cmd_match_filter import on_off_hess
 from streameucliddes.analysis.on_off_regions import (
     compare_selections,
@@ -32,7 +33,7 @@ SIGMA, ON_N_SIGMA, OFF_N_SIGMA = 0.2, 1.5, (3.0, 5.0)
 PHI1_RANGE = (-4.0, 4.0)
 SLOPE = 0.1  # tilted track: phi2 = SLOPE * phi1
 N_STARS = 300_000
-VIS, H = "euclid_q1_VIS_obs", "euclid_q1_H_obs"
+VIS, H = "euclid_dr1_VIS_obs", "euclid_dr1_H_obs"
 # A masked object on the track, inside the on band: a circle of MASK_RADIUS_ARCMIN
 OBJECT_PHI1, MASK_RADIUS_ARCMIN = 1.0, 12.0
 
@@ -49,7 +50,7 @@ def catalog(gc_frame):
     phi2 = np.degrees(np.arcsin(rng.uniform(np.sin(np.radians(-3.0)), np.sin(np.radians(3.0)), N_STARS)))
     ra, dec = phi12_to_radec(phi1, phi2, gc_frame)
     vis = rng.uniform(18.0, 26.0, N_STARS)
-    return pd.DataFrame({"ra": ra, "dec": dec, VIS: vis, H: vis - rng.uniform(-1.0, 1.5, N_STARS)})
+    return add_vis_templfit_magnitudes(pd.DataFrame({"ra": ra, "dec": dec, VIS: vis, H: vis - rng.uniform(-1.0, 1.5, N_STARS)}))
 
 
 def _bands(catalog, frame, track_phi2=tilted_track, **kwargs):

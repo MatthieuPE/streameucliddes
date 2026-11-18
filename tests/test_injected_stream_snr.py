@@ -42,6 +42,7 @@ MATCH_FILTER_LIST = [
         "name": "eucliddes_VISg",
         "reference_band": ("euclid_q1", "VIS"),
         "color_bands": [("des_yr6", "g")],
+        "vis_photometry": "psf",  # Q1, a DES colour: no VIS template fit
     },
 ]
 DEFAULT_MATCH_FILTER = MATCH_FILTER_LIST[0]["name"]
@@ -319,7 +320,8 @@ def test_match_filter_of_the_injected_model(mock_background, monkeypatch):
 def test_snr_vis_templfit_warning(mock_background):
     mock_background["euclid_q1_VIS_TO_H_obs"] = mock_background["euclid_q1_VIS_obs"] - 0.07
     mock_background["euclid_q1_VIS_TO_H_err"] = mock_background["euclid_q1_VIS_err"]
-    vis_h = {"name": "vis_h", "reference_band": ("euclid_q1", "VIS"), "color_bands": [("euclid_q1", "H")]}
+    vis_h = {"name": "vis_h", "reference_band": ("euclid_q1", "VIS"), "color_bands": [("euclid_q1", "H")],
+             "vis_photometry": "psf"}
     templfit = {**vis_h, "name": "vis_h_templfit", "vis_photometry": "templfit"}
     with pytest.warns(UserWarning, match="one VIS magnitude"):
         results, _ = injected_stream_snr.get_stream_snr(seed=SEED, match_filter_list=[vis_h, templfit])

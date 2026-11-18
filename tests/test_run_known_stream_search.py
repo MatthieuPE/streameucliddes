@@ -11,6 +11,7 @@ import pandas as pd
 import pytest
 from PIL import Image
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_along_track,
     stream_frame_search_dm_scan,
@@ -40,10 +41,10 @@ def catalog(gc_frame):
     n = 20_000
     ra, dec = phi12_to_radec(rng.uniform(-11.0, 11.0, n), rng.uniform(-4.0, 4.0, n), gc_frame)
     vis = rng.uniform(18.0, 26.0, n)
-    return pd.DataFrame({
-        "ra": ra, "dec": dec, "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
-        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
-    })
+    return add_vis_templfit_magnitudes(pd.DataFrame({
+        "ra": ra, "dec": dec, "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
+    }))
 
 
 @pytest.fixture

@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 from numpy.polynomial import polynomial
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.catalogs import overlapped_objects
 
 LVDB_COLUMNS = ["key", "name", "ra", "dec", "rhalf", "ellipticity", "position_angle", "distance", "confirmed_real"]
@@ -324,12 +325,12 @@ def candidate_catalog():
     rng = np.random.default_rng(3)
     n = 50_000
     vis = rng.uniform(18.0, 26.0, n)
-    return pd.DataFrame({
+    return add_vis_templfit_magnitudes(pd.DataFrame({
         "ra": rng.uniform(58.0, 90.0, n),
         "dec": np.degrees(np.arcsin(rng.uniform(*np.sin(np.radians([-52.0, -30.0])), n))),
-        "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
-        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
-    })
+        "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
+    }))
 
 
 @pytest.fixture
@@ -374,8 +375,8 @@ def candidate_stream_catalog(candidate_endpoints, candidate_catalog):
         h_try = vis_try - rng.uniform(-1.0, 1.5, 20 * n)
         inside = is_in_match_filter(vis_try, h_try, polygon_vertices=polygon)
         vis, h = np.append(vis, vis_try[inside]), np.append(h, h_try[inside])
-    stream = pd.DataFrame({
-        "ra": ra, "dec": dec, "euclid_q1_VIS_obs": vis[:n], "euclid_q1_H_obs": h[:n],
-        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
-    })
+    stream = add_vis_templfit_magnitudes(pd.DataFrame({
+        "ra": ra, "dec": dec, "euclid_dr1_VIS_obs": vis[:n], "euclid_dr1_H_obs": h[:n],
+        "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
+    }))
     return pd.concat([candidate_catalog, stream], ignore_index=True)

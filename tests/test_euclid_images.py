@@ -14,6 +14,7 @@ from astropy.table import Table
 from astropy.wcs import WCS
 
 from streameucliddes.analysis.candidate_investigation import CandidateInvestigation, region_windows, stream_regions
+from streameucliddes.analysis.cmd_match_filter import match_filter_cmd_columns
 from streameucliddes.images import euclid_images
 from streameucliddes.images.euclid_images import (
     EUMMY_BANDS,
@@ -244,8 +245,9 @@ def test_match_filter_star_positions(candidate_endpoints, candidate_stream_catal
     assert set(picked["index"]) <= set(all_on.index)
     assert picked["index"].iloc[0] == all_on.index[0] and picked["index"].iloc[-1] == all_on.index[-1]
     row = stars.loc[picked["index"].iloc[0]]
-    assert picked["ra"].iloc[0] == row["ra"] and picked["mag"].iloc[0] == row["euclid_q1_VIS_obs"]
-    assert picked["color"].iloc[0] == pytest.approx(row["euclid_q1_VIS_obs"] - row["euclid_q1_H_obs"])
+    mag_column, other_column = match_filter_cmd_columns(cand.search.match_filter)[0]
+    assert picked["ra"].iloc[0] == row["ra"] and picked["mag"].iloc[0] == row[mag_column]
+    assert picked["color"].iloc[0] == pytest.approx(row[mag_column] - row[other_column])
     assert len(match_filter_star_positions(cand, 10 * on.sum())) == on.sum()
     with pytest.raises(ValueError, match="n_stars"):
         match_filter_star_positions(cand, 0)
