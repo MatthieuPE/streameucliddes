@@ -8,8 +8,9 @@ A match filter is ``{"name", "reference_band": (namespace, band),
 ``red_cap_value``, ``color_spread`` and ``error_multiplier`` (arguments of
 ``streamobs.match_filter.build_match_filter``; the width of the polygon is
 ``error_multiplier`` times the photometric error plus ``color_spread``, each
-(blue side, red side); default: those of streamobs, ``(0.05, 0.05)`` mag and
-``(2, 2)``), and ``vis_photometry``, the photometry of the Euclid VIS magnitudes:
+(blue side, red side); absent: those of streamobs, ``(0.05, 0.05)`` mag and
+``(2, 2)``; ``DEFAULT_MATCH_FILTER`` sets its own ``error_multiplier`` and
+``red_cap_value``), and ``vis_photometry``, the photometry of the Euclid VIS magnitudes:
 ``"psf"`` (default) or ``"templfit"``, the template-fitting magnitude of VIS
 PSF-matched to the other band of each colour (``catalogs.euclid_catalog.vis_band``;
 VIS - H uses ``VIS_TO_H``, DR1 only). The isochrone and the polygons do not depend
@@ -18,7 +19,8 @@ have one simulated VIS, copied to their ``VIS_TO_<band>`` columns
 (``injection.inject.add_vis_templfit_magnitudes``).
 Its polygons are built for an isochrone ``{"age", "metallicity"}`` with an
 optional ``"isochrone_model"``, the name of the ugali isochrone model
-(``"Marigo2017"`` by default, ``"Dotter2016"``...; read with
+(``"Dotter2016"``, ``"Marigo2017"``...; by default
+``unit_conversions.DEFAULT_ISOCHRONE_MODEL``; read with
 ``unit_conversions.get_isochrone_model``; ``catalogs.isochrone_parameters``).
 ugali builds from that name a ugali isochrone (``ugali_isochrone``, an
 instance of the ugali class of that name).
@@ -58,11 +60,15 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike, NDArray
 
-# Euclid VIS vs VIS - H: the default match filter, read through get_match_filter
+# Euclid VIS vs VIS - H: the default match filter, read through get_match_filter. Its width and red cap: the best SNR
+# on Aliqa Uma in Euclid DR1 (notebooks/optimization/stream_optimization.ipynb), error_multiplier 3 instead of the 2
+# of streamobs and red_cap_value 0.55 mag of VIS - H instead of color_max - 0.25 = 0.75 (Euclid colours only)
 DEFAULT_MATCH_FILTER = {
     "name": "default_euclid_vis_h",
     "reference_band": ("euclid_q1", "VIS"),
     "color_bands": [("euclid_q1", "H")],
+    "error_multiplier": (3.0, 3.0),
+    "red_cap_value": 0.55,
 }
 # DES g vs g - r, as the DES search of Shipp et al. 2018
 DES_GR_MATCH_FILTER = {
@@ -452,6 +458,18 @@ def _isochrone_survey(namespace: str) -> str:
     return namespace.split("_")[0]
 
 
+def default_hess_bins() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Colour and magnitude bin edges (mag) of every Hess diagram without given bins.
+
+    ``DEFAULT_COLOR_RANGE`` every ``DEFAULT_COLOR_BIN`` and ``DEFAULT_MAG_RANGE``
+    every ``DEFAULT_MAG_BIN``: the same pixels in every figure, so that diagrams
+    of different selections or match filters compare bin by bin.
+    """
+    color_bins = np.arange(DEFAULT_COLOR_RANGE[0], DEFAULT_COLOR_RANGE[1] + DEFAULT_COLOR_BIN / 2, DEFAULT_COLOR_BIN)
+    mag_bins = np.arange(DEFAULT_MAG_RANGE[0], DEFAULT_MAG_RANGE[1] + DEFAULT_MAG_BIN / 2, DEFAULT_MAG_BIN)
+    return color_bins, mag_bins
+
+
 def hess_diagram(
     stars: pd.DataFrame,
     mag_cols: Sequence[str],
@@ -482,9 +500,8 @@ def hess_diagram(
         Area of the region (deg²): density per deg². None: counts only
         (``density`` = ``counts``).
     color_bins, mag_bins : array_like, optional
-        Bin edges (mag). Default: ``DEFAULT_COLOR_RANGE`` and
-        ``DEFAULT_MAG_RANGE`` every ``DEFAULT_COLOR_BIN`` and
-        ``DEFAULT_MAG_BIN``. Give the same bins to the on and off diagrams.
+        Bin edges (mag). Default: ``default_hess_bins()``, the same for
+        every Hess diagram. Give the same bins to the on and off diagrams.
 
     Returns
     -------
@@ -507,10 +524,9 @@ def hess_diagram(
     if area_deg2 is not None and area_deg2 <= 0:
         raise ValueError(f"area_deg2 must be > 0, not {area_deg2}.")
     mag_column, color_column = mag_cols
-    if color_bins is None:
-        color_bins = np.arange(DEFAULT_COLOR_RANGE[0], DEFAULT_COLOR_RANGE[1] + DEFAULT_COLOR_BIN / 2, DEFAULT_COLOR_BIN)
-    if mag_bins is None:
-        mag_bins = np.arange(DEFAULT_MAG_RANGE[0], DEFAULT_MAG_RANGE[1] + DEFAULT_MAG_BIN / 2, DEFAULT_MAG_BIN)
+    default_color_bins, default_mag_bins = default_hess_bins()
+    color_bins = default_color_bins if color_bins is None else color_bins
+    mag_bins = default_mag_bins if mag_bins is None else mag_bins
     magnitude = pd.to_numeric(stars[mag_column], errors="coerce").to_numpy(dtype=float)
     other = pd.to_numeric(stars[color_column], errors="coerce").to_numpy(dtype=float)
     keep = np.isfinite(magnitude) & np.isfinite(other)

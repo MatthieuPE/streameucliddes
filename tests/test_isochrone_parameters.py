@@ -13,7 +13,12 @@ from streameucliddes.catalogs.isochrone_parameters import (
     load_stream_population_table,
     with_isochrone_model,
 )
-from streameucliddes.unit_conversions import convert_FeH_to_z, convert_metallicity
+from streameucliddes.unit_conversions import convert_FeH_to_z, convert_metallicity, get_isochrone_model
+
+
+def default_model_z(z):
+    """Z of the default isochrone model for a Z on the scale of Z_SCALE_ISOCHRONE_MODEL (the same [Fe/H])."""
+    return pytest.approx(convert_metallicity(z, Z_SCALE_ISOCHRONE_MODEL, get_isochrone_model()))
 
 pytestmark = pytest.mark.isochrone_parameters
 
@@ -85,9 +90,10 @@ def test_invalid_tables(tmp_path, header, rows, message):
 # ===================================================
 
 
-# Default: the DES search isochrone of Shipp et al. 2018, 13 Gyr and Z = 0.0002
+# Default: the DES search isochrone of Shipp et al. 2018, 13 Gyr and Z = 0.0002 on the Marigo2017 scale (in the
+# default model)
 def test_default_isochrone_grid():
-    assert default_isochrone_grid() == [{"age": 13.0, "metallicity": 0.0002}]
+    assert default_isochrone_grid() == [{"age": 13.0, "metallicity": default_model_z(0.0002)}]
 
 
 # One isochrone per (age, Z) pair, every Z for the first age, then for the next one
@@ -98,7 +104,7 @@ def test_default_isochrone_grid_pairs():
         {"age": 12.0, "metallicity": 0.0001}, {"age": 12.0, "metallicity": 0.0004},
     ]
     assert all(type(value) is float for isochrone in grid for value in isochrone.values())
-    assert default_isochrone_grid(ages_gyr=[12.0]) == [{"age": 12.0, "metallicity": 0.0002}]
+    assert default_isochrone_grid(ages_gyr=[12.0]) == [{"age": 12.0, "metallicity": default_model_z(0.0002)}]
 
 
 # ===================================================
@@ -126,8 +132,9 @@ GRID = [
 @pytest.mark.parametrize(
     "stream_name, expected",
     [
-        ("Both", [{"age": 12.5, "metallicity": 0.0001}]),
-        ("NoAge", [{"age": 11.0, "metallicity": 0.0001}, {"age": 12.0, "metallicity": 0.0001}]),
+        ("Both", [{"age": 12.5, "metallicity": default_model_z(0.0001)}]),
+        ("NoAge", [{"age": 11.0, "metallicity": default_model_z(0.0001)},
+                   {"age": 12.0, "metallicity": default_model_z(0.0001)}]),
         ("NoZ", [{"age": 12.5, "metallicity": 0.0001}, {"age": 12.5, "metallicity": 0.0004}]),
         ("Unknown", GRID),
     ],
@@ -140,9 +147,9 @@ def test_known_stream_isochrone_parameters(population_table, stream_name, expect
 def test_known_stream_isochrone_parameters_defaults():
     table = load_stream_population_table()
     ravi = known_stream_isochrone_parameters("Ravi")  # Shipp et al. 2018 age and Z
-    assert ravi == [{"age": 13.5, "metallicity": table.loc["Ravi", "z"]}]
+    assert ravi == [{"age": 13.5, "metallicity": default_model_z(table.loc["Ravi", "z"])}]
     atlas = known_stream_isochrone_parameters("AAU-ATLAS")  # spectroscopic Z, default age
-    assert atlas == [{"age": 13.0, "metallicity": table.loc["AAU-ATLAS", "z"]}]
+    assert atlas == [{"age": 13.0, "metallicity": default_model_z(table.loc["AAU-ATLAS", "z"])}]
     assert known_stream_isochrone_parameters("Unknown") == default_isochrone_grid()
 
 
@@ -155,7 +162,7 @@ def test_known_stream_isochrone_parameters_defaults():
 def test_isochrone_from_feh():
     assert isochrone_from_feh(11.0, feh=-2.0) == {"age": 11.0, "metallicity": pytest.approx(convert_FeH_to_z(-2.0))}
     assert isochrone_from_feh(metallicity=0.0004) == {"age": DEFAULT_AGES_GYR[0], "metallicity": 0.0004}
-    default = {"age": DEFAULT_AGES_GYR[0], "metallicity": DEFAULT_METALLICITIES[0]}
+    default = {"age": DEFAULT_AGES_GYR[0], "metallicity": default_model_z(DEFAULT_METALLICITIES[0])}
     assert isochrone_from_feh() == default
     assert isochrone_from_feh(np.nan, feh=np.nan, metallicity=np.nan) == default
     with pytest.raises(ValueError, match="not both"):
@@ -196,7 +203,7 @@ def test_isochrones_of_a_model():
 # converted to the isochrone model; the ages unchanged
 @pytest.mark.parametrize("stream", ["Both", "NoZ"])
 def test_known_stream_isochrones_of_a_model(population_table, stream):
-    marigo = known_stream_isochrone_parameters(stream, population_table)
+    marigo = known_stream_isochrone_parameters(stream, population_table, isochrone_model=Z_SCALE_ISOCHRONE_MODEL)
     dotter = known_stream_isochrone_parameters(stream, population_table, isochrone_model="Dotter2016")
     assert [isochrone["age"] for isochrone in dotter] == [isochrone["age"] for isochrone in marigo]
     for m, d in zip(marigo, dotter):

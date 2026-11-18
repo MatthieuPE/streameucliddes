@@ -8,7 +8,7 @@ from streamobs.match_filter import build_match_filter, is_in_match_filter
 
 from streameucliddes.analysis import cmd_match_filter
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid, get_isochrone
-from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL, convert_FeH_to_z
+from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL, convert_FeH_to_z, get_isochrone_model
 from streameucliddes.analysis.cmd_match_filter import (
     difference_hess,
     hess_diagram,
@@ -39,11 +39,12 @@ def test_match_filter_polygon_cache():
         "band_2": "r",
         "survey_1": "des",
         "survey_2": "des",
+        "isochrone_model": DES_ISOCHRONE_MODEL,
     }
-    polygon = cmd_match_filter.build_match_filter_polygon(*params.values())
+    polygon = cmd_match_filter.build_match_filter_polygon(**params)
     np.testing.assert_array_equal(polygon, build_match_filter(**params))
 
-    assert cmd_match_filter.build_match_filter_polygon(*params.values()) is polygon
+    assert cmd_match_filter.build_match_filter_polygon(**params) is polygon
     assert not polygon.flags.writeable  # shared between calls
 
 
@@ -51,7 +52,12 @@ def test_match_filter_polygon_cache():
 # Test match_filter_columns and select_stars_in_match_filter
 # ===================================================
 
-ISOCHRONE = {"age": 12.0, "metallicity": 0.0006}
+# The DES tests name their isochrone model: the local Dotter2016 DES grid has only 4 isochrones (10 and 12 Gyr, Z 1e-4
+# and 2e-4), too few for another age or Z to change the polygon
+DES_ISOCHRONE_MODEL = "Marigo2017"
+ISOCHRONE = {"age": 12.0, "metallicity": 0.0006, "isochrone_model": DES_ISOCHRONE_MODEL}
+# A model other than the default one
+OTHER_ISOCHRONE_MODEL = next(model for model in ("Marigo2017", "Dotter2016") if model != DEFAULT_ISOCHRONE_MODEL)
 DES_GR = cmd_match_filter.DES_GR_MATCH_FILTER
 MATCH_FILTER_GRI = {
     "name": "des_gri",
@@ -76,7 +82,20 @@ def stars(rng):
 def _polygon(dm, isochrone, band_2):
     return build_match_filter(
         distance_modulus=dm, age=isochrone["age"], metallicity=isochrone["metallicity"],
-        band_1="g", band_2=band_2, survey_1="des", survey_2="des",
+        band_1="g", band_2=band_2, survey_1="des", survey_2="des", isochrone_model=get_isochrone_model(isochrone),
+    )
+
+
+def _default_match_filter_polygon(dm, isochrone=None):
+    """streamobs polygon of cmd_match_filter.DEFAULT_MATCH_FILTER (Euclid VIS - H, with its width and red cap) for an isochrone
+    (default: the default one)."""
+    isochrone = get_isochrone(isochrone)
+    width = {key: list(cmd_match_filter.DEFAULT_MATCH_FILTER[key]) for key in ("color_spread", "error_multiplier")
+             if key in cmd_match_filter.DEFAULT_MATCH_FILTER}
+    return build_match_filter(
+        distance_modulus=dm, age=isochrone["age"], metallicity=isochrone["metallicity"],
+        band_1="VIS", band_2="H", survey_1="euclid", survey_2="euclid", isochrone_model=get_isochrone_model(isochrone),
+        red_cap_value=cmd_match_filter.DEFAULT_MATCH_FILTER.get("red_cap_value"), **width,
     )
 
 
@@ -99,12 +118,8 @@ def test_match_filter_polygons():
     np.testing.assert_allclose(polygons[0], _polygon(17.0, ISOCHRONE, "r"))
     np.testing.assert_allclose(polygons[1], _polygon(17.0, ISOCHRONE, "i"))
 
-    default_isochrone = get_isochrone()
     default_polygon, = cmd_match_filter.match_filter_polygons(17.0)
-    np.testing.assert_allclose(default_polygon, build_match_filter(
-        distance_modulus=17.0, age=default_isochrone["age"], metallicity=default_isochrone["metallicity"],
-        band_1="VIS", band_2="H", survey_1="euclid", survey_2="euclid",
-    ))
+    np.testing.assert_allclose(default_polygon, _default_match_filter_polygon(17.0))
 
 
 # color_spread and error_multiplier of a match filter: given to streamobs, which keeps its own when they are absent;
@@ -114,7 +129,7 @@ def test_match_filter_polygons_width():
     polygon, = cmd_match_filter.match_filter_polygons(17.0, ISOCHRONE, {**DES_GR, **width})
     np.testing.assert_allclose(polygon, build_match_filter(
         distance_modulus=17.0, age=ISOCHRONE["age"], metallicity=ISOCHRONE["metallicity"],
-        band_1="g", band_2="r", survey_1="des", survey_2="des",
+        band_1="g", band_2="r", survey_1="des", survey_2="des", isochrone_model=DES_ISOCHRONE_MODEL,
         color_spread=list(width["color_spread"]), error_multiplier=list(width["error_multiplier"]),
     ))
     default, = cmd_match_filter.match_filter_polygons(17.0, ISOCHRONE, DES_GR)
@@ -123,7 +138,8 @@ def test_match_filter_polygons_width():
     # Points beside the main sequence, out of the narrow polygon, in the one widened on their side only
     narrow, blue, red = (cmd_match_filter.match_filter_polygons(17.0, ISOCHRONE, {**DES_GR, "color_spread": spread})[0]
                          for spread in [(0.05, 0.05), (0.25, 0.05), (0.05, 0.25)])
-    track = isochrone_cmd_track(17.0, ISOCHRONE["age"], ISOCHRONE["metallicity"], match_filter=DES_GR)
+    track = isochrone_cmd_track(17.0, ISOCHRONE["age"], ISOCHRONE["metallicity"], match_filter=DES_GR,
+                                isochrone_model=DES_ISOCHRONE_MODEL)
     main_sequence = track["mag"] > track["mag"][np.argmin(track["color"])]  # below the turnoff
     order = np.argsort(track["mag"][main_sequence])
     mag = 22.0  # main sequence, well inside the magnitude range of the polygons
@@ -174,11 +190,7 @@ def test_select_stars_defaults(stars):
     np.testing.assert_array_equal(default, explicit)
     assert 0 < default.sum() < len(stars)
     # The default is Euclid VIS vs VIS - H: the polygon of streamobs for those bands
-    vis_h_polygon = build_match_filter(
-        distance_modulus=16.8, age=default_isochrone_grid()[0]["age"],
-        metallicity=default_isochrone_grid()[0]["metallicity"],
-        band_1="VIS", band_2="H", survey_1="euclid", survey_2="euclid",
-    )
+    vis_h_polygon = _default_match_filter_polygon(16.8, default_isochrone_grid()[0])
     expected = is_in_match_filter(stars["euclid_q1_VIS_obs"], stars["euclid_q1_H_obs"], polygon_vertices=vis_h_polygon)
     np.testing.assert_array_equal(default, expected)
 
@@ -187,10 +199,10 @@ def test_select_stars_defaults(stars):
 @pytest.mark.parametrize(
     "isochrone",
     [
-        {"age": 8.0, "metallicity": 0.0006},  # younger
-        {"age": 13.5, "metallicity": 0.0006},  # older
-        {"age": 12.0, "metallicity": 0.0001},  # more metal-poor
-        {"age": 12.0, "metallicity": 0.001},  # more metal-rich (the top of the Marigo et al. 2017 grid)
+        {**ISOCHRONE, "age": 8.0},  # younger
+        {**ISOCHRONE, "age": 13.5},  # older
+        {**ISOCHRONE, "metallicity": 0.0001},  # more metal-poor
+        {**ISOCHRONE, "metallicity": 0.001},  # more metal-rich (the top of the Marigo et al. 2017 grid)
     ],
 )
 def test_select_stars_isochrone_changes(stars, isochrone):
@@ -225,10 +237,11 @@ def test_isochrone_track_shifts_with_distance_modulus():
     assert far["distance_modulus"] == 20.0 and far["feh"] is None
 
 
-# [Fe/H] = -1.9: Z of convert_FeH_to_z (~0.0002), the same track as with that Z
+# [Fe/H] = -1.9: Z of convert_FeH_to_z (~0.0002) for the default model, the same track as with that Z
 def test_isochrone_track_feh_gives_z():
     track = isochrone_cmd_track(17.0, 13.0, feh=-1.9)
-    assert track["metallicity"] == pytest.approx(0.0002, rel=0.05) and track["feh"] == -1.9
+    assert track["metallicity"] == pytest.approx(convert_FeH_to_z(-1.9, get_isochrone_model()))
+    assert track["metallicity"] == pytest.approx(0.0002, rel=0.1) and track["feh"] == -1.9
     with_z = isochrone_cmd_track(17.0, 13.0, track["metallicity"])
     np.testing.assert_array_equal(track["mag"], with_z["mag"])
 
@@ -242,11 +255,12 @@ def test_isochrone_track_metallicity_or_feh():
 
 
 # The main sequence of the track (fainter than the turn-off, to VIS 26) is inside the match-filter polygon
-# of the same isochrone and distance modulus: both come from the same model
+# of the same isochrone and distance modulus: both come from the same model. Without the red cap, which cuts the
+# red end of the faint main sequence on purpose
 def test_isochrone_track_inside_polygon():
     isochrone = {"age": 13.0, "metallicity": 0.0002}
     track = isochrone_cmd_track(17.0, **isochrone)
-    (polygon,) = cmd_match_filter.match_filter_polygons(17.0, isochrone)
+    (polygon,) = cmd_match_filter.match_filter_polygons(17.0, isochrone, {**cmd_match_filter.DEFAULT_MATCH_FILTER, "color_cut": False})
     main_sequence = (track["mag"] > 17.0 + 3.5) & (track["mag"] < 26.0)  # turn-off at absolute VIS ~ 3.5
     inside = is_in_match_filter(track["mag"][main_sequence], track["mag"][main_sequence] - track["color"][main_sequence],
                                 polygon_vertices=polygon)
@@ -404,21 +418,21 @@ DOTTER = {"age": 13.0, "metallicity": 0.0002, "isochrone_model": "Dotter2016"}
 # The "isochrone_model" of the isochrone reaches streamobs: the polygon of build_match_filter with that isochrone_model,
 # another than the default one, cached apart
 def test_match_filter_polygons_model():
-    polygon, = match_filter_polygons(17.0, DOTTER)
-    expected = build_match_filter(distance_modulus=17.0, age=13.0, metallicity=0.0002, band_1="VIS", band_2="H",
-                                  survey_1="euclid", survey_2="euclid", isochrone_model="Dotter2016")
-    np.testing.assert_array_equal(polygon, expected)
+    other = {"age": 13.0, "metallicity": 0.0002, "isochrone_model": OTHER_ISOCHRONE_MODEL}
+    polygon, = match_filter_polygons(17.0, other)
+    np.testing.assert_array_equal(polygon, _default_match_filter_polygon(17.0, other))
     default, = match_filter_polygons(17.0, {"age": 13.0, "metallicity": 0.0002})
     assert not np.array_equal(polygon, default)
-    explicit, = match_filter_polygons(17.0, {"age": 13.0, "metallicity": 0.0002, "isochrone_model": "Marigo2017"})
+    explicit, = match_filter_polygons(17.0, {"age": 13.0, "metallicity": 0.0002,
+                                             "isochrone_model": DEFAULT_ISOCHRONE_MODEL})
     assert explicit is default  # the default model, the same cached polygon
 
 
 # The track of the model, with [Fe/H] on its scale; the model in the track
 def test_isochrone_cmd_track_model():
-    track = isochrone_cmd_track(17.0, 13.0, feh=-1.9, isochrone_model="Dotter2016")
-    assert track["isochrone_model"] == "Dotter2016"
-    assert track["metallicity"] == pytest.approx(convert_FeH_to_z(-1.9, "Dotter2016"))
+    track = isochrone_cmd_track(17.0, 13.0, feh=-1.9, isochrone_model=OTHER_ISOCHRONE_MODEL)
+    assert track["isochrone_model"] == OTHER_ISOCHRONE_MODEL
+    assert track["metallicity"] == pytest.approx(convert_FeH_to_z(-1.9, OTHER_ISOCHRONE_MODEL))
     default = isochrone_cmd_track(17.0, 13.0, feh=-1.9)
     assert default["isochrone_model"] == DEFAULT_ISOCHRONE_MODEL
     assert not np.array_equal(track["color"], default["color"])
@@ -431,7 +445,7 @@ def test_isochrone_grid_warning():
     with pytest.warns(UserWarning, match="No Dotter2016 isochrone near 13 Gyr, Z = 0.0006 for des"):
         match_filter_polygons(17.0, {"age": 13.0, "metallicity": 0.0006, "isochrone_model": "Dotter2016"}, DES_GR)
     with pytest.warns(UserWarning, match="Z = 3.5e-05 for euclid: ugali uses the nearest of its grid, 13 Gyr, Z = "):
-        isochrone_cmd_track(17.0, 13.0, metallicity=3.5e-5)
+        isochrone_cmd_track(17.0, 13.0, metallicity=3.5e-5, isochrone_model="Marigo2017")
     with warnings.catch_warnings():
         warnings.simplefilter("error")
         match_filter_polygons(17.0, DOTTER)  # the Euclid Dotter2016 grid: full

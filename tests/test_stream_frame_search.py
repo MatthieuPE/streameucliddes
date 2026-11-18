@@ -42,7 +42,7 @@ from streameucliddes.catalogs.galstreams_catalog import (
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
 from streameucliddes.catalogs.survey_footprint import survey_footprint_phi12_mask
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
-from streameucliddes.unit_conversions import convert_DM_to_kpc
+from streameucliddes.unit_conversions import convert_DM_to_kpc, convert_metallicity, get_isochrone_model
 
 pytestmark = pytest.mark.stream_frame_search
 
@@ -142,6 +142,11 @@ def mock_mws(gc_frame):
 def _population_table(age_gyr=np.nan, z=np.nan):
     """Population table with the stream Mock."""
     return pd.DataFrame({"age_gyr": [age_gyr], "z": [z]}, index=pd.Index(["Mock"], name="galstreams_name"))
+
+
+def _default_model_z(z):
+    """Z of the default isochrone model for a Z of the population table (Z_SCALE_ISOCHRONE_MODEL, the same [Fe/H])."""
+    return convert_metallicity(z, isochrone_parameters.Z_SCALE_ISOCHRONE_MODEL, get_isochrone_model())
 
 
 def _stream_contrast(result):
@@ -345,10 +350,10 @@ def test_dm_scan_stream_name(stream_catalog, gc_frame, mock_mws):
     assert [dm for dm, _ in results] == list(np.round(np.arange(16.0, 18.05, 0.1), 1))
     _, result = results[10]  # dm 17
     assert result["window"] == galstreams_phi12_window(track)
-    assert result["isochrone"] == {"age": 12.0, "metallicity": 0.0001}
+    assert result["isochrone"] == {"age": 12.0, "metallicity": pytest.approx(_default_model_z(0.0001))}
     assert result["track_name"] == "Mock-T00"
     explicit = stream_frame_search_single_dm(
-        stream_catalog, gc_frame, galstreams_phi12_window(track), 17.0, {"age": 12.0, "metallicity": 0.0001},
+        stream_catalog, gc_frame, galstreams_phi12_window(track), 17.0, result["isochrone"],
         bin_size_deg=BIN,
     )
     np.testing.assert_array_equal(result["density"], explicit["density"])
@@ -407,7 +412,7 @@ def test_dm_scan_stream_name_isochrones(stream_catalog, mock_mws, monkeypatch):
     assert [(dm, result["isochrone"]["age"]) for dm, result in results] == [
         (16.5, 11.0), (17.5, 11.0), (16.5, 13.0), (17.5, 13.0)
     ]
-    assert all(result["isochrone"]["metallicity"] == 0.0001 for _, result in results)
+    assert all(result["isochrone"]["metallicity"] == pytest.approx(_default_model_z(0.0001)) for _, result in results)
 
 
 # default_grid replaces the default isochrone grid: for the values the stream does not
@@ -470,7 +475,7 @@ def test_prepare_search(stream_catalog, gc_frame, mock_mws):
     assert search.window == galstreams_phi12_window(track)
     assert (search.dm_min, search.dm_max) == pytest.approx((STREAM_DM, STREAM_DM))
     assert search.distance_moduli == list(np.round(np.arange(16.0, 18.05, 0.1), 1))
-    assert search.isochrones == [{"age": 12.0, "metallicity": 0.0001}]
+    assert search.isochrones == [{"age": 12.0, "metallicity": pytest.approx(_default_model_z(0.0001))}]
     assert search.match_filter == DEFAULT_MATCH_FILTER
     expected_stars = prepare_match_filter_catalog(stream_catalog, stream_frame=gc_frame, window=search.window)
     pd.testing.assert_frame_equal(search.stars, expected_stars)

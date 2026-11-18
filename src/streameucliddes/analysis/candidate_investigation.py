@@ -534,7 +534,7 @@ class CandidateInvestigation:
     isochrone_model : str, optional
         Name of the ugali isochrone model of the match filter and of the
         isochrone track, e.g. ``"Dotter2016"``. None:
-        ``unit_conversions.get_isochrone_model()`` (Marigo2017 by default).
+        ``unit_conversions.get_isochrone_model()`` (``DEFAULT_ISOCHRONE_MODEL``).
     distance_modulus : float, optional
         Distance modulus of the stream, chosen by eye after the scan
         (``scan_distance_moduli``). Needed from ``fit_width`` on.

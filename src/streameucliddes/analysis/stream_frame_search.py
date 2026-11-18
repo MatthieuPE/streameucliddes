@@ -258,7 +258,7 @@ def prepare_search(
         converted to it, ``unit_conversions.convert_metallicity``), and those
         given (``isochrone``, ``default_grid``) without their own
         ``"isochrone_model"``. None: ``unit_conversions.get_isochrone_model()``
-        (Marigo2017 by default).
+        (``DEFAULT_ISOCHRONE_MODEL``).
     bin_size_deg : float, optional
         Bin size of the grid (deg).
     footprint_mask : numpy.ndarray of bool, optional

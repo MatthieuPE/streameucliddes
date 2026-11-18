@@ -12,11 +12,13 @@ import pytest
 from streameucliddes.analysis.catalog_preparation import default_error_cuts, prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_MATCH_FILTER,
+    default_hess_bins,
     hess_diagram,
     match_filter_polygons,
     select_stars_in_match_filter,
 )
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL
 from streameucliddes.plotting import plot_cmd
 from streameucliddes.plotting.plot_style import COLORBAR_LABEL_SIZE
 from streameucliddes.plotting.plot_cmd import (
@@ -354,12 +356,31 @@ def test_plot_on_off_hess_per_color(catalog):
     plt.close("all")
 
 
+# Without given bins, the panels have the bins of every Hess diagram (default_hess_bins), with or without a match
+# filter: the same pixels as hess_diagram
+def test_plot_on_off_hess_per_color_default_bins(catalog):
+    on = np.arange(len(catalog)) % 4 == 0
+    color_bins, mag_bins = default_hess_bins()
+    expected_extent = (color_bins[0], color_bins[-1], mag_bins[0], mag_bins[-1])
+    reference = hess_diagram(catalog, (f"{VIS}_obs", f"{H}_obs"))
+    np.testing.assert_allclose(reference["color_edges"], color_bins)
+    np.testing.assert_allclose(reference["mag_edges"], mag_bins)
+    for kwargs in ({"distance_modulus": DM, "isochrone": ISOCHRONE, "match_filter": VIS_H_J_MATCH_FILTER},
+                   {"mag_cols": [(f"{VIS}_obs", f"{H}_obs")]}):
+        fig, axes = plot_on_off_hess_per_color(catalog, on, 1.0, [~on], [3.0], **kwargs)
+        for ax in (ax for row in axes for ax in row):
+            np.testing.assert_allclose(ax.get_images()[0].get_extent(), expected_extent)
+        plt.close(fig)
+
+
 # A model other than the default one leads the label; the default one is not named
 def test_plot_isochrone_label_model():
     fig, ax = plt.subplots()
     track = {"color": np.array([0.2, 0.4]), "mag": np.array([24.0, 21.0]), "age": 12.0, "metallicity": 0.0003,
              "feh": None, "distance_modulus": 17.0}
-    label = plot_isochrone(ax, {**track, "isochrone_model": "Dotter2016"}).get_label()
-    assert label == "Dotter2016, 12 Gyr, Z = 0.0003, dm 17.0"
-    assert plot_isochrone(ax, {**track, "isochrone_model": "Marigo2017"}).get_label() == "12 Gyr, Z = 0.0003, dm 17.0"
+    other = next(model for model in ("Marigo2017", "Dotter2016") if model != DEFAULT_ISOCHRONE_MODEL)
+    label = plot_isochrone(ax, {**track, "isochrone_model": other}).get_label()
+    assert label == f"{other}, 12 Gyr, Z = 0.0003, dm 17.0"
+    assert (plot_isochrone(ax, {**track, "isochrone_model": DEFAULT_ISOCHRONE_MODEL}).get_label()
+            == "12 Gyr, Z = 0.0003, dm 17.0")
     plt.close(fig)

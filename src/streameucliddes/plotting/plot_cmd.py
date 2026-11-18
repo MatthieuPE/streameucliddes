@@ -13,9 +13,7 @@ from scipy.ndimage import gaussian_filter
 from streameucliddes.analysis.catalog_preparation import check_columns, prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_CMD_MARGIN_MAG,
-    DEFAULT_COLOR_BIN,
     DEFAULT_COLOR_RANGE,
-    DEFAULT_MAG_BIN,
     DEFAULT_MAG_RANGE,
     _band_name,
     get_match_filter,
@@ -415,10 +413,9 @@ def plot_on_off_hess_per_color(
     distance_modulus, isochrone, match_filter, mag_cols :
         See ``plot_on_off_cmd``.
     color_bins, mag_bins : array_like, optional
-        Bin edges, the same for every row. Default: around the polygon of
-        each row (``match_filter_cmd_limits``, bins of ``DEFAULT_COLOR_BIN``
-        and ``DEFAULT_MAG_BIN``) with the match filter, else those of
-        ``hess_diagram``.
+        Bin edges, the same for every row. Default:
+        ``analysis.cmd_match_filter.default_hess_bins()``, those of every Hess
+        diagram, with or without a match filter.
     smoothed_difference : bool, optional
         Add the smoothed on - off panel.
     axes : sequence of rows of Axes, optional
@@ -446,17 +443,9 @@ def plot_on_off_hess_per_color(
     axes = [list(row) for row in axes]
     if len(axes) != len(pairs):
         raise ValueError(f"{len(axes)} rows of axes for {len(pairs)} colours.")
-    limits = match_filter_cmd_limits(distance_modulus, isochrone, match_filter) if draw_filter else None
     for color_index, (row, pair) in enumerate(zip(axes, pairs)):
-        row_color_bins, row_mag_bins = color_bins, mag_bins
-        if limits is not None:
-            (color_min, color_max), (mag_min, mag_max) = limits[color_index]
-            if row_color_bins is None:
-                row_color_bins = np.arange(color_min, color_max + DEFAULT_COLOR_BIN / 2, DEFAULT_COLOR_BIN)
-            if row_mag_bins is None:
-                row_mag_bins = np.arange(mag_min, mag_max + DEFAULT_MAG_BIN / 2, DEFAULT_MAG_BIN)
         on_hess, off_hess, difference = on_off_hess(stars, pair, on_mask, on_area_deg2, off_masks, off_areas_deg2,
-                                                    color_bins=row_color_bins, mag_bins=row_mag_bins)
+                                                    color_bins=color_bins, mag_bins=mag_bins)
         plot_on_off_difference_hess(on_hess, off_hess, difference, axes=row, smoothed_difference=smoothed_difference,
                                     **kwargs)
         if draw_filter:

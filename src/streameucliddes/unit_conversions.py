@@ -24,9 +24,10 @@ import numpy as np
 import ugali.isochrone
 from astropy.coordinates import Distance
 
-# Name of the ugali isochrone model used by default (that of streamobs.match_filter.build_match_filter): Marigo et
-# al. 2017 (PARSEC). Read through get_isochrone_model
-DEFAULT_ISOCHRONE_MODEL = "Marigo2017"
+# Name of the ugali isochrone model used by default: Dotter et al. 2016 (MIST), a higher SNR than Marigo2017 (PARSEC,
+# that of streamobs.match_filter.build_match_filter) on Aliqa Uma in Euclid DR1 VIS - H
+# (notebooks/optimization/stream_optimization.ipynb). Read through get_isochrone_model
+DEFAULT_ISOCHRONE_MODEL = "Dotter2016"
 
 def mag_to_flux(mag):
     """

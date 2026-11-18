@@ -172,7 +172,7 @@ def prepare_generic_search(
         Name of the ugali isochrone model of the isochrones, e.g.
         ``"Dotter2016"``: those of the default grid (its Z converted to it),
         and those given without their own ``"isochrone_model"``. None:
-        ``unit_conversions.get_isochrone_model()`` (Marigo2017 by default).
+        ``unit_conversions.get_isochrone_model()`` (``DEFAULT_ISOCHRONE_MODEL``).
     distance_moduli : iterable of float, optional
         Grid of the scan. Default: ``stream_frame_search.DEFAULT_DISTANCE_MODULI``
         (15 to 22, every 0.1).

@@ -24,7 +24,11 @@ from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
 from streameucliddes.catalogs.stream_candidates import add_candidate
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
-from streameucliddes.catalogs.isochrone_parameters import DEFAULT_METALLICITIES, isochrone_from_feh
+from streameucliddes.catalogs.isochrone_parameters import (
+    DEFAULT_METALLICITIES,
+    Z_SCALE_ISOCHRONE_MODEL,
+    isochrone_from_feh,
+)
 from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
     star_count_nside,
@@ -38,7 +42,7 @@ from streameucliddes.stream_frames import (
     radec_to_phi12,
     stream_frame_from_endpoints,
 )
-from streameucliddes.unit_conversions import convert_FeH_to_z
+from streameucliddes.unit_conversions import convert_FeH_to_z, convert_metallicity, get_isochrone_model
 
 pytestmark = pytest.mark.candidate_investigation
 
@@ -246,7 +250,8 @@ def test_isochrone_from_metallicity_or_feh(candidate_endpoints):
         "age": 12.0, "metallicity": 0.001}
     assert CandidateInvestigation("test", *candidate_endpoints, feh=-1.5).isochrone["metallicity"] == pytest.approx(
         convert_FeH_to_z(-1.5))
-    assert CandidateInvestigation("test", *candidate_endpoints).isochrone["metallicity"] == DEFAULT_METALLICITIES[0]
+    assert CandidateInvestigation("test", *candidate_endpoints).isochrone["metallicity"] == pytest.approx(
+        convert_metallicity(DEFAULT_METALLICITIES[0], Z_SCALE_ISOCHRONE_MODEL, get_isochrone_model()))
     with pytest.raises(ValueError, match="not both"):
         CandidateInvestigation("test", *candidate_endpoints, metallicity=0.001, feh=-1.5)
     cand = CandidateInvestigation("test", *candidate_endpoints, feh=-1.5)

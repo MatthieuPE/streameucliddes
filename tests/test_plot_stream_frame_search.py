@@ -104,7 +104,8 @@ def test_plot_single_dm(search):
     values = result["density"].compressed()
     low, high = plot_stream_frame_search.DENSITY_PERCENTILES
     np.testing.assert_allclose(image.get_clim(), (np.percentile(values, low), np.percentile(values, high)))
-    assert ax.get_title() == "dm 17.0 (25.1 kpc), 13 Gyr, Z = 0.0002"
+    isochrone = result["isochrone"]  # the default one
+    assert ax.get_title() == f"dm 17.0 (25.1 kpc), {isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}"
     assert ax.get_legend() is None  # no track
     plt.close(fig)
 
