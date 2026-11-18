@@ -17,7 +17,7 @@ from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_scan,
     prepare_search,
 )
-from streameucliddes.catalogs.isochrone_parameters import known_stream_isochrone_parameters
+from streameucliddes.catalogs.isochrone_parameters import isochrone_label, known_stream_isochrone_parameters
 from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
 from streameucliddes.unit_conversions import convert_DM_to_kpc
@@ -181,7 +181,7 @@ def _gif_frames(path):
 def test_run_outputs(search, tmp_path):
     distance_moduli = [9.5, 16.5, 17.0]  # 9.5: the frame names still sort as the distance moduli
     isochrone = search.isochrones[0]
-    folder = tmp_path / "Mock" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+    folder = tmp_path / "Mock" / isochrone_label(isochrone)
     for subfolder in ("maps", "cmd"):  # frames of an earlier run, on another grid
         (folder / subfolder).mkdir(parents=True)
         Image.new("RGB", (20, 10)).save(folder / subfolder / "Mock_dm21.00.png")
@@ -219,7 +219,7 @@ def test_run_stream_name(catalog, mock_mws, tmp_path):
     isochrones = known_stream_isochrone_parameters("Mock", default_grid=grid)
     assert [outputs["isochrone"] for outputs in summary["isochrones"]] == isochrones == grid
     for outputs, isochrone in zip(summary["isochrones"], isochrones):
-        folder = tmp_path / "Mock-T00" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+        folder = tmp_path / "Mock-T00" / isochrone_label(isochrone)
         assert outputs["maps_path"] == folder / "Mock-T00_maps.npz" and outputs["maps_path"].exists()
 
 

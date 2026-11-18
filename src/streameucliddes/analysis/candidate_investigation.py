@@ -66,6 +66,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import pandas as pd
 
 from streameucliddes.analysis.build_masks import excluded_healpix_mask
 from streameucliddes.analysis.cmd_match_filter import (
@@ -107,7 +108,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
 
     import astropy.coordinates as coord
-    import pandas as pd
     from numpy.typing import ArrayLike, NDArray
 
     from streameucliddes.analysis.stream_frame_search import PreparedSearch
@@ -986,14 +986,15 @@ class CandidateInvestigation:
             self.areas = region_areas(self.band_regions)
         return self.band_regions
 
-    def stars_in_match_filter(self) -> NDArray[np.bool_]:
+    def stars_in_match_filter(self, distance_modulus: float | None = None) -> NDArray[np.bool_]:
         """Prepared stars outside the excluded mask, in the match filter at ``distance_modulus``
-        (``select_stars_in_match_filter``)."""
-        if self.distance_modulus is None:
+        (``select_stars_in_match_filter``); default: that of the object."""
+        distance_modulus = self.distance_modulus if distance_modulus is None else distance_modulus
+        if distance_modulus is None:
             raise ValueError("No distance_modulus: set cand.distance_modulus, e.g. from the maps of "
                              "scan_distance_moduli.")
         return self.stars_not_excluded & select_stars_in_match_filter(
-            self.search.stars, self.distance_modulus, self.isochrone, self.search.match_filter
+            self.search.stars, distance_modulus, self.isochrone, self.search.match_filter
         )
 
     def _require(self, field_name: str, step: str) -> None:
@@ -1067,6 +1068,45 @@ class CandidateInvestigation:
             search=self.search, distance_moduli=distance_moduli, isochrone=self.isochrone, **scan_kwargs
         ))
         return self
+
+    def snr_against_distance_modulus(self, distance_moduli: Sequence[float] | None = None) -> pd.DataFrame:
+        """SNR of the regions at each distance modulus, the regions fixed: where the candidate peaks.
+
+        At each distance modulus, the stars outside the excluded mask in the
+        match filter there (``stars_in_match_filter``), and their excess on
+        the on region over the mean density of the off regions, over the
+        square root of the background on the on region
+        (``on_off_regions.selection_snr``, as ``summary``). The regions are
+        those of ``define_regions`` (the same at every distance modulus);
+        ``distance_modulus`` is not changed.
+
+        Parameters
+        ----------
+        distance_moduli : sequence of float, optional
+            Default: ``self.distance_moduli``, else the grid of the search
+            (``prepare_search``).
+
+        Returns
+        -------
+        snr : pandas.DataFrame
+            One row per distance modulus: ``distance_modulus``, ``n_on``,
+            ``n_off``, ``n_excess``, ``n_excess_error``, ``snr``.
+
+        Raises
+        ------
+        ValueError
+            ``prepare`` or ``define_regions`` not done.
+        """
+        self._require("search", "prepare")
+        band_regions = self._band_regions()
+        if distance_moduli is None:
+            distance_moduli = self.search.distance_moduli if self.distance_moduli is None else self.distance_moduli
+        rows = []
+        for distance_modulus in distance_moduli:
+            snr = selection_snr(band_regions, self.stars_in_match_filter(float(distance_modulus)))
+            rows.append({"distance_modulus": float(distance_modulus), "n_on": snr["n_on"], "n_off": snr["n_off"],
+                         "n_excess": snr["n_signal"], "n_excess_error": snr["n_signal_error"], "snr": snr["snr"]})
+        return pd.DataFrame(rows)
 
     def fit_width(
         self,

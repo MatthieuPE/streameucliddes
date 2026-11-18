@@ -95,6 +95,19 @@ def with_isochrone_model(isochrones: Iterable[Mapping[str, Any]], isochrone_mode
 # ===================================================
 
 
+# Significant digits of Z in the name of an isochrone (isochrone_label): a Z converted to another isochrone model has
+# many digits (e.g. 0.000191651 for Dotter2016), which would make a new output folder at each small change
+METALLICITY_LABEL_DIGITS = 3
+
+
+def isochrone_label(isochrone: Mapping[str, Any]) -> str:
+    """Name of an isochrone in the output folders of the searches: ``"age13_z0.000192"``.
+
+    The age with ``:g``, Z rounded to ``METALLICITY_LABEL_DIGITS`` significant digits.
+    """
+    return f"age{float(isochrone['age']):g}_z{float(isochrone['metallicity']):.{METALLICITY_LABEL_DIGITS}g}"
+
+
 def get_isochrone(isochrone: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
     """The isochrone to use: the one given, else the first of ``default_isochrone_grid()``.
 

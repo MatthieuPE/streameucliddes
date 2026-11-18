@@ -654,6 +654,27 @@ def test_run_all_steps(candidate_endpoints, candidate_stream_catalog, candidate_
         cand.run_all_steps(candidate_stream_catalog, step_kwargs={"prepare": {}})
 
 
+# The SNR of fixed regions over distance moduli: that of summary at the distance modulus of the object, the stream at
+# its distance modulus the highest; the object unchanged (distance_modulus, regions)
+def test_snr_against_distance_modulus(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    cand.prepare(candidate_stream_catalog)
+    with pytest.raises(ValueError, match="define_regions"):
+        cand.snr_against_distance_modulus([17.0])
+    cand.define_regions(phi2_centre=candidate_stream["phi2_centre"], sigma=candidate_stream["sigma"])
+    regions = cand.regions
+    distance_moduli = [16.0, 16.5, 17.0, 17.5, 18.0]
+    table = cand.snr_against_distance_modulus(distance_moduli)
+    assert list(table.columns) == ["distance_modulus", "n_on", "n_off", "n_excess", "n_excess_error", "snr"]
+    assert table["distance_modulus"].tolist() == distance_moduli
+    at_stream = table.set_index("distance_modulus").loc[candidate_stream["distance_modulus"]]
+    assert at_stream["snr"] == pytest.approx(cand.summary()["snr"])
+    assert table["snr"].idxmax() == distance_moduli.index(candidate_stream["distance_modulus"])
+    assert cand.distance_modulus == candidate_stream["distance_modulus"] and cand.regions is regions
+    assert len(cand.snr_against_distance_modulus()) == len(cand.search.distance_moduli)  # default: the search grid
+
+
 # summary: the same keys at every step, None for the steps not done; after define_regions, the counts of the stars
 # in the match filter outside the excluded mask, in the on region and in the off regions, and the excess
 def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):

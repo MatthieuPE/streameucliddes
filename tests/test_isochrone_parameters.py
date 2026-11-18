@@ -4,6 +4,8 @@ import numpy as np
 import pytest
 
 from streameucliddes.catalogs.isochrone_parameters import (
+    METALLICITY_LABEL_DIGITS,
+    isochrone_label,
     DEFAULT_AGES_GYR,
     DEFAULT_METALLICITIES,
     Z_SCALE_ISOCHRONE_MODEL,
@@ -210,3 +212,13 @@ def test_known_stream_isochrones_of_a_model(population_table, stream):
         assert d["isochrone_model"] == "Dotter2016"
         assert d["metallicity"] == pytest.approx(
             convert_metallicity(m["metallicity"], Z_SCALE_ISOCHRONE_MODEL, "Dotter2016"))
+
+
+# The name of an isochrone in the output folders: Z rounded to METALLICITY_LABEL_DIGITS significant digits, so that
+# a Z converted to another model (many digits) gives one folder, the same for Z equal to those digits
+def test_isochrone_label():
+    z = 0.000191651
+    assert isochrone_label({"age": 13.0, "metallicity": z}) == f"age13_z{z:.{METALLICITY_LABEL_DIGITS}g}"
+    assert isochrone_label({"age": 13.0, "metallicity": 0.0002}) == "age13_z0.0002"
+    assert isochrone_label({"age": 12.5, "metallicity": z}) == isochrone_label({"age": 12.5, "metallicity": z * (1 + 1e-6)})
+    assert len(f"{z:.{METALLICITY_LABEL_DIGITS}g}".replace("0.", "").lstrip("0")) == METALLICITY_LABEL_DIGITS

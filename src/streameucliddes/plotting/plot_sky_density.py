@@ -109,7 +109,6 @@ def plot_2D_density_from_hp(
     label_fontsize=14,
     title_fontsize=14,
     tick_labelsize=None,
-    colorbar_label="Counts per HEALPix pixel",
 ):
     """
     Plot a 2D stellar density map on the sky directly from HEALPix map
@@ -138,8 +137,6 @@ def plot_2D_density_from_hp(
     tick_labelsize : float, optional
         Font size for the tick labels (axes and colorbar). If None, skyproj's
         default is used.
-    colorbar_label : str, optional
-        Label of the colorbar, e.g. for a map that is not star counts.
 
     Returns
     -------
@@ -167,8 +164,8 @@ def plot_2D_density_from_hp(
         sp.ax.tick_params(labelsize=tick_labelsize)
 
     if add_colorbar:
-        cbar = fig.colorbar(im, ax=sp.ax)
-        cbar.set_label(colorbar_label, fontsize=label_fontsize)
+        cbar = fig.colorbar(im, ax=sp.ax, label="Counts per HEALPix pixel")
+        cbar.set_label("Counts per HEALPix pixel", fontsize=label_fontsize)
         if tick_labelsize is not None:
             cbar.ax.tick_params(labelsize=tick_labelsize)
     sp.ax.set_title(title, fontsize=title_fontsize, pad=20)

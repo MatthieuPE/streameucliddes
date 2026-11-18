@@ -21,6 +21,7 @@ from streameucliddes.analysis.generic_stream_search import (
     generic_search_dm_scan,
     prepare_generic_search,
 )
+from streameucliddes.catalogs.isochrone_parameters import isochrone_label
 from streameucliddes.catalogs.galstreams_catalog import (
     galstreams_default_tracks,
     load_galstreams,
@@ -171,7 +172,7 @@ def run_generic_search(
 
     summaries = []
     for isochrone in isochrones:
-        folder = Path(output_dir) / name / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+        folder = Path(output_dir) / name / isochrone_label(isochrone)
         (folder / "frames").mkdir(parents=True, exist_ok=True)
         (folder / "frames_residual").mkdir(exist_ok=True)
         color_lim, mag_lim = _cmd_ranges(cmd_stars, search.match_filter, distance_moduli, isochrone)

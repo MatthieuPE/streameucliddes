@@ -16,6 +16,7 @@ from streameucliddes.catalogs.galstreams_catalog import (
     load_galstreams,
     select_galstreams_in_footprint,
 )
+from streameucliddes.catalogs.isochrone_parameters import isochrone_label
 from streameucliddes.workflows import run_generic_search as run_generic_search_module
 from streameucliddes.workflows.run_generic_search import run_generic_search, save_generic_search_healpix_maps
 
@@ -114,7 +115,7 @@ def _gif_frames(path):
 # same for the corrected maps with the known tracks; and the maps file, equal to the scan
 def test_run_outputs(search, tmp_path):
     isochrone = search.isochrones[0]
-    folder = tmp_path / "test_run" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+    folder = tmp_path / "test_run" / isochrone_label(isochrone)
     (folder / "frames").mkdir(parents=True)
     Image.new("RGB", (20, 10)).save(folder / "frames" / "test_run_dm21.00.png")  # an earlier run
     summary = run_generic_search(search=search, smoothing_deg=2.0, output_dir=tmp_path, name="test_run")
@@ -151,7 +152,7 @@ def test_run_from_catalog(catalog, tmp_path):
     )
     assert [outputs["isochrone"] for outputs in summary["isochrones"]] == grid
     for outputs, isochrone in zip(summary["isochrones"], grid):
-        folder = tmp_path / "generic" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+        folder = tmp_path / "generic" / isochrone_label(isochrone)
         assert outputs["maps_path"] == folder / "generic_density.parquet" and outputs["maps_path"].exists()
         assert _gif_frames(outputs["gif_path"]) == 1
 
