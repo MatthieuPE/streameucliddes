@@ -355,6 +355,48 @@ def generic_search_single_dm(
     }
 
 
+def generic_search_significance(result: Mapping[str, Any]) -> np.ma.MaskedArray:
+    """Residual of a map in units of its Poisson noise: residual / sqrt(background * sum of k²).
+
+    The density is the star counts smoothed by a Gaussian kernel k (sigma
+    ``smoothing_deg``): with a background of b stars per pixel, its Poisson
+    variance is b times the sum over the pixels of k² (``_kernel_squared_sum``).
+    Unlike the residual (stars per pixel), it compares the maps of match
+    filters selecting more or fewer stars (width, VIS photometry, isochrone):
+    the noise is 1 everywhere. Inside the footprint; near its edges, where the
+    density is divided by the smoothed footprint, the noise is higher.
+
+    Parameters
+    ----------
+    result : mapping
+        From ``generic_search_single_dm``: ``residual``, ``background``,
+        ``nside`` and ``smoothing_deg``.
+
+    Returns
+    -------
+    significance : numpy.ma.MaskedArray
+        HEALPix map (RING), masked where the residual is, and where the
+        background is not positive.
+    """
+    background = np.ma.masked_less_equal(result["background"], 0.0)
+    noise = np.ma.sqrt(background * _kernel_squared_sum(result["nside"], result["smoothing_deg"]))
+    return np.ma.masked_invalid(result["residual"] / noise)
+
+
+@functools.lru_cache(maxsize=8)
+def _kernel_squared_sum(nside: int, smoothing_deg: float) -> float:
+    """Sum over the pixels of the squared smoothing kernel of ``_smoothed_density`` (1 without smoothing).
+
+    The smoothing of one star (``healpy.smoothing`` of a single count, on the
+    equator): the factor of the Poisson variance of a smoothed count map.
+    """
+    if smoothing_deg <= 0:
+        return 1.0
+    one_star = np.zeros(hp.nside2npix(nside))
+    one_star[hp.ang2pix(nside, 0.0, 0.0, lonlat=True)] = 1.0
+    return float(np.sum(hp.smoothing(one_star, sigma=np.radians(smoothing_deg)) ** 2))
+
+
 def generic_search_dm_scan(
     catalog: pd.DataFrame | None = None,
     distance_moduli: Iterable[float] | None = None,

@@ -145,6 +145,11 @@ def test_plot_residual_map(result):
     assert ax.gridlines.get_alpha() == 0.8
     plt.close(fig)
 
+    fig, ax = plot_generic_search_residual_map(result, vmin=-3.0, vmax=3.0, colorbar_label="significance")
+    np.testing.assert_allclose(_clim(ax), (-3.0, 3.0))  # a fixed colour scale
+    assert any(other.get_ylabel() == "significance" for other in fig.axes)  # the colour bar
+    plt.close(fig)
+
 
 # Without tracks: the map alone; the given title
 def test_plot_residual_map_no_tracks(result):

@@ -23,9 +23,11 @@ from streameucliddes.analysis.generic_stream_search import (
     PreparedGenericSearch,
     generic_search_cmd_stars,
     generic_search_dm_scan,
+    generic_search_significance,
     generic_search_single_dm,
     prepare_generic_search,
 )
+from streameucliddes.analysis import generic_stream_search as generic_stream_search_module
 from streameucliddes.catalogs.catalog_cuts import get_cut_mask
 from streameucliddes.analysis.cmd_match_filter import get_match_filter, match_filter_columns
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
@@ -298,6 +300,29 @@ def test_single_dm_background_across_ra_zero():
     background = result["background"]
     assert background[east].mean() == pytest.approx(background[west].mean(), rel=0.05)
     assert background[lat > -15.0].mean() > 1.3 * background[lat < -25.0].mean()  # the gradient
+
+
+
+# Uniform stars: the significance is noise, mean 0 and standard deviation 1, inside the footprint (away from its
+# edges, where the density is divided by the smoothed footprint). At this density: with many more stars, the error
+# of the polynomial background (about 5% of the density on this mock, whatever the density) exceeds the Poisson noise
+def test_significance_of_noise(search):
+    result = generic_search_single_dm(distance_modulus=17.0, search=search, smoothing_deg=SMOOTHING)
+    significance = generic_search_significance(result)
+    assert np.ma.getmaskarray(significance)[search.footprint_mask].all()  # masked outside the footprint
+    inside = hp.smoothing((~search.footprint_mask).astype(float), sigma=np.radians(SMOOTHING)) > 0.99
+    values = significance[inside & ~np.ma.getmaskarray(significance)].compressed()
+    assert values.size > 100
+    assert abs(values.mean()) < 0.2 and 0.8 < values.std() < 1.2
+
+
+# The sum of the squared kernel: that of a Gaussian much wider than the pixels, pixel area / (4 pi sigma^2); 1 without
+# smoothing
+def test_kernel_squared_sum():
+    nside, sigma_deg = 256, 1.0
+    expected = hp.nside2pixarea(nside) / (4.0 * np.pi * np.radians(sigma_deg) ** 2)
+    assert generic_stream_search_module._kernel_squared_sum(nside, sigma_deg) == pytest.approx(expected, rel=0.05)
+    assert generic_stream_search_module._kernel_squared_sum(nside, 0.0) == 1.0
 
 
 # A stream in the match filter at dm 17 stands out in the residual at dm 17, less at dm 20
