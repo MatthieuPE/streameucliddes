@@ -22,7 +22,10 @@ from streameucliddes.catalogs.galstreams_catalog import (
     galstreams_default_tracks,
     galstreams_dm_along_track,
     galstreams_phi12_window,
+    galstreams_phi2_along_track,
+    galstreams_track_in_own_frame,
     galstreams_track_length_in_footprint,
+    galstreams_width_phi2,
     load_galstreams,
     select_galstreams_in_footprint,
 )
@@ -158,6 +161,36 @@ def test_dm_along_track_extrapolate_linear_profile(gc_frame, dm_slope):
     np.testing.assert_allclose(galstreams_dm_along_track(track, window_phi1, extrapolate=True), line(window_phi1),
                                atol=1e-6)
 
+
+# phi2 of the track in its frame, linear between its points; beyond its ends, that of the nearest end
+def test_phi2_along_track(gc_frame):
+    track = _synthetic_track(gc_frame, phi2_range=(-1.0, 1.0))  # phi1 -10 to 10
+    np.testing.assert_allclose(galstreams_phi2_along_track(track, [-10.0, -5.0, 0.0, 5.0, 10.0]),
+                               [-1.0, -0.5, 0.0, 0.5, 1.0], atol=1e-6)
+    np.testing.assert_allclose(galstreams_phi2_along_track(track, [-12.0, 12.0]), [-1.0, 1.0], atol=1e-6)
+
+
+# A track tilted in its galstreams frame: in its own frame, its ends at phi2 = 0 and the rest near it; the points,
+# distances and flags unchanged, so the distance along it is the same at the same point
+def test_track_in_own_frame(gc_frame):
+    track = _synthetic_track(gc_frame, phi2_range=(-1.0, 1.0))  # tilted by about 6 deg
+    own = galstreams_track_in_own_frame(track)
+    phi1, phi2 = radec_to_phi12(own.track.ra.deg, own.track.dec.deg, own.stream_frame)
+    assert phi2[[0, -1]] == pytest.approx([0.0, 0.0], abs=1e-6)
+    assert np.abs(phi2).max() < 0.05
+    assert phi1[-1] > phi1[0]  # phi1 from the first point to the last
+    assert own.track is track.track
+    assert (own.InfoFlags, own.track_name, own.stream_name, own.ref) == (
+        track.InfoFlags, track.track_name, track.stream_name, track.ref)
+    old_phi1, _ = radec_to_phi12(track.track.ra.deg[500], track.track.dec.deg[500], gc_frame)
+    assert galstreams_dm_along_track(own, [phi1[500]])[0] == pytest.approx(
+        galstreams_dm_along_track(track, [old_phi1])[0], abs=1e-3)
+
+# Width from the summary of galstreams; unknown (-1): NaN
+def test_width_phi2():
+    mws = SimpleNamespace(summary=pd.DataFrame({"width_phi2": [0.26, -1.0]}, index=["A-T00", "B-T00"]))
+    assert galstreams_width_phi2("A-T00", mws) == 0.26
+    assert np.isnan(galstreams_width_phi2("B-T00", mws))
 
 # An Ibata et al. 2024 track has no distance in galstreams (1 kpc): NaN, extrapolated or not
 def test_dm_along_track_ibata2024(gc_frame):
@@ -319,8 +352,8 @@ class _CountingMWStreams(dict):
 
     builds = 0
 
-    def __init__(self, verbose=False):
-        super().__init__({"Fake-T00": "track"})
+    def __init__(self, verbose=False, implement_Off=False):
+        super().__init__({"Fake-T00": "track", **({"Fake-Off-T00": "other track"} if implement_Off else {})})
         type(self).builds += 1
 
 
@@ -341,6 +374,15 @@ def test_load_galstreams_cache(fake_galstreams):
     assert _CountingMWStreams.builds == 1
     assert second == first
     assert [path.name for path in fake_galstreams.iterdir()] == ["mwstreams_galstreams-0.0.test.pkl"]
+
+
+# Every track: the others too, in their own cache file
+def test_load_galstreams_all_tracks(fake_galstreams):
+    default, every = load_galstreams(), load_galstreams(all_tracks=True)
+    assert list(default) == ["Fake-T00"] and list(every) == ["Fake-T00", "Fake-Off-T00"]
+    assert load_galstreams(all_tracks=True) == every and _CountingMWStreams.builds == 2
+    assert sorted(path.name for path in fake_galstreams.iterdir()) == [
+        "mwstreams_galstreams-0.0.test.pkl", "mwstreams_galstreams-0.0.test_all_tracks.pkl"]
 
 
 # Without the cache: built every time, nothing written

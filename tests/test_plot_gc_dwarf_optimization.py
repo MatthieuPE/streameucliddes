@@ -104,6 +104,18 @@ def test_plot_selection_comparison(catalog, regions):
     selections = {"all": np.ones(len(catalog), dtype=bool),
                   "VIS < 24_b": catalog_match_filter_mask(catalog, DM, ISOCHRONE, VIS_H_J)}
     table = compare_selections(regions, selections)
-    fig, ax = plot_selection_comparison(table)
-    np.testing.assert_allclose([patch.get_width() for patch in ax.patches], table["snr"].to_numpy())
-    assert [label.get_text() for label in ax.get_yticklabels()] == ["all", r"VIS $<$ 24$\_$b"]
+    fig, ax = plot_selection_comparison(table, marker="s", color="C1", label="first")
+    (points,) = ax.get_lines()
+    np.testing.assert_allclose(points.get_xdata(), table["snr"].to_numpy())
+    assert (points.get_marker(), points.get_color(), points.get_label()) == ("s", "C1", "first")
+
+    # Overplotted: a selection already drawn keeps its row, a new one goes below; first row at the top
+    other = compare_selections(regions, {"VIS < 24_b": selections["VIS < 24_b"], "none": ~selections["all"]})
+    fig_again, ax_again = plot_selection_comparison(other, ax=ax, marker="^", label="second")
+    assert (fig_again, ax_again) == (fig, ax)
+    fig.canvas.draw()
+    assert [label.get_text() for label in ax.get_yticklabels()] == ["all", r"VIS $<$ 24$\_$b", "none"]
+    first_rows, second_rows = (ax.yaxis.convert_units(line.get_ydata()) for line in ax.get_lines())  # row numbers
+    assert second_rows[0] == first_rows[1]
+    assert ax.yaxis_inverted()
+    assert [text.get_text() for text in ax.legend().get_texts()] == ["first", "second"]

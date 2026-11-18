@@ -38,7 +38,9 @@ MAP_FIGSIZE = (6.5, 5.5)
 
 
 def _object_label(regions: Mapping[str, Any]) -> str:
-    """Name and distance modulus of the object of the regions."""
+    """Name and distance modulus of the object of the regions; their ``label`` when they have one (a stream)."""
+    if "label" in regions:
+        return escape_text(str(regions["label"]))
     obj = regions["object"]
     return f"{escape_text(str(obj['name']))} (dm {format_distance_modulus(float(obj['distance_modulus']))})"
 
@@ -210,32 +212,44 @@ def plot_object_hess(
     return fig, axes
 
 
-def plot_selection_comparison(table: pd.DataFrame, *, ax: Axes | None = None) -> tuple[Figure, Axes]:
-    """SNR of several selections (``compare_selections``), as horizontal bars.
+def plot_selection_comparison(
+    table: pd.DataFrame,
+    *,
+    ax: Axes | None = None,
+    marker: str = "o",
+    color: str | None = None,
+    label: str | None = None,
+) -> tuple[Figure, Axes]:
+    """SNR of several selections (``compare_selections``), one point per selection, one row each.
 
-    Each bar is labelled with its excess stars and their Poisson error.
+    Call it again with the returned ``ax`` to overplot other tables (e.g. the
+    same selections with another isochrone or star selection), each with its
+    ``marker``, ``color`` and ``label``; then ``ax.legend()``. A selection
+    name already on the axes keeps its row, a new one is added below.
 
     Parameters
     ----------
     table : pandas.DataFrame
         From ``analysis.gc_dwarf_optimization.compare_selections``.
     ax : matplotlib.axes.Axes, optional
-        Default: a new figure.
+        Axes to draw on, e.g. from a previous call. Default: a new figure.
+    marker : str, optional
+        Marker of the points.
+    color : str, optional
+        Colour of the points. Default: the next colour of the axes.
+    label : str, optional
+        Legend label of the points.
 
     Returns
     -------
     fig : matplotlib.figure.Figure
     ax : matplotlib.axes.Axes
     """
-    fig, ax = (ax.figure, ax) if ax is not None else plt.subplots(figsize=(6.0, 0.5 + 0.4 * len(table)))
-    positions = np.arange(len(table))
-    snr = table["snr"].to_numpy(dtype=float)
-    ax.barh(positions, np.where(np.isfinite(snr), snr, 0.0), color=CATEGORICAL_COLORS[1])
-    for position, value, (_, row) in zip(positions, snr, table.iterrows()):
-        ax.text(max(value, 0.0) if np.isfinite(value) else 0.0, position,
-                f"  {row['n_signal']:.0f} $\\pm$ {row['n_signal_error']:.0f}", va="center", fontsize="small")
-    ax.set_yticks(positions, [escape_text(str(name)) for name in table.index])
-    ax.invert_yaxis()  # first selection at the top
+    fig, ax = (ax.figure, ax) if ax is not None else plt.subplots(figsize=(6.0, 0.8 + 0.3 * len(table)))
+    names = [escape_text(str(name)) for name in table.index]
+    ax.plot(table["snr"].to_numpy(dtype=float), names, ls="none", marker=marker, color=color, label=label)
+    if not ax.yaxis_inverted():  # first selection at the top
+        ax.invert_yaxis()
     ax.set_xlabel("SNR (excess / $\\sqrt{\\mathrm{background}}$)")
-    ax.margins(x=0.25)
+    ax.grid(axis="y", color="0.9", lw=0.5)
     return fig, ax

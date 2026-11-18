@@ -20,8 +20,10 @@ from __future__ import annotations
 import logging
 import pickle
 from pathlib import Path
+from types import SimpleNamespace
 from typing import TYPE_CHECKING
 
+import astropy.coordinates as coord
 import astropy.units as u
 import healpy as hp
 import numpy as np
@@ -34,8 +36,9 @@ from streameucliddes.stream_frames import (
     DEFAULT_PADDING_PHI2_DEG,
     phi12_window_around,
     radec_to_phi12,
+    stream_frame_from_endpoints,
 )
-from streameucliddes.unit_conversions import convert_kpc_to_DM
+from streameucliddes.unit_conversions import convert_DM_to_kpc, convert_kpc_to_DM
 
 if TYPE_CHECKING:
     from numpy.typing import ArrayLike, NDArray
@@ -64,11 +67,16 @@ SELECTION_COLUMNS = [
 ]
 
 
-def load_galstreams(*, verbose: bool = False, use_cache: bool = True) -> galstreams.MWStreams:
+def load_galstreams(
+    *, verbose: bool = False, use_cache: bool = True, all_tracks: bool = False
+) -> galstreams.MWStreams:
     """galstreams library of the Milky Way stream tracks.
 
-    One track per stream, the default one of galstreams (141 tracks in
-    galstreams 1.2.1). Building it takes about 15 s. With ``use_cache``, it
+    By default one track per stream, the default one of galstreams (141
+    tracks in galstreams 1.2.1); with ``all_tracks``, every track, the
+    default ones and the others (217 in galstreams 1.2.1: e.g. ``ATLAS-I21``
+    and ``ATLAS-I24`` of Ibata et al. 2021 and 2024 besides ``AAU-ATLAS-L21``).
+    ``mws.summary`` lists every track either way. Building it takes about 15 s. With ``use_cache``, it
     is built once and saved (pickle, about 80 MB) in ``GALSTREAMS_CACHE_DIR``,
     one file per galstreams version, then read back in about 0.1 s. A cache
     that cannot be read is rebuilt. The cache is a pickle: it is only meant
@@ -81,6 +89,9 @@ def load_galstreams(*, verbose: bool = False, use_cache: bool = True) -> galstre
     use_cache : bool, optional
         Read the library from the cache, or build it and save it there.
         False: build it, without reading or writing the cache.
+    all_tracks : bool, optional
+        Every track (galstreams ``implement_Off``), not only the default one
+        of each stream; cached in its own file.
 
     Returns
     -------
@@ -93,7 +104,8 @@ def load_galstreams(*, verbose: bool = False, use_cache: bool = True) -> galstre
     """
     import galstreams
 
-    cache_path = GALSTREAMS_CACHE_DIR / f"mwstreams_galstreams-{galstreams.__version__}.pkl"
+    suffix = "_all_tracks" if all_tracks else ""
+    cache_path = GALSTREAMS_CACHE_DIR / f"mwstreams_galstreams-{galstreams.__version__}{suffix}.pkl"
     if use_cache and cache_path.exists():
         try:
             with cache_path.open("rb") as file:
@@ -101,7 +113,7 @@ def load_galstreams(*, verbose: bool = False, use_cache: bool = True) -> galstre
         except (OSError, EOFError, AttributeError, ImportError, pickle.UnpicklingError) as error:
             LOGGER.warning("galstreams cache %s unreadable (%s): rebuilt.", cache_path, error)
 
-    mws = galstreams.MWStreams(verbose=verbose)
+    mws = galstreams.MWStreams(verbose=verbose, implement_Off=all_tracks)
     if use_cache:
         cache_path.parent.mkdir(parents=True, exist_ok=True)
         partial_path = cache_path.with_suffix(".partial")
@@ -347,6 +359,135 @@ def galstreams_dm_along_track(
         slope, intercept = np.polyfit(track_phi1[near_end], track_dm[near_end], 1)
         dm[beyond] = intercept + slope * phi1[beyond]
     return dm
+
+
+def galstreams_phi2_along_track(track: galstreams.Track6D, phi1: ArrayLike) -> NDArray[np.float64]:
+    """phi2 of a galstreams track at given phi1, in its own frame.
+
+    Interpolates linearly the phi2 of the track points in phi1; beyond the
+    ends of the track, the phi2 of the nearest end.
+
+    Parameters
+    ----------
+    track : galstreams.Track6D
+        One track of ``load_galstreams()``.
+    phi1 : array_like
+        phi1 in the track's ``stream_frame`` (deg).
+
+    Returns
+    -------
+    phi2 : numpy.ndarray
+        Same shape as ``phi1`` (deg).
+    """
+    track_phi1, track_phi2 = _track_phi12(track)
+    order = np.argsort(track_phi1)
+    return np.interp(np.asarray(phi1, dtype=float), track_phi1[order], track_phi2[order])
+
+
+def galstreams_track_in_own_frame(track: galstreams.Track6D) -> SimpleNamespace:
+    """A galstreams track in the great-circle frame through its own two ends.
+
+    galstreams can give several tracks of one stream the same frame (e.g.
+    ``AAU-ATLAS-L21`` and ``AAU-AliqaUma-L21``, around one pole): a track
+    bent away from that great circle is then tilted in it. In the frame
+    through its first and last points (``stream_frames.stream_frame_from_endpoints``),
+    its ends are at phi2 = 0 and the regions along it are bands near phi2 = 0.
+    The points, distances and flags are unchanged.
+
+    Parameters
+    ----------
+    track : galstreams.Track6D
+        One track of ``load_galstreams()``.
+
+    Returns
+    -------
+    track : types.SimpleNamespace
+        ``track``, ``stream_frame`` (the new frame), ``InfoFlags``,
+        ``track_name``, ``stream_name`` and ``ref``: what the functions of
+        this module and ``analysis.stream_optimization`` read of a track.
+    """
+    points = track.track
+    first, last = (float(points.ra.deg[0]), float(points.dec.deg[0])), (float(points.ra.deg[-1]),
+                                                                       float(points.dec.deg[-1]))
+    return SimpleNamespace(track=points, stream_frame=stream_frame_from_endpoints(first, last),
+                           InfoFlags=track.InfoFlags, track_name=track.track_name, stream_name=track.stream_name,
+                           ref=track.ref)
+
+
+def track_from_points(
+    track_name: str,
+    ra: ArrayLike,
+    dec: ArrayLike,
+    distance_modulus: ArrayLike,
+    *,
+    stream_name: str | None = None,
+    ref: str = "custom",
+) -> SimpleNamespace:
+    """A track given by its points, as a galstreams track: e.g. a published fit not in galstreams.
+
+    The points go along the stream, in order; their frame is the great
+    circle through the first and last ones (as ``galstreams_track_in_own_frame``).
+    It has what the functions of this module and
+    ``analysis.stream_optimization`` read of a track, with a distance track
+    (``InfoFlags`` "1111").
+
+    Parameters
+    ----------
+    track_name : str
+        Name of the track.
+    ra, dec : array_like
+        Points along the track (deg), in order, at least two.
+    distance_modulus : array_like
+        Distance modulus at each point.
+    stream_name : str, optional
+        Name of the stream, e.g. for ``isochrone_parameters.known_stream_isochrone_parameters``.
+        Default: ``track_name`` before its last hyphen.
+    ref : str, optional
+        Reference of the track.
+
+    Returns
+    -------
+    track : types.SimpleNamespace
+        ``track`` (ICRS SkyCoord with distances), ``stream_frame``,
+        ``InfoFlags``, ``track_name``, ``stream_name`` and ``ref``.
+
+    Raises
+    ------
+    ValueError
+        Fewer than two points, or arrays of different lengths.
+    """
+    ra, dec = np.asarray(ra, dtype=float), np.asarray(dec, dtype=float)
+    distance_modulus = np.asarray(distance_modulus, dtype=float)
+    if not ra.size == dec.size == distance_modulus.size or ra.size < 2:
+        raise ValueError(f"Need at least two points and as many ra, dec and distance moduli, not {ra.size}, "
+                         f"{dec.size}, {distance_modulus.size}.")
+    points = coord.SkyCoord(ra=ra * u.deg, dec=dec * u.deg, distance=convert_DM_to_kpc(distance_modulus))
+    return SimpleNamespace(
+        track=points, stream_frame=stream_frame_from_endpoints((ra[0], dec[0]), (ra[-1], dec[-1])), InfoFlags="1111",
+        track_name=track_name, stream_name=track_name.rsplit("-", 1)[0] if stream_name is None else stream_name,
+        ref=ref,
+    )
+
+
+def galstreams_width_phi2(track_name: str, mws: galstreams.MWStreams) -> float:
+    """Width of a stream in phi2 from the galstreams summary (``width_phi2``, deg); NaN when unknown.
+
+    Read from ``mws.summary`` (the ``track_width`` of the tracks is about 0
+    in galstreams 1.2.1); galstreams gives -1 when unknown.
+
+    Parameters
+    ----------
+    track_name : str
+        A track name of ``mws``.
+    mws : galstreams.MWStreams
+        From ``load_galstreams``.
+
+    Returns
+    -------
+    width_deg : float
+    """
+    width = float(mws.summary.loc[track_name, "width_phi2"])
+    return width if width > 0 else np.nan
 
 
 def _is_ibata2024(track: galstreams.Track6D) -> bool:

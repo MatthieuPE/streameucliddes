@@ -34,7 +34,7 @@ def _object(key, ra, dec, radius_arcmin, ellipticity=np.nan, position_angle=np.n
     """One object with the columns of catalogs.overlapped_objects.get_objects."""
     return {"key": key, "name": key.upper(), "ra": ra, "dec": dec, "radius_arcmin": radius_arcmin,
             "ellipticity": ellipticity, "position_angle": position_angle, "distance_kpc": 100.0,
-            "distance_modulus": 20.0, "feh": -2.0, "apparent_magnitude_v": v_mag}
+            "distance_modulus": 20.0, "feh": -2.0, "age_gyr": 12.0, "apparent_magnitude_v": v_mag}
 
 
 def _near_gc_position():

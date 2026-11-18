@@ -4,8 +4,12 @@ Only the selection: the catalog is prepared before (columns checked, cuts,
 stream frame) by ``analysis.catalog_preparation``.
 
 A match filter is ``{"name", "reference_band": (namespace, band),
-"color_bands": [(namespace, band), ...]}``, with optional ``color_cut`` and
-``red_cap_value`` (arguments of ``streamobs.match_filter.build_match_filter``).
+"color_bands": [(namespace, band), ...]}``, with optional ``color_cut``,
+``red_cap_value``, ``color_spread`` and ``error_multiplier`` (arguments of
+``streamobs.match_filter.build_match_filter``; the width of the polygon is
+``error_multiplier`` times the photometric error plus ``color_spread``, each
+(blue side, red side); default: those of streamobs, ``(0.05, 0.05)`` mag and
+``(2, 2)``).
 Its polygons are built for an isochrone ``{"age", "metallicity"}`` with an
 optional ``"isochrone_model"``, the name of the ugali isochrone model
 (``"Marigo2017"`` by default, ``"Dotter2016"``...; read with
@@ -71,17 +75,21 @@ DEFAULT_CMD_MARGIN_MAG = 0.5
 
 @functools.lru_cache(maxsize=1024)
 def build_match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2, color_cut=True,
-                               red_cap_value=None, isochrone_model=None):
+                               red_cap_value=None, isochrone_model=None, color_spread=None, error_multiplier=None):
     """
     build_match_filter polygon, cached: it only depends on these parameters, which
     repeat over a scan (e.g. the same distance modulus for every surface brightness).
     ``isochrone_model``: name of the ugali isochrone model (``"Marigo2017"``, ``"Dotter2016"``...;
     None: ``unit_conversions.get_isochrone_model()``); a warning when its grid has no
     isochrone near ``age`` and ``metallicity`` (``_check_isochrone_grid``).
+    ``color_spread`` (mag) and ``error_multiplier``: (blue side, red side) tuples, the
+    width of the polygon; None: the streamobs default.
     """
     isochrone_model = get_isochrone_model(isochrone_model)
     for survey, band in {survey_1: band_1, survey_2: band_2}.items():  # one grid per survey
         _check_isochrone_grid(isochrone_model, age, metallicity, survey, band)
+    width = {name: list(value) for name, value in
+             {"color_spread": color_spread, "error_multiplier": error_multiplier}.items() if value is not None}
     mf_polygon = build_match_filter(
         distance_modulus=distance_modulus,
         age=age,
@@ -93,6 +101,7 @@ def build_match_filter_polygon(distance_modulus, age, metallicity, band_1, band_
         color_cut=color_cut,
         red_cap_value=red_cap_value,
         isochrone_model=isochrone_model,
+        **width,
     )
     mf_polygon.setflags(write=False)  # shared between calls
     return mf_polygon
@@ -262,9 +271,19 @@ def match_filter_polygons(
             color_cut=match_filter.get("color_cut", True),
             red_cap_value=match_filter.get("red_cap_value", None),
             isochrone_model=get_isochrone_model(isochrone),
+            color_spread=_width_tuple(match_filter.get("color_spread")),
+            error_multiplier=_width_tuple(match_filter.get("error_multiplier")),
         )
         for namespace_2, band_2 in match_filter["color_bands"]
     ]
+
+
+def _width_tuple(value: ArrayLike | None) -> tuple[float, float] | None:
+    """A ``color_spread`` or ``error_multiplier`` of a match filter as a (blue side, red side) tuple (cache key)."""
+    if value is None:
+        return None
+    blue, red = (float(v) for v in value)  # ValueError unless two values
+    return blue, red
 
 
 def select_stars_in_match_filter(

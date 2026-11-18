@@ -3,6 +3,7 @@ import warnings
 import numpy as np
 import pandas as pd
 import pytest
+from matplotlib.path import Path as MplPath
 from streamobs.match_filter import build_match_filter, is_in_match_filter
 
 from streameucliddes.analysis import cmd_match_filter
@@ -100,6 +101,40 @@ def test_match_filter_polygons():
         distance_modulus=17.0, age=default_isochrone["age"], metallicity=default_isochrone["metallicity"],
         band_1="VIS", band_2="H", survey_1="euclid", survey_2="euclid",
     ))
+
+
+# color_spread and error_multiplier of a match filter: given to streamobs, which keeps its own when they are absent;
+# a wider red spread moves the red edge only
+def test_match_filter_polygons_width():
+    width = {"color_spread": (0.05, 0.1), "error_multiplier": [1.5, 3.0]}
+    polygon, = cmd_match_filter.match_filter_polygons(17.0, ISOCHRONE, {**DES_GR, **width})
+    np.testing.assert_allclose(polygon, build_match_filter(
+        distance_modulus=17.0, age=ISOCHRONE["age"], metallicity=ISOCHRONE["metallicity"],
+        band_1="g", band_2="r", survey_1="des", survey_2="des",
+        color_spread=list(width["color_spread"]), error_multiplier=list(width["error_multiplier"]),
+    ))
+    default, = cmd_match_filter.match_filter_polygons(17.0, ISOCHRONE, DES_GR)
+    np.testing.assert_allclose(default, _polygon(17.0, ISOCHRONE, "r"))
+
+    # Points beside the main sequence, out of the narrow polygon, in the one widened on their side only
+    narrow, blue, red = (cmd_match_filter.match_filter_polygons(17.0, ISOCHRONE, {**DES_GR, "color_spread": spread})[0]
+                         for spread in [(0.05, 0.05), (0.25, 0.05), (0.05, 0.25)])
+    track = isochrone_cmd_track(17.0, ISOCHRONE["age"], ISOCHRONE["metallicity"], match_filter=DES_GR)
+    main_sequence = track["mag"] > track["mag"][np.argmin(track["color"])]  # below the turnoff
+    order = np.argsort(track["mag"][main_sequence])
+    mag = 22.0  # main sequence, well inside the magnitude range of the polygons
+    color = np.interp(mag, track["mag"][main_sequence][order], track["color"][main_sequence][order])
+    offset = 0.15  # beyond the narrow polygon (spread 0.05 plus twice a small error), within the wide ones
+
+    def inside(polygon, color_offset):
+        return MplPath(polygon).contains_point((color + color_offset, mag))
+
+    assert not inside(narrow, -offset) and not inside(narrow, offset)
+    assert inside(blue, -offset) and not inside(blue, offset)
+    assert inside(red, offset) and not inside(red, -offset)
+
+    with pytest.raises(ValueError):
+        cmd_match_filter.match_filter_polygons(17.0, ISOCHRONE, {**DES_GR, "color_spread": (0.1,)})
 
 
 # Same stars as streamobs is_in_match_filter, in every colour of the filter

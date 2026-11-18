@@ -77,4 +77,6 @@ markers = [
     "plot_candidate_investigation: plotting/plot_candidate_investigation.py (figures of a candidate investigation: tracks, regions, profiles; the list of candidates on the sky, clicked endpoints)",
     "gc_dwarf_optimization: analysis/gc_dwarf_optimization.py (cuts and match filters tuned on known dwarf galaxies and globular clusters)",
     "plot_gc_dwarf_optimization: plotting/plot_gc_dwarf_optimization.py (map, CMDs, Hess diagrams and SNR of known objects)",
+    "stream_optimization: analysis/stream_optimization.py and plotting/plot_stream_optimization.py (cuts and match filters tuned on a known stream)",
+    "literature_tracks: catalogs/literature_tracks.py (published stream tracks not in galstreams: Li et al. 2021 Aliqa Uma)",
 ]
