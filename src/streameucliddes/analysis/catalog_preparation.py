@@ -14,6 +14,7 @@ import numpy as np
 import pandas as pd
 
 from streameucliddes.analysis.cmd_match_filter import (
+    error_column,
     get_match_filter,
     match_filter_columns,
     select_stars_in_match_filter,
@@ -60,7 +61,7 @@ def default_error_cuts(match_filter: Mapping[str, Any] | None = None) -> dict[st
         ``catalogs.catalog_cuts.get_cut_mask``.
     """
     columns = match_filter_columns(match_filter)
-    return {f"{column.removesuffix('_obs')}_err": DEFAULT_ERR_CUT for column in columns}
+    return {error_column(column): DEFAULT_ERR_CUT for column in columns}
 
 
 def check_columns(catalog: pd.DataFrame, columns: Iterable[str]) -> None:

@@ -36,8 +36,11 @@ Also the colour-magnitude diagrams of a set of stars, computed here and drawn
 by ``plotting.plot_cmd``: 2D histograms of colour ``mag_cols[0] -
 mag_cols[1]`` and magnitude ``mag_cols[0]`` (``hess_diagram``), per deg²
 for a region of known area, and the on - off difference of two regions
-(``difference_hess``, Shipp et al. 2018, Sect. 5); and the isochrone track
-in the bands of a match filter (``isochrone_cmd_track``).
+(``difference_hess``, Shipp et al. 2018, Sect. 5); the isochrone track
+in the bands of a match filter (``isochrone_cmd_track``); and the mean
+photometric errors (median or mean) of a set of stars per bin of magnitude
+(``photometric_errors_by_magnitude``, error columns ``<namespace>_<band>_err``:
+``error_column``).
 """
 
 from __future__ import annotations
@@ -48,6 +51,7 @@ from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from scipy.stats import binned_statistic
 from streamobs.match_filter import _isochrone_locus, build_match_filter, is_in_match_filter
 from ugali.isochrone import factory as isochrone_factory
 
@@ -87,6 +91,10 @@ DEFAULT_COLOR_RANGE = (-1.0, 1.5)
 DEFAULT_MAG_RANGE = (17.0, 27.0)
 # CMDs of a match filter: the extent of its polygons plus this margin (mag)
 DEFAULT_CMD_MARGIN_MAG = 0.5
+# Statistic of the photometric errors per bin of magnitude (photometric_errors_by_magnitude): the median, robust to
+# the few stars with large errors (user choice, 2026-11-19); "mean" as an option
+DEFAULT_ERROR_STATISTIC = "median"
+ERROR_STATISTICS = ("median", "mean")
 
 
 @functools.lru_cache(maxsize=1024)
@@ -218,6 +226,11 @@ def get_match_filter(match_filter: Mapping[str, Any] | None = None) -> Mapping[s
         ``match_filter`` itself, or ``DEFAULT_MATCH_FILTER``.
     """
     return DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+
+
+def error_column(magnitude_column: str) -> str:
+    """Error column of a magnitude column: ``<namespace>_<band>_obs`` -> ``<namespace>_<band>_err``."""
+    return f"{magnitude_column.removesuffix('_obs')}_err"
 
 
 def match_filter_cmd_columns(match_filter: Mapping[str, Any] | None = None) -> list[tuple[str, str]]:
@@ -600,6 +613,84 @@ def on_off_hess(
                 for mask, area in zip(off_masks, off_areas_deg2)]
     off_hess = off_hess[0] if len(off_hess) == 1 else mean_off_hess(*off_hess)
     return on_hess, off_hess, difference_hess(on_hess, off_hess)
+
+
+def photometric_errors_by_magnitude(
+    stars: pd.DataFrame,
+    mag_cols: Sequence[str],
+    *,
+    mask: ArrayLike | None = None,
+    mag_bins: ArrayLike | None = None,
+    statistic: str = DEFAULT_ERROR_STATISTIC,
+) -> dict[str, Any]:
+    """Median (or mean) photometric errors of stars per bin of magnitude, e.g. those of the on region of a candidate.
+
+    The stars (``mask``) with finite magnitudes in both columns, as
+    ``hess_diagram``, binned in ``mag_cols[0]`` (the magnitude of the CMDs);
+    in each bin, the ``statistic`` of the error of each band
+    (``error_column``) and of the error of the colour ``mag_cols[0] -
+    mag_cols[1]``, the two in quadrature (independent errors, star by star),
+    over the stars with a finite error.
+
+    Parameters
+    ----------
+    stars : pandas.DataFrame
+        Stars with the ``mag_cols`` columns and their error columns. Not copied.
+    mag_cols : sequence of two str
+        Magnitude columns (reference, colour band), e.g.
+        ``match_filter_cmd_columns(match_filter)[color_index]``.
+    mask : array_like of bool, optional
+        Stars used. Default: all.
+    mag_bins : array_like, optional
+        Bin edges of ``mag_cols[0]`` (mag). Default: those of
+        ``default_hess_bins()``, as the Hess diagrams.
+    statistic : {"median", "mean"}, optional
+        Statistic of the errors in each bin (``ERROR_STATISTICS``).
+
+    Returns
+    -------
+    errors : dict
+        ``{"mag_edges", "mag_centres", "n_stars", "reference_error",
+        "color_band_error", "color_error", "statistic", "error_columns",
+        "mag_label", "color_label", "color_band_label"}``: arrays of one
+        value per bin, ``n_stars`` the stars in each bin, the errors in mag
+        (``statistic`` of each bin; NaN in a bin without star);
+        ``error_columns`` the two error columns; labels from the band names
+        (``mag_label`` that of the reference band).
+
+    Raises
+    ------
+    KeyError
+        An error column missing.
+    ValueError
+        ``statistic`` not in ``ERROR_STATISTICS``.
+    """
+    if statistic not in ERROR_STATISTICS:
+        raise ValueError(f"statistic must be one of {ERROR_STATISTICS}, not {statistic!r}.")
+    mag_column, color_column = mag_cols
+    mag_bins = default_hess_bins()[1] if mag_bins is None else np.asarray(mag_bins, dtype=float)
+    error_columns = (error_column(mag_column), error_column(color_column))
+    magnitude = pd.to_numeric(stars[mag_column], errors="coerce").to_numpy(dtype=float)
+    other = pd.to_numeric(stars[color_column], errors="coerce").to_numpy(dtype=float)
+    reference_error, color_band_error = (pd.to_numeric(stars[column], errors="coerce").to_numpy(dtype=float)
+                                         for column in error_columns)
+    keep = np.isfinite(magnitude) & np.isfinite(other)
+    if mask is not None:
+        keep &= np.asarray(mask, dtype=bool)
+    n_stars, _ = np.histogram(magnitude[keep], bins=mag_bins)
+
+    def per_bin(values: NDArray[np.float64]) -> NDArray[np.float64]:
+        finite = keep & np.isfinite(values)
+        return binned_statistic(magnitude[finite], values[finite], statistic=statistic, bins=mag_bins).statistic
+
+    return {
+        "mag_edges": mag_bins, "mag_centres": (mag_bins[:-1] + mag_bins[1:]) / 2, "n_stars": n_stars,
+        "reference_error": per_bin(reference_error), "color_band_error": per_bin(color_band_error),
+        "color_error": per_bin(np.hypot(reference_error, color_band_error)), "statistic": statistic,
+        "error_columns": error_columns,
+        "mag_label": _band_name(mag_column), "color_label": f"{_band_name(mag_column)} - {_band_name(color_column)}",
+        "color_band_label": _band_name(color_column),
+    }
 
 
 def mean_off_density(

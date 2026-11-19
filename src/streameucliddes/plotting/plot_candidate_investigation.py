@@ -2,7 +2,8 @@
 
 Two kinds of functions:
 
-- regions and profiles (``analysis.candidate_investigation``):
+- regions, profiles and photometric errors (``analysis.candidate_investigation``,
+  ``plot_photometric_errors``):
   ``draw_stream_regions`` draws on existing axes and returns what it added;
   the ``plot_*`` functions make or take axes and return ``(fig, ax)``. The
   tracks are drawn by ``plot_stream_frame_search.draw_stream_track`` and
@@ -90,6 +91,9 @@ RESIDUAL_CMAP = "RdBu_r"
 ON_REGION_COLOR = CATEGORICAL_COLORS[1]
 OFF_REGION_COLOR = CATEGORICAL_COLORS[2]
 PROFILE_COLOR = CATEGORICAL_COLORS[3]
+ERRORS_FIGSIZE = (6.5, 4.5)
+# plot_photometric_errors: the reference band, the colour band, the colour
+ERROR_COLORS = (CATEGORICAL_COLORS[0], CATEGORICAL_COLORS[1], "k")
 # The streams masked (cand.stream_healpix_mask) on the maps: hatched, outlined, the map still seen below
 STREAM_MASK_COLOR = "0.15"
 STREAM_MASK_HATCH = "////"
@@ -349,6 +353,50 @@ def plot_phi1_profile(
            xlabel=r"$\phi_1$ [deg]", ylabel=r"On $-$ off density [stars deg$^{-2}$]")
     ax.legend(loc="upper right", fontsize="small", framealpha=0.8)
     return fig, ax
+
+def plot_photometric_errors(
+    errors: Mapping[str, Any],
+    *,
+    ax: Axes | None = None,
+    title: str | None = None,
+) -> tuple[Figure, Axes]:
+    """Photometric errors per bin of magnitude (median or mean): reference band, colour band and colour.
+
+    Draws ``analysis.cmd_match_filter.photometric_errors_by_magnitude`` (e.g.
+    ``cand.photometric_errors``), one point per bin with
+    stars, joined; the error of the colour is the two in quadrature.
+
+    Parameters
+    ----------
+    errors : mapping
+        From ``photometric_errors_by_magnitude``.
+    ax : matplotlib.axes.Axes, optional
+        Default: a new figure.
+    title : str, optional
+        Default: the number of stars.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax : matplotlib.axes.Axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=ERRORS_FIGSIZE, layout="constrained")
+    else:
+        fig = ax.figure
+    centres = np.asarray(errors["mag_centres"], dtype=float)
+    labels = (errors["mag_label"], errors["color_band_label"], errors["color_label"])
+    keys = ("reference_error", "color_band_error", "color_error")
+    for key, label, color in zip(keys, labels, ERROR_COLORS):
+        values = np.asarray(errors[key], dtype=float)
+        shown = np.isfinite(values)
+        ax.plot(centres[shown], values[shown], marker="o", ms=3, color=color, label=label)
+    ax.set_xlabel(f"{errors['mag_label']} [mag]")
+    ax.set_ylabel(f"{errors['statistic']} error [mag]")
+    ax.legend(loc="upper left", fontsize="small")
+    ax.set_title(f"{int(np.sum(errors['n_stars'])):,} stars" if title is None else title)
+    return fig, ax
+
 
 # ===================================================
 # Figures of a CandidateInvestigation

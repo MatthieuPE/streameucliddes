@@ -5,7 +5,8 @@ Two layers, in this module:
 - plain functions returning plain dicts, each callable alone and tunable:
   the on and off regions (``stream_regions``, ``region_windows``,
   ``stream_band_regions``), the densities (``phi12_density_map``,
-  ``phi12_density_profile``, ``on_off_phi1_profile``); the width fit is in
+  ``phi12_density_profile``, ``on_off_phi1_profile``), the on - off Hess
+  diagram and the photometric errors as a table (``hess_error_table``); the width fit is in
   ``analysis.fit_stream`` (``fit_stream_width``, ``stream_width_model``);
 - ``CandidateInvestigation``, which holds the inputs (two endpoints, the
   isochrone, the distance modulus, the region sizes) and the result of each
@@ -55,6 +56,11 @@ Steps of ``CandidateInvestigation``, in order:
 7. ``compute_hess``: on, off and on - off Hess diagrams;
 8. ``compute_isochrone``: isochrone track over the Hess diagrams.
 
+Systematics, after ``define_regions`` (not in ``run_all_steps``):
+``compute_photometric_errors``, the median photometric errors of the stars of
+the on region per bin of magnitude
+(``analysis.cmd_match_filter.photometric_errors_by_magnitude``).
+
 ``run_all_steps`` does them all. The figures take the object
 (``plotting.plot_candidate_investigation``).
 
@@ -86,9 +92,12 @@ from streameucliddes.analysis.build_masks import (
     streams_not_wider_than,
 )
 from streameucliddes.analysis.cmd_match_filter import (
+    DEFAULT_ERROR_STATISTIC,
+    difference_hess,
     isochrone_cmd_track,
     match_filter_cmd_columns,
     mean_off_density,
+    photometric_errors_by_magnitude,
     select_stars_in_match_filter,
 )
 from streameucliddes.analysis.fit_stream import DEFAULT_SIGMA_GUESS_DEG, fit_stream_width
@@ -158,18 +167,18 @@ WINDOW_FIELDS = ("padding_phi1_deg", "padding_phi2_deg", "min_phi2_half_width_de
 # Results that depend on the frame: cleared by prepare and set_endpoints (not sky_map nor isochrone_track)
 FRAME_RESULTS = ("search", "footprint_and_objects_mask", "excluded_healpix_mask", "stars_not_excluded", "zoom_map",
                  "maps", "phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
-                 "on_hess", "off_hess", "diff_hess")
+                 "on_hess", "off_hess", "diff_hess", "photometric_errors")
 # Results computed from the distance modulus (the stars in the match filter, from fit_width on)
 DISTANCE_MODULUS_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
-                            "on_hess",
-                            "off_hess", "diff_hess", "isochrone_track")
-REGION_RESULTS = ("regions", "band_regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
+                            "on_hess", "off_hess", "diff_hess", "photometric_errors", "isochrone_track")
+REGION_RESULTS = ("regions", "band_regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess",
+                  "photometric_errors")
 # The streams that can be masked, those masked and their mask: they depend on the footprint, not on the frame (kept
 # by set_endpoints)
 STREAM_MASK_RESULTS = ("stream_mask_tracks", "masked_streams", "overlapping_streams", "stream_healpix_mask")
 # Results computed from the stars outside the excluded mask (the maps are not: they see every prepared star)
 EXCLUDED_MASK_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
-                         "on_hess", "off_hess", "diff_hess")
+                         "on_hess", "off_hess", "diff_hess", "photometric_errors")
 # Inputs of the stream mask: a change applies it again at once (_apply_stream_mask), no new prepare needed
 STREAM_MASK_INPUTS = ("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg",
                       "unmasked_streams", "candidate_id", "candidates_path")
@@ -536,6 +545,70 @@ def on_off_phi1_profile(
     }
 
 
+def hess_error_table(
+    on_hess: Mapping[str, Any],
+    off_hess: Mapping[str, Any],
+    photometric_errors: Mapping[str, Any] | None = None,
+) -> pd.DataFrame:
+    """The Hess diagrams as a table, one row per bin, and the photometric errors per magnitude bin beside them.
+
+    E.g. ``cand.on_hess``, ``cand.off_hess`` and ``cand.photometric_errors``,
+    to save as CSV. Two blocks of columns of their own lengths: the Hess
+    diagrams (one row per colour and magnitude bin) and the errors (one row
+    per magnitude bin of the errors, which can differ from those of the
+    diagrams), each from the first row; the shorter block is NaN below its
+    end. Plot ``error_mag_centre`` against an error column.
+
+    Parameters
+    ----------
+    on_hess, off_hess : mapping
+        From ``compute_hess`` (``cand.on_hess``, ``cand.off_hess``): the on
+        diagram and the off diagram (the mean of the two off regions), with
+        the same bins.
+    photometric_errors : mapping, optional
+        From ``analysis.cmd_match_filter.photometric_errors_by_magnitude``
+        (``cand.photometric_errors``), on any magnitude bins.
+
+    Returns
+    -------
+    table : pandas.DataFrame
+        Colour bin by colour bin, magnitude bin by magnitude bin:
+        ``color_centre``, ``mag_centre`` (mag), ``difference_density`` (on -
+        off, stars/deg²/bin, ``analysis.cmd_match_filter.difference_hess``),
+        ``on_counts`` and ``off_counts`` (stars of the on region and of the
+        two off regions together). With ``photometric_errors``, beside:
+        ``error_mag_centre`` (mag, its bin centres) and the errors of the
+        stars of each bin (its ``statistic``, e.g. median),
+        ``<statistic>_error_<reference band>``, ``<statistic>_error_<colour
+        band>`` and ``<statistic>_error_color`` (mag).
+
+    Raises
+    ------
+    ValueError
+        The on and off diagrams on different bins.
+    """
+    diff_hess = difference_hess(on_hess, off_hess)
+    color_edges, mag_edges = (np.asarray(diff_hess[name], dtype=float) for name in ("color_edges", "mag_edges"))
+    color_centres, mag_centres = (color_edges[:-1] + color_edges[1:]) / 2, (mag_edges[:-1] + mag_edges[1:]) / 2
+    color_grid, mag_grid = np.meshgrid(color_centres, mag_centres, indexing="ij")  # (n_color, n_mag), as density
+    table = pd.DataFrame({
+        "color_centre": color_grid.ravel(), "mag_centre": mag_grid.ravel(),
+        "difference_density": np.asarray(diff_hess["density"], dtype=float).ravel(),
+        "on_counts": np.asarray(on_hess["counts"], dtype=float).ravel(),
+        "off_counts": np.asarray(off_hess["counts"], dtype=float).ravel(),
+    })
+    if photometric_errors is None:
+        return table
+    statistic = photometric_errors["statistic"]
+    errors = pd.DataFrame({
+        "error_mag_centre": np.asarray(photometric_errors["mag_centres"], dtype=float),
+        f"{statistic}_error_{photometric_errors['mag_label']}": photometric_errors["reference_error"],
+        f"{statistic}_error_{photometric_errors['color_band_label']}": photometric_errors["color_band_error"],
+        f"{statistic}_error_color": photometric_errors["color_error"],
+    })
+    return pd.concat([table, errors], axis=1)  # side by side from the first row; NaN below the shorter
+
+
 # ===================================================
 # The investigation
 # ===================================================
@@ -682,6 +755,9 @@ class CandidateInvestigation:
         The stars and areas of the regions (``stream_band_regions``, built
         again when ``regions`` is changed by hand) and their areas
         (``region_areas``).
+    photometric_errors : dict
+        ``photometric_errors_by_magnitude`` of the stars of the on region
+        (``compute_photometric_errors``).
     on_hess, off_hess, diff_hess : dict
         ``hess_diagram`` and ``difference_hess`` results.
     isochrone_track : dict
@@ -740,6 +816,7 @@ class CandidateInvestigation:
     on_hess: dict | None = None
     off_hess: dict | None = None
     diff_hess: dict | None = None
+    photometric_errors: dict | None = None
     isochrone_track: dict | None = None
 
     def __post_init__(self) -> None:
@@ -1444,6 +1521,58 @@ class CandidateInvestigation:
             self.search.stars, match_filter_cmd_columns(self.search.match_filter)[color_index], band_regions,
             color_bins=color_bins, mag_bins=mag_bins,
         )
+        return self
+
+    def compute_photometric_errors(
+        self,
+        *,
+        mag_bins: Any = None,
+        color_index: int = 0,
+        in_match_filter: bool = False,
+        statistic: str = DEFAULT_ERROR_STATISTIC,
+    ) -> CandidateInvestigation:
+        """Median (or mean) photometric errors of the stars of the on region per bin of magnitude, in
+        ``photometric_errors``.
+
+        ``photometric_errors_by_magnitude`` of the prepared stars of the on
+        region outside the excluded mask (``stream_band_regions``, as
+        ``compute_hess``): the median (``statistic``) error of the reference
+        band (VIS), of the colour band and of the colour, per bin of the
+        reference magnitude of
+        the match filter (colour ``color_index``). The ``in_match_filter`` and
+        ``color_index`` used are added to the result.
+
+        Parameters
+        ----------
+        mag_bins : array_like, optional
+            Bin edges (mag). Default: those of the Hess diagrams
+            (``default_hess_bins``).
+        color_index : int, optional
+            Colour band of the match filter.
+        in_match_filter : bool, optional
+            Only the stars in the match filter at ``distance_modulus``
+            (``stars_in_match_filter``).
+        statistic : {"median", "mean"}, optional
+            Statistic of the errors in each bin.
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            ``define_regions`` not done; ``distance_modulus`` not set with
+            ``in_match_filter``.
+        """
+        selected = np.asarray(self._band_regions()["on"], dtype=bool)
+        if in_match_filter:
+            selected = selected & self.stars_in_match_filter()
+        errors = photometric_errors_by_magnitude(
+            self.search.stars, match_filter_cmd_columns(self.search.match_filter)[color_index], mask=selected,
+            mag_bins=mag_bins, statistic=statistic,
+        )
+        self.photometric_errors = {**errors, "in_match_filter": bool(in_match_filter), "color_index": int(color_index)}
         return self
 
     def compute_isochrone(

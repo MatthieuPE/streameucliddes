@@ -18,6 +18,7 @@ from streameucliddes.analysis.candidate_investigation import (
     DEFAULT_FOOTPRINT_NSIDE,
     CANDIDATE_FIGURES_DIR,
     CandidateInvestigation,
+    hess_error_table,
     on_off_phi1_profile,
     phi12_density_map,
     phi12_density_profile,
@@ -26,7 +27,13 @@ from streameucliddes.analysis.candidate_investigation import (
     stream_band_regions,
     stream_regions,
 )
-from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
+from streameucliddes.analysis.cmd_match_filter import (
+    difference_hess,
+    hess_diagram,
+    isochrone_cmd_track,
+    match_filter_cmd_columns,
+    photometric_errors_by_magnitude,
+)
 from streameucliddes.catalogs.stream_candidates import CANDIDATE_MASK_HALF_WIDTH_DEG, add_candidate
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
@@ -866,3 +873,60 @@ def test_isochrone_model(candidate_endpoints):
     cand.sky_map = {"stub": True}
     cand.isochrone_model = None
     assert cand.sky_map is None and "isochrone_model" not in cand.isochrone
+
+
+# The photometric errors of the stars of the on region (outside the masks), all or in the match filter; cleared with
+# the regions; define_regions needed
+def test_compute_photometric_errors(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    with pytest.raises(ValueError, match="define_regions"):
+        cand.compute_photometric_errors()
+    cand.prepare(candidate_stream_catalog).fit_width().define_regions()
+    assert cand.compute_photometric_errors(mag_bins=np.arange(18.0, 26.5, 0.5)) is cand
+    mag_cols = match_filter_cmd_columns(cand.search.match_filter)[0]
+    on = np.asarray(cand.band_regions["on"], dtype=bool)
+    expected = photometric_errors_by_magnitude(cand.search.stars, mag_cols, mask=on, mag_bins=np.arange(18.0, 26.5, 0.5))
+    np.testing.assert_array_equal(cand.photometric_errors["n_stars"], expected["n_stars"])
+    np.testing.assert_array_equal(cand.photometric_errors["reference_error"], expected["reference_error"])
+    assert cand.photometric_errors["in_match_filter"] is False and cand.photometric_errors["n_stars"].sum() == on.sum()
+    cand.compute_photometric_errors(in_match_filter=True, statistic="mean")
+    assert cand.photometric_errors["statistic"] == "mean"
+    n_in_filter = (on & cand.stars_in_match_filter()).sum()
+    assert cand.photometric_errors["in_match_filter"] and cand.photometric_errors["n_stars"].sum() == n_in_filter
+    assert 0 < n_in_filter < on.sum()
+    cand.on_n_sigma = 1.0
+    assert cand.photometric_errors is None
+
+
+# One row per bin, colour by colour then magnitude by magnitude: the on - off density, the on and off counts; the
+# errors beside, one row per magnitude bin of their own (other bins than the diagrams), for the median and the mean;
+# NaN below the shorter block
+def test_hess_error_table(stars_with_errors):
+    stars = stars_with_errors
+    mag_cols = ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs")
+    bins = {"color_bins": [0.0, 0.4, 0.8], "mag_bins": [20.0, 21.0, 22.0, 23.0]}
+    on = hess_diagram(stars, mag_cols, area_deg2=2.0, **bins)
+    off = hess_diagram(stars, mag_cols, mask=np.arange(7) < 2, area_deg2=1.0, **bins)
+    table = hess_error_table(on, off)
+    assert list(table.columns) == ["color_centre", "mag_centre", "difference_density", "on_counts", "off_counts"]
+    assert len(table) == 6
+    np.testing.assert_allclose(table["color_centre"], [0.2, 0.2, 0.2, 0.6, 0.6, 0.6])
+    np.testing.assert_allclose(table["mag_centre"], [20.5, 21.5, 22.5] * 2)
+    np.testing.assert_allclose(table["difference_density"], difference_hess(on, off)["density"].ravel())
+    np.testing.assert_array_equal(table["on_counts"], on["counts"].ravel())
+    np.testing.assert_array_equal(table["off_counts"], off["counts"].ravel())
+    for statistic in ("median", "mean"):
+        errors = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=[20.0, 22.0, 23.0], statistic=statistic)
+        table = hess_error_table(on, off, errors)
+        assert list(table.columns)[5:] == ["error_mag_centre", f"{statistic}_error_VIS", f"{statistic}_error_H",
+                                           f"{statistic}_error_color"]
+        assert len(table) == 6 and table["on_counts"].notna().all()
+        np.testing.assert_allclose(table["error_mag_centre"][:2], [21.0, 22.5])
+        assert table["error_mag_centre"][2:].isna().all()
+        np.testing.assert_allclose(table[f"{statistic}_error_VIS"][:2], errors["reference_error"])
+        np.testing.assert_allclose(table[f"{statistic}_error_H"][:2], errors["color_band_error"])
+        np.testing.assert_allclose(table[f"{statistic}_error_color"][:2], errors["color_error"])
+    many_bins = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=np.arange(20.0, 23.01, 0.25))  # 12 bins
+    table = hess_error_table(on, off, many_bins)
+    assert len(table) == 12 and table["mag_centre"][6:].isna().all() and table["error_mag_centre"].notna().all()

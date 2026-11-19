@@ -1,3 +1,4 @@
+import inspect
 import warnings
 
 import numpy as np
@@ -12,7 +13,9 @@ from streameucliddes.catalogs.euclid_catalog import DEFAULT_VIS_PHOTOMETRY, vis_
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid, get_isochrone
 from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL, convert_FeH_to_z, get_isochrone_model
 from streameucliddes.analysis.cmd_match_filter import (
+    default_hess_bins,
     difference_hess,
+    error_column,
     hess_diagram,
     isochrone_cmd_track,
     match_filter_cmd_columns,
@@ -21,6 +24,7 @@ from streameucliddes.analysis.cmd_match_filter import (
     mean_off_density,
     mean_off_hess,
     on_off_hess,
+    photometric_errors_by_magnitude,
 )
 
 pytestmark = pytest.mark.cmd_match_filter
@@ -516,3 +520,55 @@ def test_select_stars_vis_templfit(stars):
     with pytest.raises(KeyError):
         cmd_match_filter.select_stars_in_match_filter(catalog.drop(columns="euclid_dr1_VIS_TO_H_obs"), 16.8,
                                                       match_filter=MATCH_FILTER_VIS_TEMPLFIT)
+
+
+# ===================================================
+# Test photometric_errors_by_magnitude
+# ===================================================
+
+
+# The error column of a magnitude column, template-fit VIS included
+def test_error_column():
+    assert error_column("euclid_dr1_VIS_obs") == "euclid_dr1_VIS_err"
+    assert error_column("euclid_dr1_VIS_TO_H_obs") == "euclid_dr1_VIS_TO_H_err"
+
+
+# Per bin: the stars with both magnitudes, the mean error of each band over the stars with a finite error, the
+# colour error the two in quadrature; a mask; NaN in an empty bin; the Hess bins by default; labels
+def test_photometric_errors_by_magnitude(stars_with_errors):
+    stars = stars_with_errors
+    mag_cols = ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs")
+    errors = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=[20.0, 21.0, 22.0, 23.0], statistic="mean")
+    assert errors["statistic"] == "mean"
+    np.testing.assert_array_equal(errors["n_stars"], [3, 2, 1])
+    np.testing.assert_allclose(errors["mag_centres"], [20.5, 21.5, 22.5])
+    np.testing.assert_allclose(errors["reference_error"], [0.02, 0.06, 0.2])
+    np.testing.assert_allclose(errors["color_band_error"], [0.02, 0.1, 0.3])
+    np.testing.assert_allclose(errors["color_error"], [np.mean([np.hypot(0.01, 0.02), np.hypot(0.03, 0.02)]),
+                                                       np.mean([np.hypot(0.05, 0.1), np.hypot(0.07, 0.1)]),
+                                                       np.hypot(0.2, 0.3)])
+    assert errors["error_columns"] == ("euclid_dr1_VIS_err", "euclid_dr1_H_err")
+    assert (errors["mag_label"], errors["color_label"], errors["color_band_label"]) == ("VIS", "VIS - H", "H")
+    masked = photometric_errors_by_magnitude(stars, mag_cols, mask=np.arange(7) < 5, mag_bins=[20.0, 21.0, 22.0, 23.0],
+                                             statistic="mean")
+    np.testing.assert_array_equal(masked["n_stars"], [3, 2, 0])
+    assert np.isnan(masked["reference_error"][2]) and np.isnan(masked["color_error"][2])
+    np.testing.assert_array_equal(photometric_errors_by_magnitude(stars, mag_cols)["mag_edges"], default_hess_bins()[1])
+    with pytest.raises(KeyError):
+        photometric_errors_by_magnitude(stars.drop(columns="euclid_dr1_H_err"), mag_cols)
+    with pytest.raises(ValueError, match="statistic"):
+        photometric_errors_by_magnitude(stars, mag_cols, statistic="mode")
+
+
+# The median of each bin; the default statistic, that of the signature
+def test_photometric_errors_by_magnitude_median(stars_with_errors):
+    stars = stars_with_errors
+    stars.loc[2, "euclid_dr1_VIS_err"] = 0.5  # a large error: the median of the first bin does not see it
+    mag_cols = ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs")
+    bins = [20.0, 21.0, 22.0, 23.0]
+    errors = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=bins, statistic="median")
+    np.testing.assert_allclose(errors["reference_error"], [0.03, 0.06, 0.2])
+    np.testing.assert_allclose(errors["color_band_error"], [0.02, 0.1, 0.3])
+    np.testing.assert_allclose(errors["color_error"][0], np.hypot(0.03, 0.02))
+    default = inspect.signature(photometric_errors_by_magnitude).parameters["statistic"].default
+    assert photometric_errors_by_magnitude(stars, mag_cols, mag_bins=bins)["statistic"] == default

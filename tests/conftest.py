@@ -393,3 +393,19 @@ def candidate_stream_catalog(candidate_endpoints, candidate_catalog):
         "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
     }))
     return pd.concat([candidate_catalog, stream], ignore_index=True)
+
+
+# ===================================================
+# Photometric errors (cmd_match_filter, candidate_investigation)
+# ===================================================
+
+
+@pytest.fixture
+def stars_with_errors():
+    """Six stars in three VIS bins (20-21, 21-22, 22-23) and one without magnitude; one VIS error missing."""
+    vis = np.array([20.1, 20.2, 20.3, 21.4, 21.6, 22.5, np.nan])
+    return pd.DataFrame({
+        "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - 0.5,
+        "euclid_dr1_VIS_err": [0.01, 0.03, np.nan, 0.05, 0.07, 0.2, 0.1],
+        "euclid_dr1_H_err": [0.02, 0.02, 0.02, 0.1, 0.1, 0.3, 0.1],
+    })

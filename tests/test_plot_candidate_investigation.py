@@ -22,6 +22,7 @@ from streameucliddes.plotting.plot_candidate_investigation import (
     plot_candidates,
     plot_phi1_profile,
     plot_phi2_profile,
+    plot_photometric_errors,
     plot_width_fit_map,
     sky_axes_to_radec,
 )
@@ -357,4 +358,18 @@ def test_endpoint_picker_on_a_new_map(sky_ax):
     _click(sky.ax, 70.0, -44.5, button=1)
     assert np.ravel(second.endpoints) == pytest.approx([60.0, -40.0, 70.0, -44.5], abs=0.05)
     assert np.ravel(first.endpoints) == pytest.approx([45.5, -45.0, 44.0, -51.0], abs=0.05)
+    plt.close(fig)
+
+
+# Three lines (reference band, colour band, colour) over the bins with stars; the default title counts the stars
+def test_plot_photometric_errors():
+    errors = {"mag_centres": np.array([20.5, 21.5, 22.5]), "n_stars": np.array([3, 2, 0]),
+              "reference_error": np.array([0.02, 0.06, np.nan]), "color_band_error": np.array([0.02, 0.1, np.nan]),
+              "color_error": np.array([0.03, 0.12, np.nan]), "mag_label": "VIS", "color_label": "VIS - H",
+              "color_band_label": "H", "statistic": "median"}
+    fig, ax = plot_photometric_errors(errors)
+    assert ax.get_ylabel() == "median error [mag]"
+    assert [line.get_label() for line in ax.lines] == ["VIS", "H", "VIS - H"]
+    assert all(line.get_xdata().size == 2 for line in ax.lines)
+    assert ax.get_title() == "5 stars" and "VIS" in ax.get_xlabel()
     plt.close(fig)
