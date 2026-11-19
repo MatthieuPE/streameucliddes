@@ -900,7 +900,8 @@ def test_compute_photometric_errors(candidate_endpoints, candidate_stream_catalo
     assert cand.photometric_errors is None
 
 
-# One row per bin, colour by colour then magnitude by magnitude: the on - off density, the on and off counts; the
+# One row per bin, colour by colour then magnitude by magnitude: the on - off, on and off densities, the areas on
+# every row (density times area: the stars of the region); the
 # errors beside, one row per magnitude bin of their own (other bins than the diagrams), for the median and the mean;
 # NaN below the shorter block
 def test_hess_error_table(stars_with_errors):
@@ -910,19 +911,22 @@ def test_hess_error_table(stars_with_errors):
     on = hess_diagram(stars, mag_cols, area_deg2=2.0, **bins)
     off = hess_diagram(stars, mag_cols, mask=np.arange(7) < 2, area_deg2=1.0, **bins)
     table = hess_error_table(on, off)
-    assert list(table.columns) == ["color_centre", "mag_centre", "difference_density", "on_counts", "off_counts"]
+    assert list(table.columns) == ["color_centre", "mag_centre", "difference_density", "on_density", "off_density",
+                                   "area_on_deg2", "area_off_deg2"]
     assert len(table) == 6
     np.testing.assert_allclose(table["color_centre"], [0.2, 0.2, 0.2, 0.6, 0.6, 0.6])
     np.testing.assert_allclose(table["mag_centre"], [20.5, 21.5, 22.5] * 2)
     np.testing.assert_allclose(table["difference_density"], difference_hess(on, off)["density"].ravel())
-    np.testing.assert_array_equal(table["on_counts"], on["counts"].ravel())
-    np.testing.assert_array_equal(table["off_counts"], off["counts"].ravel())
+    np.testing.assert_allclose(table["on_density"], on["density"].ravel())
+    np.testing.assert_allclose(table["off_density"], off["density"].ravel())
+    assert (table["area_on_deg2"] == 2.0).all() and (table["area_off_deg2"] == 1.0).all()
+    np.testing.assert_allclose(table["on_density"] * table["area_on_deg2"], on["counts"].ravel())
     for statistic in ("median", "mean"):
         errors = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=[20.0, 22.0, 23.0], statistic=statistic)
         table = hess_error_table(on, off, errors)
-        assert list(table.columns)[5:] == ["error_mag_centre", f"{statistic}_error_VIS", f"{statistic}_error_H",
+        assert list(table.columns)[7:] == ["error_mag_centre", f"{statistic}_error_VIS", f"{statistic}_error_H",
                                            f"{statistic}_error_color"]
-        assert len(table) == 6 and table["on_counts"].notna().all()
+        assert len(table) == 6 and table["on_density"].notna().all()
         np.testing.assert_allclose(table["error_mag_centre"][:2], [21.0, 22.5])
         assert table["error_mag_centre"][2:].isna().all()
         np.testing.assert_allclose(table[f"{statistic}_error_VIS"][:2], errors["reference_error"])

@@ -557,7 +557,9 @@ def hess_error_table(
     diagrams (one row per colour and magnitude bin) and the errors (one row
     per magnitude bin of the errors, which can differ from those of the
     diagrams), each from the first row; the shorter block is NaN below its
-    end. Plot ``error_mag_centre`` against an error column.
+    end. Plot ``error_mag_centre`` against an error column. The densities are
+    per deg²: times an area, the stars expected there (the areas of the
+    regions, on every row, give back their stars).
 
     Parameters
     ----------
@@ -574,9 +576,13 @@ def hess_error_table(
     table : pandas.DataFrame
         Colour bin by colour bin, magnitude bin by magnitude bin:
         ``color_centre``, ``mag_centre`` (mag), ``difference_density`` (on -
-        off, stars/deg²/bin, ``analysis.cmd_match_filter.difference_hess``),
-        ``on_counts`` and ``off_counts`` (stars of the on region and of the
-        two off regions together). With ``photometric_errors``, beside:
+        off, ``analysis.cmd_match_filter.difference_hess``), ``on_density``
+        and ``off_density`` (stars/deg²/bin; off: the mean of the densities
+        of the two off regions), and the areas of the regions outside the
+        masks, the same on every row, ``area_on_deg2`` and ``area_off_deg2``
+        (the two off regions together: when their areas differ,
+        ``off_density * area_off_deg2`` is not exactly their number of
+        stars). With ``photometric_errors``, beside:
         ``error_mag_centre`` (mag, its bin centres) and the errors of the
         stars of each bin (its ``statistic``, e.g. median),
         ``<statistic>_error_<reference band>``, ``<statistic>_error_<colour
@@ -594,8 +600,9 @@ def hess_error_table(
     table = pd.DataFrame({
         "color_centre": color_grid.ravel(), "mag_centre": mag_grid.ravel(),
         "difference_density": np.asarray(diff_hess["density"], dtype=float).ravel(),
-        "on_counts": np.asarray(on_hess["counts"], dtype=float).ravel(),
-        "off_counts": np.asarray(off_hess["counts"], dtype=float).ravel(),
+        "on_density": np.asarray(on_hess["density"], dtype=float).ravel(),
+        "off_density": np.asarray(off_hess["density"], dtype=float).ravel(),
+        "area_on_deg2": float(on_hess["area_deg2"]), "area_off_deg2": float(off_hess["area_deg2"]),
     })
     if photometric_errors is None:
         return table
