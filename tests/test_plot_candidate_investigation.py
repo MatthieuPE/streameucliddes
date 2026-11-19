@@ -20,6 +20,7 @@ from streameucliddes.plotting.plot_candidate_investigation import (
     plot_candidate_frame_check,
     plot_candidate_hess,
     plot_candidate_map,
+    plot_candidate_null_test,
     plot_candidate_overview,
     plot_candidates,
     plot_phi1_profile,
@@ -203,6 +204,25 @@ def test_saved_hess_not_smoothed(candidate_endpoints, candidate_stream_catalog, 
     smoothed = gaussian_filter(cand.diff_hess["density"], DEFAULT_DIFFERENCE_SMOOTHING_BINS).ravel()
     assert not np.allclose(table["difference_density"], smoothed)
 
+
+# The map with the shifted regions, the candidate's and the null test's difference Hess diagrams on the same scale,
+# with their SNR; without the Hess diagrams or the null test: ValueError
+def test_plot_candidate_null_test(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    cand.prepare(candidate_stream_catalog).compute_zoom_map()
+    cand.define_regions(phi2_centre=candidate_stream["phi2_centre"], sigma=candidate_stream["sigma"])
+    with pytest.raises(ValueError, match="compute_hess"):
+        plot_candidate_null_test(cand)
+    cand.compute_hess()
+    with pytest.raises(ValueError, match="compute_null_test"):
+        plot_candidate_null_test(cand)
+    cand.compute_null_test().compute_isochrone()
+    fig, (map_ax, candidate_ax, null_ax) = plot_candidate_null_test(cand)
+    assert cand.null_test["direction"] in map_ax.get_title()
+    assert "candidate, SNR" in candidate_ax.get_title() and "null test, SNR" in null_ax.get_title()
+    assert candidate_ax.images[0].get_clim() == null_ax.images[0].get_clim()  # the same colour scale
+    plt.close(fig)
 
 # Four panels: the map with the regions, the phi2 and phi1 profiles, the difference Hess with the isochrone;
 # before the steps: ValueError naming the missing one

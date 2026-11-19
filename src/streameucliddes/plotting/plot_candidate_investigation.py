@@ -26,6 +26,7 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patheffects import withStroke
+from scipy.ndimage import gaussian_filter
 
 from streameucliddes.analysis.candidate_investigation import region_windows
 from streameucliddes.analysis.fit_stream import stream_width_model
@@ -38,6 +39,7 @@ from streameucliddes.catalogs.stream_candidates import (
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
 from streameucliddes.plotting.plot_cmd import (
     DEFAULT_DIFFERENCE_SMOOTHING_BINS,
+    HESS_DIFFERENCE_PERCENTILE,
     plot_hess,
     plot_isochrone,
     plot_match_filter_polygon,
@@ -618,6 +620,72 @@ def plot_candidate_hess(
     return fig, ax
 
 
+def plot_candidate_null_test(
+    cand: CandidateInvestigation,
+    *,
+    isochrone: bool = True,
+    match_filter: bool = True,
+    smooth: bool = True,
+) -> tuple[Figure, list[Axes]]:
+    """Null test: the map with the shifted regions, and the on - off Hess diagrams of the candidate and of the null test.
+
+    Left: ``plot_candidate_map`` with the regions of ``cand.null_test``
+    (``compute_null_test``). Middle and right: the difference Hess diagrams
+    of the candidate (``compute_hess``) and of the null test, on the same
+    colour scale (the ``HESS_DIFFERENCE_PERCENTILE`` of the candidate's), each
+    with its SNR; without the stream, the null test should show no isochrone.
+
+    Parameters
+    ----------
+    cand : CandidateInvestigation
+        With ``compute_hess`` and ``compute_null_test`` done.
+    isochrone, match_filter, smooth : bool, optional
+        See ``plot_candidate_hess``.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : list of matplotlib.axes.Axes
+        The map, the candidate's Hess diagram, the null test's.
+
+    Raises
+    ------
+    ValueError
+        The Hess diagrams or the null test not computed.
+    """
+    if cand.diff_hess is None:
+        raise ValueError("No Hess diagrams: call cand.compute_hess() first.")
+    null_test = cand.null_test
+    if null_test is None:
+        raise ValueError("No null test: call cand.compute_null_test() first.")
+    smoothing_bins = DEFAULT_DIFFERENCE_SMOOTHING_BINS if smooth else 0.0
+    density = np.asarray(cand.diff_hess["density"], dtype=float)
+    density = gaussian_filter(density, smoothing_bins) if smoothing_bins > 0 else density
+    values = np.abs(density[np.isfinite(density)])
+    vlim = float(np.percentile(values, HESS_DIFFERENCE_PERCENTILE)) if values.size else 1.0
+    vlim = vlim if vlim > 0 else 1.0
+
+    fig, axes = plt.subplots(1, 3, figsize=(19.0, 5.5), layout="constrained",
+                             gridspec_kw={"width_ratios": (1.4, 1.0, 1.0)})
+    plot_candidate_map(cand, ax=axes[0], show_regions=False)
+    draw_stream_regions(axes[0], null_test["regions"])
+    axes[0].legend(loc="upper right", fontsize="small", framealpha=0.8)
+    compact = ", off region next to it" if null_test.get("geometry") == "compact" else ""
+    axes[0].set_title(f"Null test: regions shifted {null_test['direction']} by {null_test['shift_deg']:.2f} deg{compact}")
+    snr = cand.summary()["snr"]
+    for ax, diff_hess, label in ((axes[1], cand.diff_hess, f"candidate, SNR {snr:.1f}"),
+                                 (axes[2], null_test["diff_hess"], f"null test, SNR {null_test['snr']:.1f}")):
+        plot_hess(diff_hess, ax=ax, difference=True, smoothing_bins=smoothing_bins, vlim=vlim,
+                  title=f"{escape_underscores(cand.name)}: on $-$ off, {label}")
+        if isochrone and cand.isochrone_track is not None:
+            plot_isochrone(ax, cand.isochrone_track)
+        if match_filter:
+            plot_match_filter_polygon(ax, cand.distance_modulus, cand.isochrone, cand.search.match_filter)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(loc="upper left", fontsize="small", framealpha=0.8)
+    return fig, list(axes)
+
+
 def plot_candidate_overview(cand: CandidateInvestigation) -> tuple[Figure, list[Axes]]:
     """Summary figure: map with the regions, phi2 profile, phi1 profile, difference Hess with the isochrone.
 
@@ -795,7 +863,7 @@ class EndpointPicker:
     >>> fig, ax = plot_generic_search_residual_map(result)  # doctest: +SKIP
     >>> picker = EndpointPicker(ax)  # doctest: +SKIP
     >>> # two clicks on the map, then:
-    >>> add_candidate(*picker.endpoints, best_dm=17.0)  # doctest: +SKIP
+    >>> add_candidate(*picker.endpoints, best_dm_by_eye=17.0)  # doctest: +SKIP
     """
 
     def __init__(self, ax: Any) -> None:

@@ -48,7 +48,7 @@ from streameucliddes.catalogs.galstreams_catalog import (
     load_galstreams,
     select_galstreams_in_footprint,
 )
-from streameucliddes.catalogs.stream_candidates import CANDIDATE_WIDTH_COLUMN, candidate_endpoints
+from streameucliddes.catalogs.stream_candidates import CANDIDATE_WIDTH_COLUMN, candidate_best_dm, candidate_endpoints
 from streameucliddes.catalogs.survey_footprint import convert_footprint_healpix_mask
 from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12, stream_frame_from_endpoints
 
@@ -588,7 +588,7 @@ def candidate_mask_tracks(
         One per candidate kept: ``name`` and ``stream_name``
         (``"candidate_<id>"``), ``ra``, ``dec`` (deg, its two endpoints),
         ``stream_frame``, ``width_deg``, ``dm_min`` and ``dm_max`` (its
-        ``best_dm``) and ``default_half_width_deg``.
+        distance modulus, ``candidate_best_dm``) and ``default_half_width_deg``.
     """
     excluded = {int(candidate_id) for candidate_id in exclude_ids}
     tracks = []
@@ -601,7 +601,7 @@ def candidate_mask_tracks(
         tracks.append({"name": name, "stream_name": name, "ra": np.array([endpoint_1[0], endpoint_2[0]]),
                        "dec": np.array([endpoint_1[1], endpoint_2[1]]),
                        "stream_frame": stream_frame_from_endpoints(endpoint_1, endpoint_2), "width_deg": width,
-                       "dm_min": float(candidate["best_dm"]), "dm_max": float(candidate["best_dm"]),
+                       "dm_min": candidate_best_dm(candidate), "dm_max": candidate_best_dm(candidate),
                        "default_half_width_deg": float(default_half_width_deg)})
     return tracks
 

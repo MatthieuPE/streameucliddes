@@ -380,9 +380,12 @@ Done:
   - `catalogs/stream_candidates.py`: the list of candidates,
     `data/candidates/candidates_info.csv` (local, gitignored: user choice),
     columns `id, endpoint_1_ra, endpoint_1_dec, endpoint_2_ra,
-    endpoint_2_dec, best_dm` (ra/dec split: plain numbers); `load_candidates`,
-    `add_candidate` (next id), `candidate_endpoints`. Columns added by hand
-    are kept.
+    endpoint_2_dec, best_dm_by_eye` (ra/dec split: plain numbers), then
+    `best_dm` (the distance modulus of the largest SNR, computed by
+    `analysis.candidate_investigation.update_candidate_best_dm`, empty until
+    then; renamed from the by-eye `best_dm` on 2026-11-19); `load_candidates`,
+    `add_candidate` (next id), `candidate_endpoints`, `candidate_best_dm`.
+    Columns added by hand are kept.
   - `plot_candidates(ax)` (arc between the endpoints, endpoints, id over a
     skyproj map), `EndpointPicker` (left click adds an endpoint, right click
     removes the last; a click is a press and release at the same place, so

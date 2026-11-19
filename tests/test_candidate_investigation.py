@@ -27,6 +27,7 @@ from streameucliddes.analysis.candidate_investigation import (
     region_windows,
     stream_band_regions,
     stream_regions,
+    update_candidate_best_dm,
 )
 from streameucliddes.analysis.cmd_match_filter import (
     difference_hess,
@@ -35,7 +36,7 @@ from streameucliddes.analysis.cmd_match_filter import (
     match_filter_cmd_columns,
     photometric_errors_by_magnitude,
 )
-from streameucliddes.catalogs.stream_candidates import add_candidate
+from streameucliddes.catalogs.stream_candidates import add_candidate, load_candidates
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import (
@@ -637,6 +638,109 @@ def test_compute_hess(candidate_endpoints, candidate_stream_catalog, candidate_s
     assert cand.on_hess["area_deg2"] == cand.areas["on"] and cand.off_hess["area_deg2"] == cand.areas["off"]
     np.testing.assert_allclose(cand.diff_hess["density"], cand.on_hess["density"] - cand.off_hess["density"])
     assert cand.diff_hess["density"].sum() > 5 * np.sqrt((cand.diff_hess["error"] ** 2).sum())
+
+
+# Null test: the on region and the off region on its side shifted off the stream by (on_n_sigma + off_n_sigma[0])
+# sigma, the stream in none of the three regions: no excess, while the candidate's regions have one; regions and Hess
+# diagrams of the candidate unchanged; a given direction; a shift leaving the window, an unknown direction:
+# ValueError; cleared by new regions
+def test_compute_null_test(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    cand.prepare(candidate_stream_catalog)
+    with pytest.raises(ValueError, match="define_regions"):
+        cand.compute_null_test()
+    centre, sigma = candidate_stream["phi2_centre"], candidate_stream["sigma"]
+    bins = {"color_bins": np.linspace(-1.0, 1.5, 11), "mag_bins": np.linspace(18.0, 26.0, 9)}
+    cand.define_regions(phi2_centre=centre, sigma=sigma).compute_hess(**bins)
+    regions, diff_hess = cand.regions, cand.diff_hess
+    assert cand.compute_null_test(**bins) is cand
+    null_test = cand.null_test
+    assert cand.regions is regions and cand.diff_hess is diff_hess
+    assert null_test["direction"] in ("above", "below") and null_test["geometry"] == "standard"
+    assert null_test["shift_deg"] == pytest.approx((cand.on_n_sigma + cand.off_n_sigma[0]) * sigma)
+    stream_edge = cand.off_n_sigma[0] * sigma  # the stream taken as absent beyond it, as for the off regions
+    windows = region_windows(null_test["regions"])
+    for window in (windows["on"], *windows["off"]):
+        assert window[2] >= centre + stream_edge - 1e-9 or window[3] <= centre - stream_edge + 1e-9
+    assert cand.summary()["snr"] > 5.0 and abs(null_test["snr"]) < 3.0
+    assert null_test["diff_hess"]["area_deg2"] == null_test["areas"]["on"]
+
+    below = cand.compute_null_test(direction="below", **bins).null_test
+    assert below["direction"] == "below" and region_windows(below["regions"])["on"][3] <= centre - stream_edge + 1e-9
+    with pytest.raises(ValueError, match="leave the window"):
+        cand.compute_null_test(shift_n_sigma=100.0)
+    with pytest.raises(ValueError, match="direction"):
+        cand.compute_null_test(direction="left")
+    cand.define_regions(phi2_centre=centre, sigma=sigma)
+    assert cand.null_test is None
+
+
+# A wide stream in a narrow window: the shifted regions with their gap leave the window on both sides; the off region
+# next to the shifted on region fits ("compact"), the stream still in none of the regions
+def test_compute_null_test_compact(candidate_endpoints, candidate_catalog, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0,
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    cand.prepare(candidate_catalog)
+    half_width = cand.window[3]
+    on_n, (off_0, off_1) = cand.on_n_sigma, cand.off_n_sigma
+    # extent of the shifted side: (on + off_0 + off_1) sigma with the gap, (2 on + off_1) sigma without: in between
+    sigma = half_width / (0.5 * ((on_n + off_0 + off_1) + (2 * on_n + off_1)))
+    cand.define_regions(phi2_centre=0.0, sigma=sigma).compute_null_test()
+    null_test = cand.null_test
+    assert null_test["geometry"] == "compact"
+    windows = region_windows(null_test["regions"])
+    shifted_off = windows["off"][1] if null_test["direction"] == "above" else windows["off"][0]
+    if null_test["direction"] == "above":
+        assert shifted_off[2] == pytest.approx(windows["on"][3])  # next to the shifted on region
+    else:
+        assert shifted_off[3] == pytest.approx(windows["on"][2])
+    for window in (windows["on"], *windows["off"]):
+        assert window[2] >= off_0 * sigma - 1e-6 or window[3] <= -off_0 * sigma + 1e-6
+    with pytest.raises(ValueError, match="also with the off region next to"):
+        cand.compute_null_test(shift_n_sigma=2 * (on_n + off_0))
+
+
+# "auto": the side with the larger unmasked on region, here above (the footprint has a hole below the stream)
+def test_compute_null_test_auto_side(candidate_endpoints, candidate_catalog, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0,
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    nside = 256
+    ra, dec = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    phi1, phi2 = radec_to_phi12(ra, dec, cand.stream_frame)
+    sigma = 0.3
+    hole = (phi1 < 0.0) & (phi2 < -cand.off_n_sigma[0] * sigma)  # half of the regions below the stream
+    cand.prepare(candidate_catalog, footprint_mask=hole, nest=False)
+    cand.define_regions(phi2_centre=0.0, sigma=sigma).compute_null_test()
+    assert cand.null_test["direction"] == "above"
+    below = cand.compute_null_test(direction="below").null_test
+    assert below["areas"]["on"] < cand.compute_null_test(direction="above").null_test["areas"]["on"]
+
+
+# best_dm of the listed candidates: the distance modulus of the largest SNR (the regions at best_dm_by_eye), written
+# to the file; a candidate with best_dm skipped unless replace_force; only the ids given
+def test_update_candidate_best_dm(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks,
+                                  tmp_path, monkeypatch):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, candidate_stream["distance_modulus"] - 0.2, path=path)  # by eye, a bit off
+    add_candidate(*candidate_endpoints, candidate_stream["distance_modulus"], path=path)
+    distance_moduli = np.round(np.arange(16.4, 17.61, 0.2), 2)
+    kwargs = {"distance_moduli": distance_moduli, "path": path,
+              "prepare_kwargs": {"bin_size_deg": BIN, **no_object_masks}, "mask_streams": False}
+    candidates = update_candidate_best_dm(candidate_stream_catalog, [1], **kwargs)
+    assert candidates.loc[0, "best_dm"] == pytest.approx(candidate_stream["distance_modulus"])
+    assert np.isnan(candidates.loc[1, "best_dm"])  # not asked
+    pd.testing.assert_frame_equal(load_candidates(path), candidates)  # written
+
+    def no_scan(self, distance_moduli=None):
+        raise AssertionError("SNR computed again")
+
+    monkeypatch.setattr(CandidateInvestigation, "snr_against_distance_modulus", no_scan)
+    update_candidate_best_dm(candidate_stream_catalog, [1], **kwargs)  # already done: skipped
+    with pytest.raises(AssertionError, match="computed again"):
+        update_candidate_best_dm(candidate_stream_catalog, [1], replace_force=True, **kwargs)
+    with pytest.raises(ValueError, match="ids"):
+        update_candidate_best_dm(candidate_stream_catalog, [3], **kwargs)
 
 
 # compute_isochrone: the track of the object's age, Z or [Fe/H] and distance modulus, in its match filter; the

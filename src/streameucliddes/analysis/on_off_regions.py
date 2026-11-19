@@ -63,7 +63,9 @@ if TYPE_CHECKING:
     from numpy.typing import ArrayLike, NDArray
 
 # Bands along a track: half-width of the on band and distances of the off bands, in widths of the stream (user
-# choices, no reference)
+# choices: 1.4 maximizes the SNR of a Gaussian stream on a flat background; the off bands start well past its wings).
+# Shipp et al. 2018 (Sect. 3.3, Table A.1) differ: on +-2w for their Hess diagrams, +-w for their significance, off
+# bands of the same 4w width centred at +-4w (2w to 6w), kept as reference only (user choice 2026-11-19)
 DEFAULT_ON_N_SIGMA = 1.4
 DEFAULT_OFF_N_SIGMA = (3.5, 6)
 # Other objects masked around a signal (catalogs.overlapped_objects.OBJECT_TYPES)

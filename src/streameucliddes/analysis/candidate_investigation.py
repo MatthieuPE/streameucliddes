@@ -118,10 +118,13 @@ from streameucliddes.analysis.stream_frame_search import (
 )
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, isochrone_from_feh
 from streameucliddes.catalogs.stream_candidates import (
+    BEST_DM_COLUMN,
     DEFAULT_CANDIDATES_PATH,
+    candidate_best_dm,
     candidate_endpoints,
     get_candidate,
     load_candidates,
+    write_candidates,
 )
 from streameucliddes.catalogs.survey_footprint import footprint_mask_from_stars, in_healpix_mask, unmasked_area_deg2
 from streameucliddes.stream_frames import (
@@ -167,18 +170,18 @@ WINDOW_FIELDS = ("padding_phi1_deg", "padding_phi2_deg", "min_phi2_half_width_de
 # Results that depend on the frame: cleared by prepare and set_endpoints (not sky_map nor isochrone_track)
 FRAME_RESULTS = ("search", "footprint_and_objects_mask", "excluded_healpix_mask", "stars_not_excluded", "zoom_map",
                  "maps", "phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
-                 "on_hess", "off_hess", "diff_hess", "photometric_errors")
+                 "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test")
 # Results computed from the distance modulus (the stars in the match filter, from fit_width on)
 DISTANCE_MODULUS_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
-                            "on_hess", "off_hess", "diff_hess", "photometric_errors", "isochrone_track")
+                            "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test", "isochrone_track")
 REGION_RESULTS = ("regions", "band_regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess",
-                  "photometric_errors")
+                  "photometric_errors", "null_test")
 # The streams that can be masked, those masked and their mask: they depend on the footprint, not on the frame (kept
 # by set_endpoints)
 STREAM_MASK_RESULTS = ("stream_mask_tracks", "masked_streams", "overlapping_streams", "stream_healpix_mask")
 # Results computed from the stars outside the excluded mask (the maps are not: they see every prepared star)
 EXCLUDED_MASK_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
-                         "on_hess", "off_hess", "diff_hess", "photometric_errors")
+                         "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test")
 # Inputs of the stream mask: a change applies it again at once (_apply_stream_mask), no new prepare needed
 STREAM_MASK_INPUTS = ("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg",
                       "unmasked_streams", "candidate_id", "candidates_path")
@@ -767,6 +770,9 @@ class CandidateInvestigation:
         (``compute_photometric_errors``).
     on_hess, off_hess, diff_hess : dict
         ``hess_diagram`` and ``difference_hess`` results.
+    null_test : dict
+        ``compute_null_test`` result: the regions moved off the stream, their
+        Hess diagrams and SNR.
     isochrone_track : dict
         ``isochrone_cmd_track`` result.
     """
@@ -823,6 +829,7 @@ class CandidateInvestigation:
     on_hess: dict | None = None
     off_hess: dict | None = None
     diff_hess: dict | None = None
+    null_test: dict | None = None
     photometric_errors: dict | None = None
     isochrone_track: dict | None = None
 
@@ -881,8 +888,9 @@ class CandidateInvestigation:
     ) -> CandidateInvestigation:
         """Investigation of a candidate of the list (``catalogs.stream_candidates``), from its id.
 
-        Its endpoints and its ``best_dm`` (as ``distance_modulus``) come from
-        the list, its figures go to ``CANDIDATE_FIGURES_DIR / "<id>"``
+        Its endpoints and its distance modulus (``candidate_best_dm``:
+        ``best_dm``, the one of its largest SNR, else ``best_dm_by_eye``) come
+        from the list, its figures go to ``CANDIDATE_FIGURES_DIR / "<id>"``
         (``figure_folder``); it is left out of the stream mask
         (``candidate_id``), the other candidates of ``path`` masked
         (``candidates_path``); the other inputs are those of the class. For a candidate
@@ -912,7 +920,7 @@ class CandidateInvestigation:
         """
         candidate = get_candidate(candidate_id, path)
         endpoint_1, endpoint_2 = candidate_endpoints(candidate)
-        inputs.setdefault("distance_modulus", float(candidate["best_dm"]))
+        inputs.setdefault("distance_modulus", candidate_best_dm(candidate))
         inputs.setdefault("figure_folder", CANDIDATE_FIGURES_DIR / str(int(candidate["id"])))
         inputs.setdefault("candidate_id", int(candidate["id"]))
         inputs.setdefault("candidates_path", path)
@@ -1475,16 +1483,13 @@ class CandidateInvestigation:
         regions = stream_regions(phi1_range, phi2_centre, sigma, on_n_sigma=self.on_n_sigma,
                                  off_n_sigma=self.off_n_sigma, on_phi2_offset_deg=on_phi2_offset_deg,
                                  off_phi2_offsets_deg=off_phi2_offsets_deg)
-        windows = region_windows(regions)
-        phi2_min = min(window[2] for window in (windows["on"], *windows["off"]))
-        phi2_max = max(window[3] for window in (windows["on"], *windows["off"]))
-        if phi2_min < self.window[2] or phi2_max > self.window[3] or phi1_range[0] < self.window[0] \
-                or phi1_range[1] > self.window[1]:
-            raise ValueError(f"The regions (phi1 {phi1_range}, phi2 {phi2_min:.2f} to {phi2_max:.2f} deg) leave the "
-                             f"window {tuple(round(value, 2) for value in self.window)}: make it larger.")
+        outside = self._regions_outside_window(regions)
+        if outside:
+            raise ValueError(f"The regions ({outside}) leave the window "
+                             f"{tuple(round(value, 2) for value in self.window)}: make it larger.")
         selected = self.stars_in_match_filter()
         stars = self.search.stars
-        self._clear_results(("on_hess", "off_hess", "diff_hess"))
+        self._clear_results(("on_hess", "off_hess", "diff_hess", "null_test"))
         self.regions = regions
         self._band_regions()
         self.phi1_profile = on_off_phi1_profile(
@@ -1529,6 +1534,123 @@ class CandidateInvestigation:
             color_bins=color_bins, mag_bins=mag_bins,
         )
         return self
+
+    def compute_null_test(
+        self,
+        shift_n_sigma: float | None = None,
+        direction: str = "auto",
+        *,
+        color_bins: Any = None,
+        mag_bins: Any = None,
+        color_index: int = 0,
+    ) -> CandidateInvestigation:
+        """Null test: the regions moved off the stream, their Hess diagrams and SNR, in ``null_test``.
+
+        The on region of ``regions`` and the off region on the same side are
+        shifted in phi2 by ``shift_n_sigma`` sigma away from the stream, the
+        other off region kept: the stream is in none of the three, so the on -
+        off Hess diagram should show no isochrone and the SNR be about 0.
+        Above (to larger phi2) or below; with ``"auto"``, the side whose
+        regions stay in the window, the one with the larger unmasked on region
+        when both do. When no side fits (a wide stream, a window bounded by the
+        survey edge), the off region on the shifted side is put right next to
+        the shifted on region instead of keeping their gap ("compact"
+        geometry, logged): the stream is still in none of the regions. The
+        Hess diagrams as ``compute_hess`` (every prepared star), the SNR of the
+        stars in the match filter at ``distance_modulus`` as ``summary``
+        (``selection_snr``). ``regions`` and the other results are not changed.
+
+        Parameters
+        ----------
+        shift_n_sigma : float, optional
+            Shift, in units of the sigma of ``regions``. Default:
+            ``on_n_sigma + off_n_sigma[0]``: the inner edge of the shifted on
+            region at that of the off regions, where the stream is taken as
+            absent.
+        direction : {"auto", "above", "below"}, optional
+            Side of the shift.
+        color_bins, mag_bins, color_index :
+            See ``compute_hess``.
+
+        Returns
+        -------
+        self : CandidateInvestigation
+            ``null_test``: ``{"direction", "shift_deg", "geometry"
+            ("standard" or "compact"), "regions", "band_regions", "areas",
+            "on_hess", "off_hess", "diff_hess", "n_on", "n_off", "n_excess",
+            "n_excess_error", "snr"}``.
+
+        Raises
+        ------
+        ValueError
+            ``define_regions`` not done; ``direction`` unknown; or the shifted
+            regions leave the window on the side(s) asked, in both geometries
+            (make it larger: ``min_phi2_half_width_deg``).
+        """
+        self._band_regions()  # define_regions done
+        if direction not in ("auto", "above", "below"):
+            raise ValueError(f"direction must be 'auto', 'above' or 'below', not {direction!r}.")
+        regions = self.regions
+        shift_n_sigma = self.on_n_sigma + self.off_n_sigma[0] if shift_n_sigma is None else float(shift_n_sigma)
+        shift = shift_n_sigma * regions["sigma"]
+        on_offset, (below_offset, above_offset) = regions["on_phi2_offset_deg"], regions["off_phi2_offsets_deg"]
+        # compact: the inner edge of the shifted off region at the outer edge of the shifted on region (a hair beyond,
+        # not to overlap by rounding)
+        next_to_on = shift + (regions["on_n_sigma"] - regions["off_n_sigma"][0]) * regions["sigma"] + 1e-9
+        off_offsets = {
+            "standard": {"above": (below_offset, above_offset + shift), "below": (below_offset - shift, above_offset)},
+            "compact": {"above": (below_offset, on_offset + next_to_on), "below": (on_offset - next_to_on, above_offset)},
+        }
+        sides = ("above", "below") if direction == "auto" else (direction,)
+        outside = {}
+        for geometry in ("standard", "compact"):
+            shifted = {side: stream_regions(regions["phi1_range"], regions["phi2_centre"], regions["sigma"],
+                                            on_n_sigma=regions["on_n_sigma"], off_n_sigma=regions["off_n_sigma"],
+                                            on_phi2_offset_deg=on_offset + (shift if side == "above" else -shift),
+                                            off_phi2_offsets_deg=off_offsets[geometry][side])
+                       for side in sides}
+            outside[geometry] = {side: self._regions_outside_window(shifted[side]) for side in sides}
+            fitting = [side for side in sides if not outside[geometry][side]]
+            if fitting:
+                break
+        else:
+            raise ValueError(f"The regions shifted by {shift:.2f} deg leave the window "
+                             f"{tuple(round(value, 2) for value in self.window)}, also with the off region next to "
+                             "the on region (" + "; ".join(f"{side}: {extent}" for side, extent in
+                                                           outside["compact"].items())
+                             + "): make it larger (min_phi2_half_width_deg).")
+        if geometry == "compact":
+            LOGGER.info("%s: null test with the off region next to the shifted on region (the regions shifted by "
+                        "%.2f deg with their gap leave the window)", self.name, shift)
+        sides = fitting
+        band_regions = {side: stream_band_regions(self.search.stars, shifted[side], self.stream_frame,
+                                                  self.excluded_healpix_mask) for side in sides}
+        areas = {side: region_areas(band_regions[side]) for side in sides}
+        side = max(sides, key=lambda name: areas[name]["on"])
+        on_hess, off_hess, diff_hess = region_on_off_hess(
+            self.search.stars, match_filter_cmd_columns(self.search.match_filter)[color_index], band_regions[side],
+            color_bins=color_bins, mag_bins=mag_bins,
+        )
+        snr = selection_snr(band_regions[side], self.stars_in_match_filter())
+        self.null_test = {
+            "direction": side, "shift_deg": float(shift), "geometry": geometry, "regions": shifted[side],
+            "band_regions": band_regions[side],
+            "areas": areas[side], "on_hess": on_hess, "off_hess": off_hess, "diff_hess": diff_hess,
+            "n_on": snr["n_on"], "n_off": snr["n_off"], "n_excess": snr["n_signal"],
+            "n_excess_error": snr["n_signal_error"], "snr": snr["snr"],
+        }
+        return self
+
+    def _regions_outside_window(self, regions: Mapping[str, Any]) -> str:
+        """Where regions leave the window: their phi1 range and phi2 extent, empty when inside."""
+        windows = region_windows(regions)
+        phi2_min = min(window[2] for window in (windows["on"], *windows["off"]))
+        phi2_max = max(window[3] for window in (windows["on"], *windows["off"]))
+        phi1_range = regions["phi1_range"]
+        if phi2_min < self.window[2] or phi2_max > self.window[3] or phi1_range[0] < self.window[0] \
+                or phi1_range[1] > self.window[1]:
+            return f"phi1 {phi1_range}, phi2 {phi2_min:.2f} to {phi2_max:.2f} deg"
+        return ""
 
     def compute_photometric_errors(
         self,
@@ -1773,3 +1895,92 @@ class CandidateInvestigation:
             summary.update({"n_on": snr["n_on"], "n_off": snr["n_off"], "n_excess": snr["n_signal"],
                             "n_excess_error": snr["n_signal_error"], "snr": snr["snr"]})
         return summary
+
+
+# ===================================================
+# Best distance modulus of the listed candidates
+# ===================================================
+
+
+def update_candidate_best_dm(
+    catalog: pd.DataFrame,
+    candidate_ids: Sequence[int] | None = None,
+    *,
+    distance_moduli: Sequence[float] | None = None,
+    path: str | Path = DEFAULT_CANDIDATES_PATH,
+    replace_force: bool = False,
+    footprint_mask: NDArray | None = None,
+    nest: bool = False,
+    **inputs: Any,
+) -> pd.DataFrame:
+    """Fill the ``best_dm`` column of the list: the distance modulus of the largest SNR of each candidate.
+
+    For each candidate without ``best_dm`` (each one with ``replace_force``):
+    ``CandidateInvestigation.from_candidate_id`` at its ``best_dm_by_eye``,
+    ``prepare`` with ``catalog``, ``fit_width`` and ``define_regions`` there
+    (as the candidate notebook), then ``snr_against_distance_modulus`` over
+    ``distance_moduli``: ``best_dm`` is the distance modulus of the largest
+    SNR. A candidate whose width fit or regions fail is left as it was, with a
+    warning. The file is written after each candidate: a long run stopped
+    and run again skips those done.
+
+    Parameters
+    ----------
+    catalog : pandas.DataFrame
+        Stars of a box containing the windows of the candidates. Not copied.
+    candidate_ids : sequence of int, optional
+        Default: every candidate of the list.
+    distance_moduli : sequence of float, optional
+        Grid of the SNR. Default: ``distance_moduli`` of ``inputs``, else
+        the grid of ``prepare_search``.
+    path : str or pathlib.Path, optional
+        CSV file of the list.
+    replace_force : bool, optional
+        Compute again the ``best_dm`` already in the file.
+    footprint_mask : numpy.ndarray of bool, optional
+        HEALPix footprint (True outside), see ``prepare``. Default: from the
+        stars of ``catalog`` (``footprint_mask_from_stars``), computed once.
+    nest : bool, optional
+        Ordering of a given ``footprint_mask``.
+    **inputs
+        Other inputs of ``CandidateInvestigation`` (``match_filter``,
+        ``isochrone_model``, ``prepare_kwargs``...), the same for every
+        candidate.
+
+    Returns
+    -------
+    candidates : pandas.DataFrame
+        The list, as written.
+    """
+    candidates = load_candidates(path)
+    ids = candidates["id"].tolist() if candidate_ids is None else [int(candidate_id) for candidate_id in candidate_ids]
+    if footprint_mask is None:
+        footprint_mask = footprint_mask_from_stars(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(),
+                                                   DEFAULT_FOOTPRINT_NSIDE)
+        nest = False
+    for index, candidate_id in enumerate(ids, start=1):
+        row = candidates.index[candidates["id"] == candidate_id]
+        if row.empty:
+            raise ValueError(f"No candidate with id {candidate_id} in {path}; the ids are {candidates['id'].tolist()}.")
+        best_dm, by_eye = candidates.loc[row[0], [BEST_DM_COLUMN, "best_dm_by_eye"]]
+        if not pd.isna(best_dm) and not replace_force:
+            LOGGER.info("candidate %d (%d/%d): best_dm already %.2f, skipped (replace_force=True to compute it "
+                        "again)", candidate_id, index, len(ids), best_dm)
+            continue
+        LOGGER.info("candidate %d (%d/%d): SNR against the distance modulus, regions at best_dm_by_eye %.2f",
+                    candidate_id, index, len(ids), by_eye)
+        cand = CandidateInvestigation.from_candidate_id(candidate_id, path=path, distance_modulus=float(by_eye),
+                                                        **inputs)
+        cand.prepare(catalog, footprint_mask=footprint_mask, nest=nest)
+        try:
+            cand.fit_width().define_regions()
+        except (RuntimeError, ValueError) as error:
+            LOGGER.warning("candidate %d: no best_dm, the width fit or the regions failed: %s", candidate_id, error)
+            continue
+        snr = cand.snr_against_distance_modulus(distance_moduli)
+        peak = snr.loc[snr["snr"].idxmax()]
+        candidates.loc[row[0], BEST_DM_COLUMN] = float(peak["distance_modulus"])
+        candidates = write_candidates(candidates, path)
+        LOGGER.info("candidate %d: best_dm %.2f (SNR %.1f; by eye %.2f)", candidate_id, peak["distance_modulus"],
+                    peak["snr"], by_eye)
+    return candidates

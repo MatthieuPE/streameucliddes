@@ -2,8 +2,12 @@
 
 One row per candidate: an integer ``id``, the (ra, dec) of two points along
 the stream (``endpoint_1_ra``, ``endpoint_1_dec``, ``endpoint_2_ra``,
-``endpoint_2_dec``, deg) and the distance modulus where it shows best
-(``best_dm``): the inputs of ``analysis.candidate_investigation.CandidateInvestigation``.
+``endpoint_2_dec``, deg) and the distance modulus where it shows best by eye
+on the maps (``best_dm_by_eye``): the inputs of
+``analysis.candidate_investigation.CandidateInvestigation``. ``best_dm``, the
+distance modulus of its largest SNR, is computed by
+``analysis.candidate_investigation.update_candidate_best_dm`` (empty until
+then); ``candidate_best_dm`` gives it, else the one by eye.
 The file is in ``data/candidates/`` (local, gitignored with the rest of
 ``data/``). Columns added by hand are kept when a candidate is added.
 
@@ -28,7 +32,9 @@ if TYPE_CHECKING:
 # Next to the catalogs (see euclid_catalog.DATA_DIR): the data/ folder of the repository, gitignored.
 CANDIDATES_DIR = Path(__file__).resolve().parents[3] / "data" / "candidates"
 DEFAULT_CANDIDATES_PATH = CANDIDATES_DIR / "candidates_info.csv"
-CANDIDATE_COLUMNS = ("id", "endpoint_1_ra", "endpoint_1_dec", "endpoint_2_ra", "endpoint_2_dec", "best_dm")
+CANDIDATE_COLUMNS = ("id", "endpoint_1_ra", "endpoint_1_dec", "endpoint_2_ra", "endpoint_2_dec", "best_dm_by_eye")
+# Distance modulus of the largest SNR of a candidate, computed (update_candidate_best_dm): NaN until then
+BEST_DM_COLUMN = "best_dm"
 # Optional column, added by hand: Gaussian sigma in phi2 of a candidate (deg), the width of its mask when another
 # candidate is investigated (analysis.build_masks.candidate_mask_tracks)
 CANDIDATE_WIDTH_COLUMN = "sigma_deg"
@@ -45,31 +51,39 @@ def load_candidates(path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.DataFrame:
     Returns
     -------
     candidates : pandas.DataFrame
-        ``CANDIDATE_COLUMNS`` first, then any column added by hand; ``id``
-        as integers. Empty, with ``CANDIDATE_COLUMNS``, when there is no
-        candidate.
+        ``CANDIDATE_COLUMNS``, ``BEST_DM_COLUMN`` (NaN where not computed,
+        all NaN when the file has no such column), then any column added by
+        hand; ``id`` as integers. Empty, with these columns, when there is
+        no candidate.
 
     Raises
     ------
     ValueError
-        A column of ``CANDIDATE_COLUMNS`` missing from the file.
+        A column of ``CANDIDATE_COLUMNS`` missing from the file (a file of
+        the former format, ``best_dm`` by eye and no ``best_dm_by_eye``: a
+        message to rename it).
     """
     path = Path(path)
     if not path.exists() or path.stat().st_size == 0:
         return _empty_candidates()
     candidates = pd.read_csv(path)
     missing = [column for column in CANDIDATE_COLUMNS if column not in candidates.columns]
+    if missing == ["best_dm_by_eye"] and BEST_DM_COLUMN in candidates.columns:
+        raise ValueError(f"{path} has a column {BEST_DM_COLUMN!r} and no 'best_dm_by_eye': the distance modulus by "
+                         f"eye is now 'best_dm_by_eye' (rename the column), {BEST_DM_COLUMN!r} the one of the "
+                         "largest SNR (update_candidate_best_dm).")
     if missing:
         raise ValueError(f"{path} has no column {missing}; the columns are {CANDIDATE_COLUMNS}.")
     candidates["id"] = candidates["id"].astype(int)
-    extra = [column for column in candidates.columns if column not in CANDIDATE_COLUMNS]
-    return candidates[[*CANDIDATE_COLUMNS, *extra]]
+    if BEST_DM_COLUMN not in candidates.columns:
+        candidates[BEST_DM_COLUMN] = np.nan
+    return _ordered(candidates)
 
 
 def add_candidate(
     endpoint_1: Sequence[float],
     endpoint_2: Sequence[float],
-    best_dm: float,
+    best_dm_by_eye: float,
     *,
     candidate_id: int | None = None,
     path: str | Path = DEFAULT_CANDIDATES_PATH,
@@ -81,8 +95,9 @@ def add_candidate(
     endpoint_1, endpoint_2 : sequence of float
         (ra, dec) of two points along the stream (deg), e.g.
         ``EndpointPicker.endpoints``. ra is written in [0, 360).
-    best_dm : float
-        Distance modulus where the candidate shows best.
+    best_dm_by_eye : float
+        Distance modulus where the candidate shows best, by eye on the maps.
+        ``BEST_DM_COLUMN`` is left empty (``update_candidate_best_dm``).
     candidate_id : int, optional
         Default: one more than the largest ``id`` of the file (1 for the
         first candidate).
@@ -111,13 +126,38 @@ def add_candidate(
         raise ValueError(f"A candidate with id {candidate_id} is already in {path}.")
     row = pd.DataFrame([{
         "id": int(candidate_id), "endpoint_1_ra": ra_1, "endpoint_1_dec": dec_1, "endpoint_2_ra": ra_2,
-        "endpoint_2_dec": dec_2, "best_dm": float(best_dm),
+        "endpoint_2_dec": dec_2, "best_dm_by_eye": float(best_dm_by_eye), BEST_DM_COLUMN: np.nan,
     }])
     candidates = row if candidates.empty else pd.concat([candidates, row], ignore_index=True)
-    candidates = candidates[[*CANDIDATE_COLUMNS, *(c for c in candidates.columns if c not in CANDIDATE_COLUMNS)]]
+    return write_candidates(candidates, path)
+
+
+def write_candidates(candidates: pd.DataFrame, path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.DataFrame:
+    """Write the list of candidates (``CANDIDATE_COLUMNS``, ``BEST_DM_COLUMN``, then the others) and return it.
+
+    Parameters
+    ----------
+    candidates : pandas.DataFrame
+        E.g. ``load_candidates`` with values changed.
+    path : str or pathlib.Path, optional
+        CSV file (its folder created if needed).
+
+    Returns
+    -------
+    candidates : pandas.DataFrame
+        As written.
+    """
+    candidates = _ordered(candidates)
+    path = Path(path)
     path.parent.mkdir(parents=True, exist_ok=True)
     candidates.to_csv(path, index=False)
     return candidates
+
+
+def candidate_best_dm(candidate: pd.Series) -> float:
+    """Distance modulus of a candidate (a row of ``load_candidates``): ``BEST_DM_COLUMN`` when computed, else by eye."""
+    best_dm = candidate.get(BEST_DM_COLUMN, np.nan)
+    return float(candidate["best_dm_by_eye"] if pd.isna(best_dm) else best_dm)
 
 
 def get_candidate(candidate_id: int, path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.Series:
@@ -133,7 +173,7 @@ def get_candidate(candidate_id: int, path: str | Path = DEFAULT_CANDIDATES_PATH)
     Returns
     -------
     candidate : pandas.Series
-        Its columns: ``CANDIDATE_COLUMNS`` and any added by hand.
+        Its columns: ``CANDIDATE_COLUMNS``, ``BEST_DM_COLUMN`` and any added by hand.
 
     Raises
     ------
@@ -161,6 +201,13 @@ def _radec(endpoint: Sequence[float]) -> tuple[float, float]:
     return ra % 360.0, dec
 
 
+def _ordered(candidates: pd.DataFrame) -> pd.DataFrame:
+    """The columns in the order of the file: ``CANDIDATE_COLUMNS``, ``BEST_DM_COLUMN``, then the others."""
+    first = [*CANDIDATE_COLUMNS, BEST_DM_COLUMN]
+    return candidates[[*first, *(column for column in candidates.columns if column not in first)]]
+
+
 def _empty_candidates() -> pd.DataFrame:
     """No candidate, with the columns of the file."""
-    return pd.DataFrame({column: pd.Series(dtype=int if column == "id" else float) for column in CANDIDATE_COLUMNS})
+    return pd.DataFrame({column: pd.Series(dtype=int if column == "id" else float)
+                         for column in (*CANDIDATE_COLUMNS, BEST_DM_COLUMN)})
