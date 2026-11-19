@@ -264,7 +264,7 @@ def _single_dm_title(result: Mapping[str, Any]) -> str:
     """Track, distance modulus (or offset along the track) and isochrone of a map."""
     parts = [result["track_name"]] if result.get("track_name") else []
     if "distance_modulus" in result:
-        parts.append(f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.1f} kpc)")
+        parts.append(f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.2f} kpc)")
     else:
         parts.append(f"dm along the track {result['dm_offset']:+.1f}")
     isochrone = result["isochrone"]
