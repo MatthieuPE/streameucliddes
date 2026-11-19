@@ -22,7 +22,8 @@ so that no star is counted there and the background is fitted on the rest.
 
 The streams are masked only when one candidate is investigated
 (``analysis.candidate_investigation.CandidateInvestigation``, ``mask_streams``):
-bands along the galstreams tracks (``galstreams_mask_tracks``) and the other
+bands along the galstreams tracks (``galstreams_mask_tracks``; never those of
+``NEVER_MASKED_STREAMS``) and the other
 listed candidates (``candidate_mask_tracks``) (``streams_healpix_mask``), so
 that its width, SNR and Hess diagrams do not take their stars. The searches
 do not mask them.
@@ -110,6 +111,11 @@ STREAM_MASK_MAX_DM_DIFFERENCE = 1.5
 # they are a smooth background that the off regions subtract, while their mask would cover the candidate (e.g.
 # Cetus-Palca-T21, 4.4 deg in galstreams; user choice, 2026-11-19)
 STREAM_MASK_MAX_WIDTH_DEG = 1.0
+# Known streams never masked (track or stream names of galstreams): not seen in Euclid DR1, while their mask
+# removed most of an off region of candidate 6 (Palca-S18: 69 % of the lower one, on a catalogue-depleted patch,
+# so the background was 11 % low over the whole Hess diagram; Murrumbidgee-G17: 7-18 % of its regions)
+# (user choice, 2026-11-19)
+NEVER_MASKED_STREAMS = ("Palca-S18", "Murrumbidgee-G17")
 # Discs along a track per half-width: the band of their union is at least 99 % of the half-width between two
 # centres (sqrt(1 - 1/(2 * 4)**2))
 STREAM_MASK_DISCS_PER_HALF_WIDTH = 4
@@ -508,14 +514,15 @@ def galstreams_mask_tracks(
     *,
     nest: bool,
     mws: galstreams.MWStreams | None = None,
+    never_masked: Sequence[str] = NEVER_MASKED_STREAMS,
 ) -> list[dict]:
     """The known streams crossing a footprint, as tracks to mask (``streams_healpix_mask``).
 
     The tracks of ``catalogs.galstreams_catalog.select_galstreams_in_footprint`` (its default cuts: dm >
     14, at least 1 deg in the footprint, no Ibata et al. 2024 track), one per
-    stream (``galstreams_default_tracks``), with their width
-    (``galstreams_width_phi2``, NaN when unknown) and their distance moduli
-    over the part counted in the footprint.
+    stream (``galstreams_default_tracks``), but those of ``never_masked``,
+    with their width (``galstreams_width_phi2``, NaN when unknown) and their
+    distance moduli over the part counted in the footprint.
 
     Parameters
     ----------
@@ -526,6 +533,8 @@ def galstreams_mask_tracks(
         HEALPix ordering of ``footprint_mask``.
     mws : galstreams.MWStreams, optional
         Default: ``load_galstreams()``.
+    never_masked : sequence of str, optional
+        Track or stream names left out. Default: ``NEVER_MASKED_STREAMS``.
 
     Returns
     -------
@@ -537,8 +546,11 @@ def galstreams_mask_tracks(
     """
     mws = load_galstreams() if mws is None else mws
     selection = galstreams_default_tracks(select_galstreams_in_footprint(mws, footprint_mask, nest=nest), mws)
+    never_masked = set(never_masked)
     tracks = []
     for row in selection.itertuples(index=False):
+        if row.track_name in never_masked or row.stream_name in never_masked:
+            continue
         track = mws[row.track_name]
         tracks.append({"name": row.track_name, "stream_name": row.stream_name, "ra": track.track.ra.deg,
                        "dec": track.track.dec.deg, "stream_frame": track.stream_frame,

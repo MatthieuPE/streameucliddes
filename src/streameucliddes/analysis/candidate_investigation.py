@@ -681,7 +681,8 @@ class CandidateInvestigation:
         Exclude the other streams (``excluded_healpix_mask``): the galstreams
         tracks crossing the footprint of the catalog
         (``galstreams_mask_tracks``: one per stream, no Ibata et al. 2024
-        track) and the listed candidates but this one
+        track, none of ``build_masks.NEVER_MASKED_STREAMS``) and the listed
+        candidates but this one
         (``candidate_mask_tracks``) not wider than
         ``stream_mask_max_width_deg`` (``build_masks.streams_not_wider_than``:
         a broad stream is a smooth background over the regions, subtracted

@@ -14,6 +14,7 @@ from streameucliddes.analysis.build_masks import (
     CANDIDATE_MASK_HALF_WIDTH_DEG,
     DEFAULT_RADIUS_SCALE,
     DEFAULT_STREAM_MASK_HALF_WIDTH_DEG,
+    NEVER_MASKED_STREAMS,
     STREAM_MASK_MAX_DM_DIFFERENCE,
     STREAM_MASK_MAX_WIDTH_DEG,
     STREAM_MASK_N_SIGMA,
@@ -459,6 +460,24 @@ def test_galstreams_mask_tracks(gc_frame):
     dm_20_kpc = 5 * np.log10(20.0e3) - 5
     assert tracks[0]["dm_min"] == pytest.approx(dm_20_kpc, abs=1e-3) and tracks[0]["dm_max"] == pytest.approx(
         dm_20_kpc, abs=1e-3)
+
+
+# Streams never masked: left out by track name or stream name; by default those of NEVER_MASKED_STREAMS
+def test_galstreams_mask_tracks_never_masked(gc_frame):
+    class FakeMWStreams(dict):
+        pass
+
+    never_masked_name = NEVER_MASKED_STREAMS[0]
+    names = ["Kept-T00", "ByTrack-T00", "ByStream-T00", never_masked_name]
+    mws = FakeMWStreams({name: _galstreams_track(gc_frame, (-10.0, 10.0), 20.0, name) for name in names})
+    mws.summary = pd.DataFrame({"On": True, "width_phi2": 0.3}, index=names)
+    ra, dec = hp.pix2ang(64, np.arange(hp.nside2npix(64)), lonlat=True)
+    phi1, phi2 = radec_to_phi12(ra, dec, gc_frame)
+    footprint = ~((np.abs(phi1) < 15) & (np.abs(phi2) < 5))
+    default = [track["name"] for track in galstreams_mask_tracks(footprint, nest=False, mws=mws)]
+    assert never_masked_name not in default and "ByTrack-T00" in default
+    chosen = galstreams_mask_tracks(footprint, nest=False, mws=mws, never_masked=("ByTrack-T00", "ByStream"))
+    assert [track["name"] for track in chosen] == ["Kept-T00", never_masked_name]
 
 
 # The candidates as tracks to mask: the great circle between the endpoints, but the excluded ids; the width from
