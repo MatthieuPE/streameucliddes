@@ -57,8 +57,8 @@ Steps of ``CandidateInvestigation``, in order:
 8. ``compute_isochrone``: isochrone track over the Hess diagrams.
 
 Systematics, after ``define_regions`` (not in ``run_all_steps``):
-``compute_photometric_errors``, the median photometric errors of the stars of
-the on region per bin of magnitude
+``compute_photometric_errors``, the median photometric error of each band of
+the stars of the on region per bin of its magnitude
 (``analysis.cmd_match_filter.photometric_errors_by_magnitude``).
 
 ``run_all_steps`` does them all. The figures take the object
@@ -557,7 +557,8 @@ def hess_error_table(
     diagrams (one row per colour and magnitude bin) and the errors (one row
     per magnitude bin of the errors, which can differ from those of the
     diagrams), each from the first row; the shorter block is NaN below its
-    end. Plot ``error_mag_centre`` against an error column. The densities are
+    end. Plot ``<statistic>_error_<band>`` against ``error_mag_centre_<band>``
+    (the error of a band against its own magnitude). The densities are
     per deg²: times an area, the stars expected there (the areas of the
     regions, on every row, give back their stars).
 
@@ -582,11 +583,10 @@ def hess_error_table(
         masks, the same on every row, ``area_on_deg2`` and ``area_off_deg2``
         (the two off regions together: when their areas differ,
         ``off_density * area_off_deg2`` is not exactly their number of
-        stars). With ``photometric_errors``, beside:
-        ``error_mag_centre`` (mag, its bin centres) and the errors of the
-        stars of each bin (its ``statistic``, e.g. median),
-        ``<statistic>_error_<reference band>``, ``<statistic>_error_<colour
-        band>`` and ``<statistic>_error_color`` (mag).
+        stars). With ``photometric_errors``, beside, for each band (e.g. VIS,
+        then H): ``error_mag_centre_<band>`` (the bin centres in that band's
+        magnitude, mag) and ``<statistic>_error_<band>`` (its error, e.g.
+        median, mag).
 
     Raises
     ------
@@ -606,12 +606,11 @@ def hess_error_table(
     })
     if photometric_errors is None:
         return table
-    statistic = photometric_errors["statistic"]
+    statistic, centres = photometric_errors["statistic"], np.asarray(photometric_errors["mag_centres"], dtype=float)
     errors = pd.DataFrame({
-        "error_mag_centre": np.asarray(photometric_errors["mag_centres"], dtype=float),
-        f"{statistic}_error_{photometric_errors['mag_label']}": photometric_errors["reference_error"],
-        f"{statistic}_error_{photometric_errors['color_band_label']}": photometric_errors["color_band_error"],
-        f"{statistic}_error_color": photometric_errors["color_error"],
+        name: values for band in photometric_errors["bands"]
+        for name, values in ((f"error_mag_centre_{band}", centres),
+                             (f"{statistic}_error_{band}", photometric_errors["error"][band]))
     })
     return pd.concat([table, errors], axis=1)  # side by side from the first row; NaN below the shorter
 
@@ -1538,14 +1537,14 @@ class CandidateInvestigation:
         in_match_filter: bool = False,
         statistic: str = DEFAULT_ERROR_STATISTIC,
     ) -> CandidateInvestigation:
-        """Median (or mean) photometric errors of the stars of the on region per bin of magnitude, in
-        ``photometric_errors``.
+        """Median (or mean) photometric error of each band of the stars of the on region per bin of its
+        magnitude, in ``photometric_errors``.
 
         ``photometric_errors_by_magnitude`` of the prepared stars of the on
         region outside the excluded mask (``stream_band_regions``, as
         ``compute_hess``): the median (``statistic``) error of the reference
-        band (VIS), of the colour band and of the colour, per bin of the
-        reference magnitude of
+        band (VIS) per bin of VIS and of the colour band (e.g. H) per bin of
+        H, the bands of
         the match filter (colour ``color_index``). The ``in_match_filter`` and
         ``color_index`` used are added to the result.
 

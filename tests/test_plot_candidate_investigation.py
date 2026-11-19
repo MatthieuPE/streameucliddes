@@ -389,15 +389,15 @@ def test_endpoint_picker_on_a_new_map(sky_ax):
     plt.close(fig)
 
 
-# Three lines (reference band, colour band, colour) over the bins with stars; the default title counts the stars
+# One line per band (each against its own magnitude) over the bins with stars; the title counts the stars of the
+# reference band
 def test_plot_photometric_errors():
-    errors = {"mag_centres": np.array([20.5, 21.5, 22.5]), "n_stars": np.array([3, 2, 0]),
-              "reference_error": np.array([0.02, 0.06, np.nan]), "color_band_error": np.array([0.02, 0.1, np.nan]),
-              "color_error": np.array([0.03, 0.12, np.nan]), "mag_label": "VIS", "color_label": "VIS - H",
-              "color_band_label": "H", "statistic": "median"}
+    errors = {"mag_centres": np.array([20.5, 21.5, 22.5]), "bands": ("VIS", "H"), "statistic": "median",
+              "error": {"VIS": np.array([0.02, 0.06, np.nan]), "H": np.array([0.02, 0.1, 0.3])},
+              "n_stars": {"VIS": np.array([3, 2, 0]), "H": np.array([2, 2, 1])}}
     fig, ax = plot_photometric_errors(errors)
     assert ax.get_ylabel() == "median error [mag]"
-    assert [line.get_label() for line in ax.lines] == ["VIS", "H", "VIS - H"]
-    assert all(line.get_xdata().size == 2 for line in ax.lines)
-    assert ax.get_title() == "5 stars" and "VIS" in ax.get_xlabel()
+    assert [line.get_label() for line in ax.lines] == ["VIS (against VIS)", "H (against H)"]
+    assert [line.get_xdata().size for line in ax.lines] == [2, 3]
+    assert ax.get_title() == "5 stars"
     plt.close(fig)

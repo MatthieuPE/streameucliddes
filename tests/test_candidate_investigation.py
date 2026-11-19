@@ -888,13 +888,17 @@ def test_compute_photometric_errors(candidate_endpoints, candidate_stream_catalo
     mag_cols = match_filter_cmd_columns(cand.search.match_filter)[0]
     on = np.asarray(cand.band_regions["on"], dtype=bool)
     expected = photometric_errors_by_magnitude(cand.search.stars, mag_cols, mask=on, mag_bins=np.arange(18.0, 26.5, 0.5))
-    np.testing.assert_array_equal(cand.photometric_errors["n_stars"], expected["n_stars"])
-    np.testing.assert_array_equal(cand.photometric_errors["reference_error"], expected["reference_error"])
-    assert cand.photometric_errors["in_match_filter"] is False and cand.photometric_errors["n_stars"].sum() == on.sum()
+    for band in expected["bands"]:
+        np.testing.assert_array_equal(cand.photometric_errors["n_stars"][band], expected["n_stars"][band])
+        np.testing.assert_array_equal(cand.photometric_errors["error"][band], expected["error"][band])
+    reference = expected["bands"][0]  # VIS 18 to 26: every star of the on region in the bins
+    assert cand.photometric_errors["in_match_filter"] is False
+    assert cand.photometric_errors["n_stars"][reference].sum() == on.sum()
     cand.compute_photometric_errors(in_match_filter=True, statistic="mean")
     assert cand.photometric_errors["statistic"] == "mean"
     n_in_filter = (on & cand.stars_in_match_filter()).sum()
-    assert cand.photometric_errors["in_match_filter"] and cand.photometric_errors["n_stars"].sum() == n_in_filter
+    assert cand.photometric_errors["in_match_filter"]
+    assert cand.photometric_errors["n_stars"][reference].sum() == n_in_filter
     assert 0 < n_in_filter < on.sum()
     cand.on_n_sigma = 1.0
     assert cand.photometric_errors is None
@@ -902,7 +906,8 @@ def test_compute_photometric_errors(candidate_endpoints, candidate_stream_catalo
 
 # One row per bin, colour by colour then magnitude by magnitude: the on - off, on and off densities, the areas on
 # every row (density times area: the stars of the region); the
-# errors beside, one row per magnitude bin of their own (other bins than the diagrams), for the median and the mean;
+# errors of each band against its own magnitude beside, one row per magnitude bin of their own (other bins than the
+# diagrams), for the median and the mean;
 # NaN below the shorter block
 def test_hess_error_table(stars_with_errors):
     stars = stars_with_errors
@@ -924,14 +929,13 @@ def test_hess_error_table(stars_with_errors):
     for statistic in ("median", "mean"):
         errors = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=[20.0, 22.0, 23.0], statistic=statistic)
         table = hess_error_table(on, off, errors)
-        assert list(table.columns)[7:] == ["error_mag_centre", f"{statistic}_error_VIS", f"{statistic}_error_H",
-                                           f"{statistic}_error_color"]
+        assert list(table.columns)[7:] == ["error_mag_centre_VIS", f"{statistic}_error_VIS",
+                                           "error_mag_centre_H", f"{statistic}_error_H"]
         assert len(table) == 6 and table["on_density"].notna().all()
-        np.testing.assert_allclose(table["error_mag_centre"][:2], [21.0, 22.5])
-        assert table["error_mag_centre"][2:].isna().all()
-        np.testing.assert_allclose(table[f"{statistic}_error_VIS"][:2], errors["reference_error"])
-        np.testing.assert_allclose(table[f"{statistic}_error_H"][:2], errors["color_band_error"])
-        np.testing.assert_allclose(table[f"{statistic}_error_color"][:2], errors["color_error"])
+        for band in ("VIS", "H"):
+            np.testing.assert_allclose(table[f"error_mag_centre_{band}"][:2], [21.0, 22.5])
+            assert table[f"error_mag_centre_{band}"][2:].isna().all()
+            np.testing.assert_allclose(table[f"{statistic}_error_{band}"][:2], errors["error"][band])
     many_bins = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=np.arange(20.0, 23.01, 0.25))  # 12 bins
     table = hess_error_table(on, off, many_bins)
-    assert len(table) == 12 and table["mag_centre"][6:].isna().all() and table["error_mag_centre"].notna().all()
+    assert len(table) == 12 and table["mag_centre"][6:].isna().all() and table["error_mag_centre_H"].notna().all()

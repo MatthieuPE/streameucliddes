@@ -92,8 +92,8 @@ ON_REGION_COLOR = CATEGORICAL_COLORS[1]
 OFF_REGION_COLOR = CATEGORICAL_COLORS[2]
 PROFILE_COLOR = CATEGORICAL_COLORS[3]
 ERRORS_FIGSIZE = (6.5, 4.5)
-# plot_photometric_errors: the reference band, the colour band, the colour
-ERROR_COLORS = (CATEGORICAL_COLORS[0], CATEGORICAL_COLORS[1], "k")
+# plot_photometric_errors: the reference band, the colour band
+ERROR_COLORS = (CATEGORICAL_COLORS[0], CATEGORICAL_COLORS[1])
 # The streams masked (cand.stream_healpix_mask) on the maps: hatched, outlined, the map still seen below
 STREAM_MASK_COLOR = "0.15"
 STREAM_MASK_HATCH = "////"
@@ -360,11 +360,11 @@ def plot_photometric_errors(
     ax: Axes | None = None,
     title: str | None = None,
 ) -> tuple[Figure, Axes]:
-    """Photometric errors per bin of magnitude (median or mean): reference band, colour band and colour.
+    """Photometric error of each band against its own magnitude (median or mean), on the same axes.
 
     Draws ``analysis.cmd_match_filter.photometric_errors_by_magnitude`` (e.g.
-    ``cand.photometric_errors``), one point per bin with
-    stars, joined; the error of the colour is the two in quadrature.
+    ``cand.photometric_errors``): one line per band (VIS against VIS, H
+    against H), one point per bin with stars.
 
     Parameters
     ----------
@@ -373,7 +373,7 @@ def plot_photometric_errors(
     ax : matplotlib.axes.Axes, optional
         Default: a new figure.
     title : str, optional
-        Default: the number of stars.
+        Default: the number of stars (of the reference band).
 
     Returns
     -------
@@ -385,16 +385,15 @@ def plot_photometric_errors(
     else:
         fig = ax.figure
     centres = np.asarray(errors["mag_centres"], dtype=float)
-    labels = (errors["mag_label"], errors["color_band_label"], errors["color_label"])
-    keys = ("reference_error", "color_band_error", "color_error")
-    for key, label, color in zip(keys, labels, ERROR_COLORS):
-        values = np.asarray(errors[key], dtype=float)
+    for band, color in zip(errors["bands"], ERROR_COLORS):
+        values = np.asarray(errors["error"][band], dtype=float)
         shown = np.isfinite(values)
-        ax.plot(centres[shown], values[shown], marker="o", ms=3, color=color, label=label)
-    ax.set_xlabel(f"{errors['mag_label']} [mag]")
+        ax.plot(centres[shown], values[shown], marker="o", ms=3, color=color, label=f"{band} (against {band})")
+    ax.set_xlabel("magnitude [mag]")
     ax.set_ylabel(f"{errors['statistic']} error [mag]")
     ax.legend(loc="upper left", fontsize="small")
-    ax.set_title(f"{int(np.sum(errors['n_stars'])):,} stars" if title is None else title)
+    n_stars = int(np.sum(errors["n_stars"][errors["bands"][0]]))
+    ax.set_title(f"{n_stars:,} stars" if title is None else title)
     return fig, ax
 
 

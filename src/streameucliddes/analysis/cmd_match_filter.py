@@ -38,7 +38,7 @@ mag_cols[1]`` and magnitude ``mag_cols[0]`` (``hess_diagram``), per deg²
 for a region of known area, and the on - off difference of two regions
 (``difference_hess``, Shipp et al. 2018, Sect. 5); the isochrone track
 in the bands of a match filter (``isochrone_cmd_track``); and the mean
-photometric errors (median or mean) of a set of stars per bin of magnitude
+photometric errors (median or mean) of a set of stars, each band per bin of its own magnitude
 (``photometric_errors_by_magnitude``, error columns ``<namespace>_<band>_err``:
 ``error_column``).
 """
@@ -623,14 +623,14 @@ def photometric_errors_by_magnitude(
     mag_bins: ArrayLike | None = None,
     statistic: str = DEFAULT_ERROR_STATISTIC,
 ) -> dict[str, Any]:
-    """Median (or mean) photometric errors of stars per bin of magnitude, e.g. those of the on region of a candidate.
+    """Median (or mean) photometric error of each band per bin of its own magnitude, e.g. in the on region.
 
     The stars (``mask``) with finite magnitudes in both columns, as
-    ``hess_diagram``, binned in ``mag_cols[0]`` (the magnitude of the CMDs);
-    in each bin, the ``statistic`` of the error of each band
-    (``error_column``) and of the error of the colour ``mag_cols[0] -
-    mag_cols[1]``, the two in quadrature (independent errors, star by star),
-    over the stars with a finite error.
+    ``hess_diagram``. For each band (``mag_cols``: the reference band, VIS,
+    and the colour band, e.g. H), its error (``error_column``) per bin of
+    its own magnitude: the VIS error against VIS, the H error against H; in
+    each bin, the ``statistic`` over the stars with a finite error. The same
+    bin edges for both bands.
 
     Parameters
     ----------
@@ -642,7 +642,7 @@ def photometric_errors_by_magnitude(
     mask : array_like of bool, optional
         Stars used. Default: all.
     mag_bins : array_like, optional
-        Bin edges of ``mag_cols[0]`` (mag). Default: those of
+        Bin edges of the magnitudes (mag), for both bands. Default: those of
         ``default_hess_bins()``, as the Hess diagrams.
     statistic : {"median", "mean"}, optional
         Statistic of the errors in each bin (``ERROR_STATISTICS``).
@@ -650,46 +650,42 @@ def photometric_errors_by_magnitude(
     Returns
     -------
     errors : dict
-        ``{"mag_edges", "mag_centres", "n_stars", "reference_error",
-        "color_band_error", "color_error", "statistic", "error_columns",
-        "mag_label", "color_label", "color_band_label"}``: arrays of one
-        value per bin, ``n_stars`` the stars in each bin, the errors in mag
-        (``statistic`` of each bin; NaN in a bin without star);
-        ``error_columns`` the two error columns; labels from the band names
-        (``mag_label`` that of the reference band).
+        ``{"mag_edges", "mag_centres", "statistic", "bands", "error",
+        "n_stars", "magnitude_columns", "error_columns"}``: ``bands`` the
+        band names (reference first, e.g. ``("VIS", "H")``); ``error`` and
+        ``n_stars``, by band name, one value per bin of that band's
+        magnitude: the error (mag; NaN in a bin without star) and the stars
+        with a finite error; ``magnitude_columns`` and ``error_columns`` by
+        band name.
 
     Raises
     ------
     KeyError
         An error column missing.
     ValueError
-        ``statistic`` not in ``ERROR_STATISTICS``.
+        ``statistic`` not in ``ERROR_STATISTICS``, or two bands of the same name.
     """
     if statistic not in ERROR_STATISTICS:
         raise ValueError(f"statistic must be one of {ERROR_STATISTICS}, not {statistic!r}.")
-    mag_column, color_column = mag_cols
+    bands = tuple(_band_name(column) for column in mag_cols)
+    if len(set(bands)) != len(bands):
+        raise ValueError(f"Two bands of the same name: {bands}.")
     mag_bins = default_hess_bins()[1] if mag_bins is None else np.asarray(mag_bins, dtype=float)
-    error_columns = (error_column(mag_column), error_column(color_column))
-    magnitude = pd.to_numeric(stars[mag_column], errors="coerce").to_numpy(dtype=float)
-    other = pd.to_numeric(stars[color_column], errors="coerce").to_numpy(dtype=float)
-    reference_error, color_band_error = (pd.to_numeric(stars[column], errors="coerce").to_numpy(dtype=float)
-                                         for column in error_columns)
-    keep = np.isfinite(magnitude) & np.isfinite(other)
+    magnitudes = [pd.to_numeric(stars[column], errors="coerce").to_numpy(dtype=float) for column in mag_cols]
+    keep = np.logical_and.reduce([np.isfinite(magnitude) for magnitude in magnitudes])
     if mask is not None:
         keep &= np.asarray(mask, dtype=bool)
-    n_stars, _ = np.histogram(magnitude[keep], bins=mag_bins)
-
-    def per_bin(values: NDArray[np.float64]) -> NDArray[np.float64]:
-        finite = keep & np.isfinite(values)
-        return binned_statistic(magnitude[finite], values[finite], statistic=statistic, bins=mag_bins).statistic
-
+    error, n_stars, error_columns = {}, {}, {}
+    for band, column, magnitude in zip(bands, mag_cols, magnitudes):
+        error_columns[band] = error_column(column)
+        values = pd.to_numeric(stars[error_columns[band]], errors="coerce").to_numpy(dtype=float)
+        used = keep & np.isfinite(values)
+        error[band] = binned_statistic(magnitude[used], values[used], statistic=statistic, bins=mag_bins).statistic
+        n_stars[band] = np.histogram(magnitude[used], bins=mag_bins)[0]
     return {
-        "mag_edges": mag_bins, "mag_centres": (mag_bins[:-1] + mag_bins[1:]) / 2, "n_stars": n_stars,
-        "reference_error": per_bin(reference_error), "color_band_error": per_bin(color_band_error),
-        "color_error": per_bin(np.hypot(reference_error, color_band_error)), "statistic": statistic,
-        "error_columns": error_columns,
-        "mag_label": _band_name(mag_column), "color_label": f"{_band_name(mag_column)} - {_band_name(color_column)}",
-        "color_band_label": _band_name(color_column),
+        "mag_edges": mag_bins, "mag_centres": (mag_bins[:-1] + mag_bins[1:]) / 2, "statistic": statistic,
+        "bands": bands, "error": error, "n_stars": n_stars,
+        "magnitude_columns": dict(zip(bands, mag_cols)), "error_columns": error_columns,
     }
 
 
