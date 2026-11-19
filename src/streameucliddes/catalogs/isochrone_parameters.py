@@ -8,11 +8,12 @@ read with ``unit_conversions.get_isochrone_model`` (by default
 ``analysis.cmd_match_filter.build_match_filter_polygon``. Z is on the scale of
 that model: each model has its own relation between [Fe/H] and Z
 (``unit_conversions.convert_FeH_to_z``, ``convert_z_to_FeH``, ugali's
-relations). The Z of this module, ``DEFAULT_METALLICITIES`` and the
-population table, are on the scale of ``Z_SCALE_ISOCHRONE_MODEL``
-(Marigo2017), a fixed fact, not a default: for another model they are
-converted with the same [Fe/H] (``unit_conversions.convert_metallicity``),
-the same population.
+relations). The default isochrone is given by its [Fe/H]
+(``DEFAULT_FEHS``), converted to the Z of each model: the same population
+in every model. The Z of the population table are on the scale of
+``Z_SCALE_ISOCHRONE_MODEL`` (Marigo2017), a fixed fact, not a default: for
+another model they are converted with the same [Fe/H]
+(``unit_conversions.convert_metallicity``), the same population.
 
 ugali takes the isochrone of its grid nearest to the age and Z asked: check
 that the grid of the model covers them, for the survey of each band
@@ -35,8 +36,8 @@ is on the Dotter et al. 2008 scale: it is converted to [Fe/H] with ugali's
 ``Dotter2008.z2feh``, then to the Marigo et al. 2017 Z.
 
 The default isochrone is that of the DES search of Shipp et al. 2018 (and of
-streamobs): 13 Gyr, Z = 0.0002 ([Fe/H] = -1.9). On the Marigo et al. 2017
-scale, Z = 0.0002 is [Fe/H] = -1.89: the same population.
+streamobs): 13 Gyr, [Fe/H] = -1.9 (their Z = 0.0002; on the Marigo et al.
+2017 scale, Z = 0.0002 is [Fe/H] = -1.89).
 """
 
 from __future__ import annotations
@@ -48,7 +49,12 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from streameucliddes.unit_conversions import convert_FeH_to_z, convert_metallicity
+from streameucliddes.unit_conversions import (
+    convert_FeH_to_z,
+    convert_metallicity,
+    convert_z_to_FeH,
+    get_isochrone_model,
+)
 
 if TYPE_CHECKING:
     from collections.abc import Iterable, Mapping, Sequence
@@ -62,11 +68,11 @@ VALUE_COLUMNS = [  # floats, NaN when unknown
 ]
 TEXT_COLUMNS = ["age_reference", "feh_reference", "z_reference", "notes"]  # strings, empty when missing
 
-# Shipp et al. 2018, Sect. 3: matched filter of the DES search, 13 Gyr and Z = 0.0002 ([Fe/H] = -1.9)
+# Shipp et al. 2018, Sect. 3: matched filter of the DES search, 13 Gyr and [Fe/H] = -1.9 (their Z = 0.0002)
 DEFAULT_AGES_GYR = (13.0,)
-DEFAULT_METALLICITIES = (0.0002,)  # on the scale of Z_SCALE_ISOCHRONE_MODEL
-# Name of the ugali isochrone model on whose scale the Z of this module are (DEFAULT_METALLICITIES, the "z" column of
-# the population table): Marigo et al. 2017. A fixed fact of these numbers, not a default to change
+DEFAULT_FEHS = (-1.9,)  # [Fe/H], converted to the Z of each isochrone model (convert_FeH_to_z)
+# Name of the ugali isochrone model on whose scale the Z of the population table are (its "z" column): Marigo et al.
+# 2017. A fixed fact of these numbers, not a default to change
 Z_SCALE_ISOCHRONE_MODEL = "Marigo2017"
 
 
@@ -95,17 +101,22 @@ def with_isochrone_model(isochrones: Iterable[Mapping[str, Any]], isochrone_mode
 # ===================================================
 
 
-# Significant digits of Z in the name of an isochrone (isochrone_label): a Z converted to another isochrone model has
-# many digits (e.g. 0.000191651 for Dotter2016), which would make a new output folder at each small change
-METALLICITY_LABEL_DIGITS = 3
+# Decimals of [Fe/H] in the name of an isochrone (isochrone_label)
+FEH_LABEL_DECIMALS = 2
 
 
 def isochrone_label(isochrone: Mapping[str, Any]) -> str:
-    """Name of an isochrone in the output folders of the searches: ``"age13_z0.000192"``.
+    """Name of an isochrone in the output folders of the searches: ``"Dotter2016_age13_feh-1.89"``.
 
-    The age with ``:g``, Z rounded to ``METALLICITY_LABEL_DIGITS`` significant digits.
+    The isochrone model (``get_isochrone_model``), the age with ``:g`` and
+    [Fe/H] (from Z on the scale of the model, ``convert_z_to_FeH``) with
+    ``FEH_LABEL_DECIMALS`` decimals: the same population in two models has
+    the same [Fe/H] but not the same Z (e.g. 0.0002 for Marigo2017, 0.000192
+    for Dotter2016), and Z has many digits once converted.
     """
-    return f"age{float(isochrone['age']):g}_z{float(isochrone['metallicity']):.{METALLICITY_LABEL_DIGITS}g}"
+    isochrone_model = get_isochrone_model(isochrone)
+    feh = float(convert_z_to_FeH(float(isochrone["metallicity"]), isochrone_model))
+    return f"{isochrone_model}_age{float(isochrone['age']):g}_feh{feh:.{FEH_LABEL_DECIMALS}f}"
 
 
 def get_isochrone(isochrone: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
@@ -144,9 +155,8 @@ def default_isochrone_grid(
         Ages (Gyr). Default: ``DEFAULT_AGES_GYR``, 13 Gyr.
     metallicities : sequence of float, optional
         Metallicities, as mass fractions Z on the scale of the isochrone
-        model. Default: ``DEFAULT_METALLICITIES`` (Z = 0.0002 on the scale of
-        ``Z_SCALE_ISOCHRONE_MODEL``), converted to the model for the same
-        [Fe/H] (``unit_conversions.convert_metallicity``).
+        model. Default: those of ``DEFAULT_FEHS`` ([Fe/H] = -1.9) in the model
+        (``unit_conversions.convert_FeH_to_z``).
     isochrone_model : str, optional
         Name of the ugali isochrone model, added as ``"isochrone_model"``.
         None: none added; the isochrones then use
@@ -173,8 +183,7 @@ def default_isochrone_grid(
     """
     ages_gyr = DEFAULT_AGES_GYR if ages_gyr is None else ages_gyr
     if metallicities is None:
-        metallicities = [convert_metallicity(z, Z_SCALE_ISOCHRONE_MODEL, isochrone_model)
-                         for z in DEFAULT_METALLICITIES]
+        metallicities = [convert_FeH_to_z(feh, isochrone_model) for feh in DEFAULT_FEHS]
     return [
         _with_isochrone_model({"age": float(age), "metallicity": float(z)}, isochrone_model)
         for age, z in itertools.product(ages_gyr, metallicities)
@@ -199,8 +208,7 @@ def isochrone_from_feh(
         (``unit_conversions.convert_FeH_to_z``). None or NaN: unknown.
     metallicity : float, optional
         Z on the scale of the isochrone model, when [Fe/H] is not given. None
-        or NaN, and no [Fe/H]: ``DEFAULT_METALLICITIES[0]``, converted to the
-        model.
+        or NaN, and no [Fe/H]: that of ``DEFAULT_FEHS[0]`` in the model.
     isochrone_model : str, optional
         Name of the ugali isochrone model, e.g. ``"Dotter2016"``, added as
         ``"isochrone_model"``. None: none added; the model is
@@ -224,7 +232,7 @@ def isochrone_from_feh(
     elif known[2]:
         z = float(metallicity)
     else:
-        z = convert_metallicity(DEFAULT_METALLICITIES[0], Z_SCALE_ISOCHRONE_MODEL, isochrone_model)
+        z = convert_FeH_to_z(DEFAULT_FEHS[0], isochrone_model)
     age = float(age) if known[0] else float(DEFAULT_AGES_GYR[0])
     return _with_isochrone_model({"age": age, "metallicity": float(z)}, isochrone_model)
 

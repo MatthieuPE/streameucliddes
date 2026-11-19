@@ -230,7 +230,7 @@ def test_run_isochrone(search, tmp_path):
         search=search, distance_moduli=[17.0], isochrone=isochrone, output_dir=tmp_path, name="Mock",
     )
     assert [outputs["isochrone"] for outputs in summary["isochrones"]] == [isochrone]
-    assert (tmp_path / "Mock" / "age11_z0.0005" / "Mock_maps.npz").exists()
+    assert (tmp_path / "Mock" / isochrone_label(isochrone) / "Mock_maps.npz").exists()
 
 
 def test_run_errors(catalog, search, gc_frame, tmp_path):
@@ -314,5 +314,5 @@ def test_run_all_end_to_end(catalog, mock_mws, tmp_path):
     )
     row, = table.itertuples()
     assert (row.track_name, row.age, row.metallicity) == ("Mock-T00", 13.0, 0.0002)
-    assert row.maps_path == tmp_path / "Mock-T00" / "age13_z0.0002" / "Mock-T00_maps.npz"
+    assert row.maps_path == tmp_path / "Mock-T00" / isochrone_label({"age": 13.0, "metallicity": 0.0002}) / "Mock-T00_maps.npz"
     assert row.maps_path.exists() and row.gif_path.exists() and row.cmd_gif_path.exists()

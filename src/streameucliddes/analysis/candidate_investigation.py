@@ -526,7 +526,7 @@ class CandidateInvestigation:
     metallicity : float, optional
         Isochrone Z (on the scale of ``isochrone_model``). At most one of
         ``metallicity`` and ``feh``; neither: the Z of
-        ``DEFAULT_METALLICITIES[0]`` of ``catalogs.isochrone_parameters``.
+        ``DEFAULT_FEHS[0]`` of ``catalogs.isochrone_parameters`` in the model.
     feh : float, optional
         Isochrone [Fe/H], converted to Z on the scale of the isochrone model
         (``unit_conversions.convert_FeH_to_z``) each time the isochrone is used
@@ -720,7 +720,7 @@ class CandidateInvestigation:
         """``{"age", "metallicity"}`` (and ``"isochrone_model"``) of the match filter and of the isochrone track.
 
         Z from ``feh`` when given (on the scale of ``isochrone_model``), else
-        ``metallicity``, else ``DEFAULT_METALLICITIES[0]``
+        ``metallicity``, else that of ``DEFAULT_FEHS[0]``
         (``catalogs.isochrone_parameters.isochrone_from_feh``). Computed each
         time: changing ``age``, ``metallicity``, ``feh`` or
         ``isochrone_model`` changes it.
