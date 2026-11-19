@@ -21,6 +21,7 @@ from streameucliddes.catalogs.galstreams_catalog import (
     SELECTION_COLUMNS,
     galstreams_default_tracks,
     galstreams_dm_along_track,
+    galstreams_mask_tracks,
     galstreams_phi12_window,
     galstreams_phi2_along_track,
     galstreams_track_in_own_frame,
@@ -331,6 +332,26 @@ def test_select_galstreams_add_ibata2024(gc_frame):
     assert selection.loc["Ibata-I24", "length_in_footprint_deg"] == pytest.approx(24.0, abs=1e-6)
     assert np.isnan(selection.loc["Ibata-I24", ["dm_min", "dm_max"]].astype(float)).all()
     assert not selection.loc["Ibata-I24", "has_distance_track"]
+
+
+# The tracks to mask: those of the default selection (no Ibata et al. 2024 track), their points, frame and
+# width from the summary (NaN when unknown)
+def test_galstreams_mask_tracks(gc_frame):
+    class FakeMWStreams(dict):
+        pass
+
+    mws = FakeMWStreams(_tracks_for_selection(gc_frame))
+    mws.summary = pd.DataFrame({"On": True, "width_phi2": [0.3 if name == "Long-T00" else -1.0 for name in mws]},
+                               index=list(mws))
+    tracks = galstreams_mask_tracks(_footprint_around_gc_frame(gc_frame), nest=False, mws=mws)
+    assert [track["name"] for track in tracks] == ["Long-T00", "Mean-T00", "Far-T00"]
+    assert [track["stream_name"] for track in tracks] == ["Long", "Mean", "Far"]
+    assert tracks[0]["width_deg"] == 0.3 and np.isnan(tracks[1]["width_deg"]) and np.isnan(tracks[2]["width_deg"])
+    np.testing.assert_array_equal(tracks[0]["ra"], mws["Long-T00"].track.ra.deg)
+    np.testing.assert_array_equal(tracks[0]["dec"], mws["Long-T00"].track.dec.deg)
+    assert tracks[0]["stream_frame"] is gc_frame
+    assert (tracks[0]["dm_min"], tracks[0]["dm_max"]) == pytest.approx((_dm(20.0), _dm(30.0)), abs=1e-3)
+    assert tracks[1]["dm_min"] == tracks[1]["dm_max"] == pytest.approx(_dm(17.5), abs=1e-3)
 
 
 # No track crossing the footprint: an empty table, with its columns

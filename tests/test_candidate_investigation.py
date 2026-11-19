@@ -7,8 +7,13 @@ import pandas as pd
 import pytest
 
 from streameucliddes.injection.inject import add_vis_templfit_magnitudes
+from streameucliddes.analysis import candidate_investigation as candidate_investigation_module
 from streameucliddes.analysis import stream_frame_search as stream_frame_search_module
-from streameucliddes.analysis.build_masks import object_mask_nside
+from streameucliddes.analysis.build_masks import (
+    STREAM_MASK_N_SIGMA,
+    object_mask_nside,
+    streams_healpix_mask,
+)
 from streameucliddes.analysis.candidate_investigation import (
     DEFAULT_FOOTPRINT_NSIDE,
     CANDIDATE_FIGURES_DIR,
@@ -22,7 +27,7 @@ from streameucliddes.analysis.candidate_investigation import (
     stream_regions,
 )
 from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
-from streameucliddes.catalogs.stream_candidates import add_candidate
+from streameucliddes.catalogs.stream_candidates import CANDIDATE_MASK_HALF_WIDTH_DEG, add_candidate
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import (
@@ -31,6 +36,7 @@ from streameucliddes.catalogs.isochrone_parameters import (
 )
 from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
+    in_healpix_mask,
     star_count_nside,
     survey_footprint_healpix_mask,
     trim_footprint_edge,
@@ -322,6 +328,120 @@ def test_prepare_excluded_mask_with_objects(candidate_endpoints, candidate_catal
     assert hp.npix2nside(cand.excluded_healpix_mask.size) == nside
     expected = convert_footprint_healpix_mask(cand.footprint_mask, nside, nest=False, nest_out=False)
     np.testing.assert_array_equal(cand.excluded_healpix_mask, expected | cand.search.object_healpix_mask)
+
+
+# Stream masks: a galstreams track crossing the candidate and another listed candidate, 3 deg north, excluded over
+# their half-widths (STREAM_MASK_N_SIGMA times the width; that of the candidates without width), not the candidate
+# itself;
+# their stars not counted; kept by set_endpoints; mask_streams off and on: applied at once, the tracks not built
+# again
+def test_prepare_masks_other_streams(tmp_path, candidate_endpoints, candidate_catalog, monkeypatch):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, 17.0, path=path)  # id 1: the candidate
+    add_candidate((77.0, -37.0), (70.0, -40.0), 17.0, path=path)  # id 2
+    crossing_frame = stream_frame_from_endpoints((73.5, -48.0), (73.5, -35.0))
+    crossing = {"name": "Cross-T00", "stream_name": "Cross", "ra": np.array([73.5, 73.5]),
+                "dec": np.array([-48.0, -35.0]), "stream_frame": crossing_frame, "width_deg": 0.2, "dm_min": 17.0,
+                "dm_max": 17.0}
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", lambda *args, **kwargs: [crossing])
+    inputs = {"path": path, "prepare_kwargs": {"bin_size_deg": BIN}}
+    cand = CandidateInvestigation.from_candidate_id(1, **inputs).prepare(candidate_catalog)
+    unmasked = CandidateInvestigation.from_candidate_id(1, mask_streams=False, **inputs).prepare(candidate_catalog)
+    assert cand.summary()["masked_streams"] == ["Cross-T00", "candidate_2"]
+    assert unmasked.summary()["masked_streams"] is None and unmasked.stream_healpix_mask is None
+    nside = hp.npix2nside(cand.excluded_healpix_mask.size)
+    assert nside == object_mask_nside(BIN)
+    np.testing.assert_array_equal(cand.stream_healpix_mask, streams_healpix_mask(cand.stream_mask_tracks, nside,
+                                                                                 nest=False))
+    np.testing.assert_array_equal(cand.excluded_healpix_mask,
+                                  unmasked.excluded_healpix_mask | cand.stream_healpix_mask)
+
+    def masked(phi1, phi2, frame):
+        return in_healpix_mask(*phi12_to_radec(phi1, phi2, frame), cand.stream_healpix_mask, nest=False)
+
+    pixel = np.degrees(hp.nside2resol(nside))  # the band edge is known to a pixel
+    other_frame = stream_frame_from_endpoints((77.0, -37.0), (70.0, -40.0))
+    # across each band, away from the other one (candidate 2 at phi1 = 2 deg: ra 71, east of the crossing track)
+    for half_width, frame, phi1 in ((STREAM_MASK_N_SIGMA * 0.2, crossing_frame, 0.0),
+                                    (CANDIDATE_MASK_HALF_WIDTH_DEG, other_frame, 2.0)):
+        inside, outside = half_width - pixel, half_width + pixel
+        assert masked([phi1, phi1], [inside, -inside], frame).all()
+        assert not masked([phi1, phi1], [outside, -outside], frame).any()
+    phi1 = np.linspace(*cand._endpoints_phi1_range(), 200)
+    own = masked(phi1, np.zeros(phi1.size), cand.stream_frame)  # the candidate: only where the crossing track is
+    assert 0 < own.mean() < 0.2
+    stars = cand.search.stars
+    on_streams = in_healpix_mask(stars["ra"], stars["dec"], cand.stream_healpix_mask, nest=False)
+    assert on_streams.sum() > 100
+    np.testing.assert_array_equal(cand.stars_not_excluded, unmasked.stars_not_excluded & ~on_streams)
+
+    def not_again(*args, **kwargs):
+        raise AssertionError("the stream tracks are built again")
+
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", not_again)
+    stream_mask = cand.stream_healpix_mask
+    cand.set_endpoints((76.0, -41.0), (69.0, -44.0))
+    assert cand.stream_healpix_mask is stream_mask and cand.search is not None
+    cand.mask_streams = False
+    np.testing.assert_array_equal(cand.excluded_healpix_mask, cand.footprint_and_objects_mask)
+    assert cand.stars_not_excluded.sum() > (~on_streams).sum() - 1000 and cand.summary()["masked_streams"] is None
+    cand.mask_streams = True
+    np.testing.assert_array_equal(cand.excluded_healpix_mask, cand.footprint_and_objects_mask | stream_mask)
+    assert cand.masked_streams == ["Cross-T00", "candidate_2"]
+
+
+# Only the streams within stream_mask_max_dm_difference of distance_modulus are masked: a new distance modulus
+# masks the crossing track (dm 19) and clears the width; a cleared result names the change in the error
+def test_stream_mask_follows_distance_modulus(tmp_path, candidate_endpoints, candidate_stream_catalog,
+                                              candidate_stream, monkeypatch):
+    frame = stream_frame_from_endpoints((73.5, -48.0), (73.5, -35.0))
+    crossing = {"name": "Cross-T00", "stream_name": "Cross", "ra": np.array([73.5, 73.5]),
+                "dec": np.array([-48.0, -35.0]), "stream_frame": frame, "width_deg": 0.2, "dm_min": 19.0,
+                "dm_max": 19.0}
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", lambda *args, **kwargs: [crossing])
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0, distance_moduli=[17.0],
+                                  stream_mask_max_dm_difference=1.5, candidates_path=tmp_path / "none.csv",
+                                  prepare_kwargs={"bin_size_deg": BIN})
+    cand.prepare(candidate_stream_catalog).fit_width().define_regions()
+    assert cand.masked_streams == [] and not cand.stream_healpix_mask.any()
+    np.testing.assert_array_equal(cand.excluded_healpix_mask, cand.footprint_and_objects_mask)
+    cand.distance_modulus = 18.0
+    assert cand.masked_streams == ["Cross-T00"] and cand.width_fit is None and cand.search is not None
+    np.testing.assert_array_equal(cand.excluded_healpix_mask,
+                                  cand.footprint_and_objects_mask | cand.stream_healpix_mask)
+    stars = cand.search.stars
+    np.testing.assert_array_equal(cand.stars_not_excluded, ~in_healpix_mask(stars["ra"], stars["dec"],
+                                                                            cand.excluded_healpix_mask, nest=False))
+    with pytest.raises(ValueError, match=r"cleared because cand.distance_modulus was changed \(17.0 -> 18.0\)"):
+        cand.compute_hess()
+    with pytest.raises(ValueError, match="width_fit \\(cleared because cand.distance_modulus"):
+        cand.define_regions()
+    cand.stream_mask_max_width_deg = 0.1  # the crossing track (0.2 deg) is too wide: not masked
+    assert cand.masked_streams == []
+    cand.stream_mask_max_width_deg = 0.3
+    assert cand.masked_streams == ["Cross-T00"]
+    cand.stream_mask_max_dm_difference = 0.5
+    assert cand.masked_streams == []
+    cand.fit_width().define_regions().compute_hess()
+    assert cand.diff_hess is not None
+
+
+# A candidate given by hand that is also in the list (its own band covers its track): not masked, warned, in
+# overlapping_streams; left out by unmasked_streams: no warning
+def test_prepare_leaves_out_streams_covering_the_candidate(tmp_path, candidate_endpoints, candidate_catalog, caplog):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, 17.0, path=path)
+    inputs = {"candidates_path": path, "prepare_kwargs": {"bin_size_deg": BIN}}
+    with caplog.at_level("WARNING", logger=candidate_investigation_module.__name__):
+        cand = CandidateInvestigation("by hand", *candidate_endpoints, **inputs).prepare(candidate_catalog)
+    assert "not masked" in caplog.text and "candidate_1" in caplog.text
+    assert cand.masked_streams == [] and cand.overlapping_streams == ["candidate_1"]
+    np.testing.assert_array_equal(cand.excluded_healpix_mask, cand.footprint_and_objects_mask)
+    caplog.clear()
+    with caplog.at_level("WARNING", logger=candidate_investigation_module.__name__):
+        cand = CandidateInvestigation("by hand", *candidate_endpoints, unmasked_streams=["candidate_1"], **inputs)
+        cand.prepare(candidate_catalog)
+    assert not caplog.text and cand.summary()["masked_streams"] == [] and cand.overlapping_streams == []
 
 
 # No catalog given nor kept, or a window beyond the stars: ValueError
@@ -678,7 +798,7 @@ def test_snr_against_distance_modulus(candidate_endpoints, candidate_stream_cata
 # in the match filter outside the excluded mask, in the on region and in the off regions, and the excess
 def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
     keys = {"name", "endpoint_1", "endpoint_2", "window", "age", "metallicity", "feh", "distance_modulus",
-            "distance_kpc", "phi2_centre", "sigma", "phi1_range", "area_on_deg2", "area_off_deg2", "n_on", "n_off",
+            "distance_kpc", "masked_streams", "overlapping_streams", "phi2_centre", "sigma", "phi1_range", "area_on_deg2", "area_off_deg2", "n_on", "n_off",
             "n_excess", "n_excess_error", "snr"}
     cand = CandidateInvestigation("test", *candidate_endpoints, age=12.0, feh=-2.0,
                                   prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})

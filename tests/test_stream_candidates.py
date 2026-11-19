@@ -1,15 +1,20 @@
 """Tests of catalogs/stream_candidates.py: the CSV list of the stream candidates, in a temporary file."""
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from streameucliddes.catalogs.stream_candidates import (
     CANDIDATE_COLUMNS,
+    CANDIDATE_MASK_HALF_WIDTH_DEG,
+    CANDIDATE_WIDTH_COLUMN,
     add_candidate,
     candidate_endpoints,
+    candidate_mask_tracks,
     get_candidate,
     load_candidates,
 )
+from streameucliddes.stream_frames import radec_to_phi12
 
 pytestmark = pytest.mark.stream_candidates
 
@@ -75,3 +80,25 @@ def test_get_candidate(tmp_path):
     assert candidate_endpoints(candidate) == ((77.0, -40.5), (70.0, -44.5))
     with pytest.raises(ValueError, match=r"\[1, 2\]"):
         get_candidate(3, path)
+
+
+# The candidates as tracks to mask: the great circle between the endpoints, but the excluded ids; the width from
+# the optional column, NaN without it or empty
+def test_candidate_mask_tracks(tmp_path):
+    path = tmp_path / "candidates.csv"
+    add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
+    add_candidate((77.0, -40.0), (70.0, -43.0), 17.5, path=path)
+    candidates = load_candidates(path)
+    (track,) = candidate_mask_tracks(candidates, exclude_ids=[1])
+    assert track["name"] == track["stream_name"] == "candidate_2" and np.isnan(track["width_deg"])
+    assert track["dm_min"] == track["dm_max"] == 17.5
+    assert track["default_half_width_deg"] == CANDIDATE_MASK_HALF_WIDTH_DEG
+    assert candidate_mask_tracks(candidates, default_half_width_deg=0.5)[0]["default_half_width_deg"] == 0.5
+    np.testing.assert_allclose(track["ra"], [77.0, 70.0])
+    np.testing.assert_allclose(track["dec"], [-40.0, -43.0])
+    _, phi2 = radec_to_phi12(track["ra"], track["dec"], track["stream_frame"])
+    np.testing.assert_allclose(phi2, 0.0, atol=1e-9)
+    candidates[CANDIDATE_WIDTH_COLUMN] = [0.3, np.nan]
+    widths = [track["width_deg"] for track in candidate_mask_tracks(candidates)]
+    assert widths[0] == 0.3 and np.isnan(widths[1])
+    assert candidate_mask_tracks(load_candidates(tmp_path / "none.csv")) == []

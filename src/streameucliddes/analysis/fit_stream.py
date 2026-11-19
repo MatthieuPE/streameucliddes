@@ -8,7 +8,7 @@ profiles, the regions and the investigation stay in
 
 References
 ----------
-Shipp et al. 2018, ApJ 862, 114 (Gaussian width with a constant background).
+Shipp et al. 2018, ApJ 862, 114 (Gaussian width with a linear foreground).
 """
 
 from __future__ import annotations
@@ -26,7 +26,7 @@ if TYPE_CHECKING:
 
 DEFAULT_SIGMA_GUESS_DEG = 0.2  # initial sigma of the width fit
 DEFAULT_FIT_HALF_WIDTH_DEG = 2.0  # width fit on phi2_centre_guess +- this: the field density is not constant further
-DEFAULT_BACKGROUND_DEGREE = 0  # background of the width fit: a constant (1: linear)
+DEFAULT_BACKGROUND_DEGREE = 1  # background of the width fit: linear, as Shipp et al. 2018 (user choice 2026-11-19; 0: a constant)
 
 
 def fit_stream_width(
@@ -41,8 +41,8 @@ def fit_stream_width(
 
     ``scipy.optimize.curve_fit`` of ``amplitude * exp(-(phi2 - phi2_centre)²
     / (2 sigma²)) + P(phi2 - background_reference)`` (``stream_width_model``),
-    ``P`` a polynomial of degree ``background_degree`` (0: a constant, as
-    Shipp et al. 2018; 1: linear) and ``background_reference`` the middle of
+    ``P`` a polynomial of degree ``background_degree`` (1: linear, the
+    default, as Shipp et al. 2018; 0: a constant) and ``background_reference`` the middle of
     the fitted range, on the bins of ``phi2_fit_range`` with a finite
     density, with the Poisson errors of the profile (empty bins: the error
     of one star). Only near the track: over a wider range the field density
@@ -59,8 +59,8 @@ def fit_stream_width(
         Bins fitted (deg). Default: ``phi2_centre_guess`` ±
         ``DEFAULT_FIT_HALF_WIDTH_DEG``.
     background_degree : int, optional
-        Degree of the background polynomial: 0 constant, 1 linear (a field
-        gradient left in the fitted range), more if needed.
+        Degree of the background polynomial: 1 linear (a field gradient left
+        in the fitted range), 0 constant, more if needed.
 
     Returns
     -------
@@ -89,11 +89,11 @@ def fit_stream_width(
     -----
     Bounds: amplitude and background at the reference >= 0, centre within
     the fitted range, 0.001 deg <= sigma <= its width. With a constant
-    background, a field gradient left inside the range shifts the centre
-    towards the denser side: in tests, by ~0.03 deg for a slope of 5 % of
-    the stream amplitude per deg, within the errors at the statistics of the
-    Euclid DR1 candidate, beyond them with far more stars; a linear
-    background (``background_degree=1``) removes it.
+    background (``background_degree=0``), a field gradient left inside the
+    range shifts the centre towards the denser side: in tests, by ~0.03 deg
+    for a slope of 5 % of the stream amplitude per deg, within the errors at
+    the statistics of the Euclid DR1 candidate, beyond them with far more
+    stars; the linear background of the default removes it.
 
     References
     ----------

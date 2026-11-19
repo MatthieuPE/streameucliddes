@@ -9,6 +9,10 @@ from astropy.coordinates import SkyCoord
 
 from streameucliddes.analysis.build_masks import (
     DEFAULT_RADIUS_SCALE,
+    DEFAULT_STREAM_MASK_HALF_WIDTH_DEG,
+    STREAM_MASK_MAX_DM_DIFFERENCE,
+    STREAM_MASK_MAX_WIDTH_DEG,
+    STREAM_MASK_N_SIGMA,
     DEFAULT_RADIUS_SCALES,
     GC_PROFILE_SLOPE,
     GC_REFERENCE_RADIUS_SCALE,
@@ -17,6 +21,7 @@ from streameucliddes.analysis.build_masks import (
     ellipse_outline_radec,
     elliptical_radius_deg,
     excluded_healpix_mask,
+    fraction_on_stream_band,
     galaxies_healpix_mask,
     globular_cluster_radius_scales,
     globular_clusters_healpix_mask,
@@ -24,8 +29,13 @@ from streameucliddes.analysis.build_masks import (
     object_mask_nside,
     objects_healpix_mask,
     overlapped_objects_healpix_mask,
+    stream_mask_half_width_deg,
+    streams_healpix_mask,
+    streams_near_distance_modulus,
+    streams_not_wider_than,
 )
 from streameucliddes.catalogs import overlapped_objects
+from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12, stream_frame_from_endpoints
 
 pytestmark = pytest.mark.build_masks
 
@@ -304,3 +314,100 @@ def test_ellipse_outline_radec(centre):
     np.testing.assert_allclose(elliptical_radius_deg(ra, dec, *centre, 0.4, 30.0), 2.0, rtol=1e-9)
     separation = SkyCoord(centre[0] * u.deg, centre[1] * u.deg).separation(SkyCoord(ra * u.deg, dec * u.deg)).deg
     assert separation.max() == pytest.approx(2.0) and separation.min() == pytest.approx(2.0 * 0.6)
+
+
+# ===================================================
+# Test streams_healpix_mask
+# ===================================================
+
+STREAM_NSIDE = 512  # pixels of 0.11 deg
+
+
+def _straight_track(width_deg, n_points):
+    """Track of n_points along phi2 = 0 of a frame, from phi1 = -3 to 3 deg."""
+    frame = stream_frame_from_endpoints((40.0, -30.0), (50.0, -32.0))
+    ra, dec = phi12_to_radec(np.linspace(-3.0, 3.0, n_points), np.zeros(n_points), frame)
+    return {"name": "Straight-T00", "stream_name": "Straight", "ra": ra, "dec": dec, "stream_frame": frame,
+            "width_deg": width_deg}
+
+
+# n_sigma times the width; the default half-width when the width is unknown; the defaults of the module
+def test_stream_mask_half_width():
+    assert stream_mask_half_width_deg(0.2, n_sigma=2.0, default_half_width_deg=0.7) == pytest.approx(0.4)
+    for unknown in (np.nan, -1.0, 0.0):
+        assert stream_mask_half_width_deg(unknown, n_sigma=2.0, default_half_width_deg=0.7) == 0.7
+    assert stream_mask_half_width_deg(0.2) == pytest.approx(STREAM_MASK_N_SIGMA * 0.2)
+    assert stream_mask_half_width_deg(np.nan) == DEFAULT_STREAM_MASK_HALF_WIDTH_DEG
+
+
+# A band of half-width n_sigma * width along the track, between its points too (two points or many), ends rounded:
+# nothing beyond a half-width from the ends; no track: nothing masked
+@pytest.mark.parametrize("n_points", [2, 50])
+def test_streams_healpix_mask_band(n_points):
+    track = _straight_track(0.2, n_points)
+    mask = streams_healpix_mask([track], STREAM_NSIDE, nest=False, n_sigma=2.0, default_half_width_deg=5.0)
+    ra, dec = hp.pix2ang(STREAM_NSIDE, np.arange(hp.nside2npix(STREAM_NSIDE)), lonlat=True)
+    phi1, phi2 = radec_to_phi12(ra, dec, track["stream_frame"])
+    along = np.abs(phi1) <= 3.0
+    assert mask[along & (np.abs(phi2) <= 0.39)].all()
+    assert not mask[along & (np.abs(phi2) > 0.4)].any()
+    assert mask[(np.abs(phi1) <= 3.35) & (np.abs(phi2) <= 0.05)].all()
+    assert not mask[np.abs(phi1) > 3.4].any()
+    assert not streams_healpix_mask([], STREAM_NSIDE, nest=False).any()
+
+
+# Unknown width: the default half-width; NESTED: the RING mask reordered
+def test_streams_healpix_mask_unknown_width_and_nest():
+    track = _straight_track(np.nan, 2)
+    ring = streams_healpix_mask([track], STREAM_NSIDE, nest=False, n_sigma=2.0, default_half_width_deg=0.3)
+    np.testing.assert_array_equal(ring, streams_healpix_mask([_straight_track(0.15, 2)], STREAM_NSIDE, nest=False,
+                                                             n_sigma=2.0, default_half_width_deg=5.0))
+    nested = streams_healpix_mask([track], STREAM_NSIDE, nest=True, n_sigma=2.0, default_half_width_deg=0.3)
+    np.testing.assert_array_equal(hp.reorder(nested, n2r=True), ring)
+
+
+# Kept: tracks whose distance moduli come within max_dm_difference (bounds included), and those of unknown
+# distance; every track without a distance modulus for the candidate
+def test_streams_near_distance_modulus():
+    tracks = [{"name": "near", "dm_min": 16.0, "dm_max": 16.5}, {"name": "edge", "dm_min": 18.5, "dm_max": 18.5},
+              {"name": "far", "dm_min": 19.0, "dm_max": 20.0}, {"name": "unknown", "dm_min": np.nan, "dm_max": np.nan}]
+    names = [track["name"] for track in streams_near_distance_modulus(tracks, 17.0, max_dm_difference=1.5)]
+    assert names == ["near", "edge", "unknown"]
+    names = [track["name"] for track in streams_near_distance_modulus(tracks, 17.0, max_dm_difference=0.4)]
+    assert names == ["unknown"]
+    assert streams_near_distance_modulus(tracks, None) == tracks
+    assert len(streams_near_distance_modulus(tracks, 17.0)) == len(
+        streams_near_distance_modulus(tracks, 17.0, max_dm_difference=STREAM_MASK_MAX_DM_DIFFERENCE))
+
+
+# Kept: tracks not wider than max_width_deg (bound included) and those of unknown width
+def test_streams_not_wider_than():
+    tracks = [{"name": "narrow", "width_deg": 0.3}, {"name": "edge", "width_deg": 1.0},
+              {"name": "broad", "width_deg": 4.4}, {"name": "unknown", "width_deg": np.nan}]
+    assert [track["name"] for track in streams_not_wider_than(tracks, 1.0)] == ["narrow", "edge", "unknown"]
+    assert [track["name"] for track in streams_not_wider_than(tracks, 0.2)] == ["unknown"]
+    assert streams_not_wider_than(tracks) == streams_not_wider_than(tracks, STREAM_MASK_MAX_WIDTH_DEG)
+
+
+# Points within the half-width of the track (between its two points too) are on its band; beyond, not; no point: 0
+def test_fraction_on_stream_band():
+    track = _straight_track(0.2, 2)
+    phi1 = np.array([-2.0, 0.0, 1.0, 2.5])
+    inside = phi12_to_radec(phi1, np.full(4, 0.38), track["stream_frame"])
+    outside = phi12_to_radec(phi1, np.full(4, -0.42), track["stream_frame"])
+    kwargs = {"n_sigma": 2.0, "default_half_width_deg": 5.0}
+    assert fraction_on_stream_band(*inside, track, **kwargs) == 1.0
+    assert fraction_on_stream_band(*outside, track, **kwargs) == 0.0
+    ra, dec = (np.concatenate(values) for values in zip(inside, outside))
+    assert fraction_on_stream_band(ra, dec, track, **kwargs) == 0.5
+    assert fraction_on_stream_band([], [], track, **kwargs) == 0.0
+
+
+# A track's own default_half_width_deg replaces the argument when its width is unknown, in the mask and the fraction
+def test_track_default_half_width():
+    track = {**_straight_track(np.nan, 2), "default_half_width_deg": 0.3}
+    expected = streams_healpix_mask([_straight_track(0.15, 2)], STREAM_NSIDE, nest=False, n_sigma=2.0)
+    np.testing.assert_array_equal(streams_healpix_mask([track], STREAM_NSIDE, nest=False, n_sigma=2.0,
+                                                       default_half_width_deg=5.0), expected)
+    on_band = phi12_to_radec(np.array([0.0]), np.array([0.5]), track["stream_frame"])
+    assert fraction_on_stream_band(*on_band, track, default_half_width_deg=5.0) == 0.0

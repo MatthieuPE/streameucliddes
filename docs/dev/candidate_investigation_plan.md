@@ -402,6 +402,32 @@ Done:
     `zoom_kwargs`) set the axis limits and the bins of the percentiles
     (`bins_in_phi12_range`), so that a dense object out of view does not
     saturate the scale; `MAP_PHI1_RANGE`, `MAP_PHI2_RANGE` in find_candidates.
+  - 2026-11-19, stream masks (user choices): when one candidate is
+    investigated (not in the searches), the other streams are excluded from
+    its width, regions, SNR and Hess diagrams (`mask_streams=True`): the
+    default galstreams tracks crossing the footprint (dm > 14, >= 1 deg, no
+    Ibata 2024; `galstreams_mask_tracks`) and the other listed candidates
+    (`candidate_mask_tracks`, optional column `sigma_deg`), over 1.4 times
+    their width, when unknown 0.75 deg for the known streams and 0.3 deg for
+    the candidates (`build_masks.streams_healpix_mask`);
+    only those within 1.5 of `distance_modulus` (`streams_near_distance_modulus`)
+    and not wider than 1 deg (`streams_not_wider_than`: Cetus-Palca-T21,
+    Cetus-New-Y21, NGC1261-I21, NGC1851-I21 have galstreams widths of 2.3 to
+    4.4 deg and would mask whole candidates; a broad stream lying along a
+    candidate leaves a few per cent of its peak density in on - off, nothing
+    when it crosses it). A stream covering more than half of the track
+    between the endpoints is not masked (`overlapping_streams`: the
+    candidate itself, e.g. one of the list given by its endpoints). The
+    maps keep every star; `plot_candidate_map` hatches the mask
+    (`draw_stream_mask`). A new `distance_modulus` or mask input applies the
+    mask again at once. A step asking for a result cleared by an input
+    change names the change.
+  - 2026-11-19, width fit: linear background by default
+    (`DEFAULT_BACKGROUND_DEGREE = 1`, as Shipp et al. 2018, whose width fit
+    has a linear foreground); the phi2 profile sums the counts and unmasked
+    areas between the endpoints only. SNR kept as Shipp et al. 2018, S = (on
+    - off) / sqrt(off) (Li & Ma 1983 would add the noise of the off regions,
+    sqrt(N_on + alpha^2 N_off): not adopted).
 
 ## 4. New functions, by module
 

@@ -19,6 +19,12 @@ Both searches mask the five types by default (``mask_lmc``, ``mask_smc``,
 dropped (``catalog_preparation.prepare_match_filter_catalog`` with
 ``excluded_pixels``), and their pixels or bins added to the footprint mask,
 so that no star is counted there and the background is fitted on the rest.
+
+The streams are masked only when one candidate is investigated
+(``analysis.candidate_investigation.CandidateInvestigation``, ``mask_streams``):
+bands along the galstreams tracks and the other listed candidates
+(``streams_healpix_mask``), so that its width, SNR and Hess diagrams do not
+take their stars. The searches do not mask them.
 """
 
 from __future__ import annotations
@@ -35,8 +41,11 @@ from astropy.coordinates import SkyCoord, angular_separation, position_angle
 
 from streameucliddes.catalogs import overlapped_objects
 from streameucliddes.catalogs.survey_footprint import convert_footprint_healpix_mask
+from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12
 
 if TYPE_CHECKING:
+    from collections.abc import Sequence
+
     import pandas as pd
     from numpy.typing import ArrayLike, NDArray
 
@@ -77,6 +86,21 @@ DEFAULT_RADIUS_SCALES = types.MappingProxyType({
     "lmc": LMC_RADIUS_SCALE, "smc": SMC_RADIUS_SCALE, "dwarfs": DEFAULT_RADIUS_SCALE, "gc": None,
     "galaxies": GALAXY_RADIUS_SCALE,
 })
+# Streams (streams_healpix_mask), when one stream candidate is investigated: a band of half-width
+# STREAM_MASK_N_SIGMA times the width of the stream (its Gaussian sigma in phi2: the on region of the candidate
+# investigation), DEFAULT_STREAM_MASK_HALF_WIDTH_DEG when its width is unknown (user choices, 2026-11-19)
+STREAM_MASK_N_SIGMA = 1.4
+DEFAULT_STREAM_MASK_HALF_WIDTH_DEG = 0.75
+# Only the streams whose distance modulus comes within this of that of the candidate are masked: the match filter
+# selects few stars of the others (user choice, 2026-11-19)
+STREAM_MASK_MAX_DM_DIFFERENCE = 1.5
+# Streams wider than this (Gaussian sigma in phi2, deg) are not masked: over the regions of a candidate (a few deg)
+# they are a smooth background that the off regions subtract, while their mask would cover the candidate (e.g.
+# Cetus-Palca-T21, 4.4 deg in galstreams; user choice, 2026-11-19)
+STREAM_MASK_MAX_WIDTH_DEG = 1.0
+# Discs along a track per half-width: the band of their union is at least 99 % of the half-width between two
+# centres (sqrt(1 - 1/(2 * 4)**2))
+STREAM_MASK_DISCS_PER_HALF_WIDTH = 4
 
 
 def objects_healpix_mask(
@@ -465,6 +489,197 @@ def overlapped_objects_healpix_mask(
         if chosen[object_type]:
             mask |= masks[object_type](nside, nest=nest, radius_scale=scales[object_type])
     return mask
+
+
+def stream_mask_half_width_deg(
+    width_deg: float,
+    *,
+    n_sigma: float = STREAM_MASK_N_SIGMA,
+    default_half_width_deg: float = DEFAULT_STREAM_MASK_HALF_WIDTH_DEG,
+) -> float:
+    """Half-width of the mask of a stream (deg): ``n_sigma * width_deg``, ``default_half_width_deg`` when unknown.
+
+    Parameters
+    ----------
+    width_deg : float
+        Width of the stream in phi2 (deg), its Gaussian sigma; NaN or not
+        positive: unknown.
+    n_sigma : float, optional
+        Half-width in units of ``width_deg``.
+    default_half_width_deg : float, optional
+        Half-width when the width is unknown (deg).
+
+    Returns
+    -------
+    half_width_deg : float
+    """
+    width_deg = float(width_deg)
+    return n_sigma * width_deg if np.isfinite(width_deg) and width_deg > 0 else float(default_half_width_deg)
+
+
+def streams_near_distance_modulus(
+    tracks: Sequence[Mapping],
+    distance_modulus: float | None,
+    *,
+    max_dm_difference: float = STREAM_MASK_MAX_DM_DIFFERENCE,
+) -> list[Mapping]:
+    """The tracks whose distance modulus comes within ``max_dm_difference`` of ``distance_modulus``.
+
+    A track is kept when ``dm_min - max_dm_difference <= distance_modulus <=
+    dm_max + max_dm_difference`` (its distance moduli, e.g. over the part in
+    the footprint); a track with an unknown distance modulus (NaN) is kept.
+
+    Parameters
+    ----------
+    tracks : sequence of mapping
+        Each with ``dm_min`` and ``dm_max``, e.g. from
+        ``catalogs.galstreams_catalog.galstreams_mask_tracks`` and
+        ``catalogs.stream_candidates.candidate_mask_tracks``.
+    distance_modulus : float or None
+        Distance modulus of the candidate. None: every track kept.
+    max_dm_difference : float, optional
+        Largest difference of distance modulus.
+
+    Returns
+    -------
+    tracks : list of mapping
+        The tracks kept, in their order.
+    """
+    if distance_modulus is None:
+        return list(tracks)
+    kept = []
+    for track in tracks:
+        dm_min, dm_max = float(track["dm_min"]), float(track["dm_max"])
+        unknown = not (np.isfinite(dm_min) and np.isfinite(dm_max))
+        if unknown or dm_min - max_dm_difference <= distance_modulus <= dm_max + max_dm_difference:
+            kept.append(track)
+    return kept
+
+
+def streams_not_wider_than(
+    tracks: Sequence[Mapping], max_width_deg: float = STREAM_MASK_MAX_WIDTH_DEG
+) -> list[Mapping]:
+    """The tracks of width at most ``max_width_deg`` (deg), and those of unknown width (NaN or not positive).
+
+    Parameters
+    ----------
+    tracks : sequence of mapping
+        Each with ``width_deg`` (Gaussian sigma in phi2, deg).
+    max_width_deg : float, optional
+        Largest width kept.
+
+    Returns
+    -------
+    tracks : list of mapping
+        The tracks kept, in their order.
+    """
+    return [track for track in tracks if not float(track["width_deg"]) > max_width_deg]
+
+
+def streams_healpix_mask(
+    tracks: Sequence[Mapping],
+    nside: int,
+    *,
+    nest: bool,
+    n_sigma: float = STREAM_MASK_N_SIGMA,
+    default_half_width_deg: float = DEFAULT_STREAM_MASK_HALF_WIDTH_DEG,
+) -> NDArray[np.bool_]:
+    """HEALPix mask of bands along stream tracks, e.g. the other streams when one candidate is investigated.
+
+    Each track is masked over a band of half-width
+    ``stream_mask_half_width_deg(track["width_deg"])`` around it: the union
+    of discs of that radius (``healpy.query_disc``: pixel centres inside)
+    centred on points along the track, ``STREAM_MASK_DISCS_PER_HALF_WIDTH``
+    per half-width. Between two points the track is straight in its own frame
+    (``track["stream_frame"]``). The ends are rounded (the discs of the end
+    points reach a half-width beyond them).
+
+    Parameters
+    ----------
+    tracks : sequence of mapping
+        Each with ``ra`` and ``dec`` (deg, points along the stream, in order,
+        at least two), ``stream_frame`` (a frame in which the stream is near
+        phi2 = 0) and ``width_deg`` (its Gaussian sigma in phi2; NaN when
+        unknown); optionally ``default_half_width_deg``, its half-width when
+        its width is unknown, instead of the argument (e.g. the thinner
+        candidates). E.g. from ``catalogs.galstreams_catalog.galstreams_mask_tracks``
+        and ``catalogs.stream_candidates.candidate_mask_tracks``.
+    nside : int
+        HEALPix resolution of the mask.
+    nest : bool
+        HEALPix ordering of the mask.
+    n_sigma, default_half_width_deg : float, optional
+        See ``stream_mask_half_width_deg``.
+
+    Returns
+    -------
+    mask : numpy.ndarray of bool, shape (12 * nside**2,)
+        True on the bands; all False without tracks.
+    """
+    mask = np.zeros(hp.nside2npix(nside), dtype=bool)
+    for track in tracks:
+        half_width = stream_mask_half_width_deg(
+            track["width_deg"], n_sigma=n_sigma,
+            default_half_width_deg=track.get("default_half_width_deg", default_half_width_deg))
+        ra, dec = _points_along_track(track, half_width / STREAM_MASK_DISCS_PER_HALF_WIDTH)
+        for vector in hp.ang2vec(ra, dec, lonlat=True):
+            mask[hp.query_disc(nside, vector, np.radians(half_width), nest=nest)] = True
+    return mask
+
+
+def fraction_on_stream_band(
+    ra: ArrayLike,
+    dec: ArrayLike,
+    track: Mapping,
+    *,
+    n_sigma: float = STREAM_MASK_N_SIGMA,
+    default_half_width_deg: float = DEFAULT_STREAM_MASK_HALF_WIDTH_DEG,
+) -> float:
+    """Fraction of points within the band of a track masked by ``streams_healpix_mask``, without pixels.
+
+    A point is in the band when it is within the half-width
+    (``stream_mask_half_width_deg``) of one of the disc centres along the
+    track: the band of ``streams_healpix_mask`` before its pixels. E.g. the
+    points along a candidate, to find the streams that cover it.
+
+    Parameters
+    ----------
+    ra, dec : array_like
+        Points (deg).
+    track : mapping
+        As in ``streams_healpix_mask``.
+    n_sigma, default_half_width_deg : float, optional
+        See ``stream_mask_half_width_deg``.
+
+    Returns
+    -------
+    fraction : float
+        Between 0 and 1; 0 without points.
+    """
+    ra, dec = np.atleast_1d(np.asarray(ra, dtype=float)), np.atleast_1d(np.asarray(dec, dtype=float))
+    if ra.size == 0:
+        return 0.0
+    half_width = stream_mask_half_width_deg(
+        track["width_deg"], n_sigma=n_sigma,
+        default_half_width_deg=track.get("default_half_width_deg", default_half_width_deg))
+    centres = hp.ang2vec(*_points_along_track(track, half_width / STREAM_MASK_DISCS_PER_HALF_WIDTH), lonlat=True)
+    points = hp.ang2vec(ra, dec, lonlat=True).reshape(-1, 3)
+    largest_cosine = (points @ centres.T).max(axis=1)  # of the angle to the nearest disc centre
+    return float((largest_cosine >= np.cos(np.radians(half_width))).mean())
+
+
+def _points_along_track(track: Mapping, step_deg: float) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """(ra, dec) of points at most ``step_deg`` apart along a track, straight between its points in its frame."""
+    phi1, phi2 = radec_to_phi12(np.asarray(track["ra"], dtype=float), np.asarray(track["dec"], dtype=float),
+                                track["stream_frame"])
+    d_phi1 = (np.diff(phi1) + 180.0) % 360.0 - 180.0  # no jump at phi1 = +-180
+    d_phi2 = np.diff(phi2)
+    n_steps = np.maximum(np.ceil(np.hypot(d_phi1, d_phi2) / step_deg).astype(int), 1)
+    segment = np.repeat(np.arange(n_steps.size), n_steps)
+    fraction = (np.arange(segment.size) - np.repeat(np.cumsum(n_steps) - n_steps, n_steps)) / n_steps[segment]
+    points_phi1 = np.append(phi1[segment] + fraction * d_phi1[segment], phi1[0] + d_phi1.sum())
+    points_phi2 = np.append(phi2[segment] + fraction * d_phi2[segment], phi2[-1])
+    return phi12_to_radec(points_phi1, points_phi2, track["stream_frame"])
 
 
 def excluded_healpix_mask(

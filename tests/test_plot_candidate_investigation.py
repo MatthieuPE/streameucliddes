@@ -110,6 +110,38 @@ def test_plot_candidate_map(candidate_with_maps):
     plt.close(fig)
 
 
+
+# The streams masked: hatched with a legend entry (not without show_stream_mask, nor when none is masked)
+def test_plot_candidate_map_stream_mask(candidate_endpoints, candidate_catalog, no_object_masks, tmp_path,
+                                        monkeypatch):
+    from streameucliddes.analysis import candidate_investigation
+
+    frame = stream_frame_from_endpoints((73.5, -48.0), (73.5, -35.0))
+    crossing = {"name": "Cross-T00", "stream_name": "Cross", "ra": np.array([73.5, 73.5]),
+                "dec": np.array([-48.0, -35.0]), "stream_frame": frame, "width_deg": 0.2, "dm_min": 17.0,
+                "dm_max": 17.0}
+    monkeypatch.setattr(candidate_investigation, "galstreams_mask_tracks", lambda *args, **kwargs: [crossing])
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0,
+                                  candidates_path=tmp_path / "none.csv",
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    cand.prepare(candidate_catalog).compute_zoom_map()
+    assert cand.masked_streams == ["Cross-T00"]
+
+    def labels(ax):
+        return [text.get_text() for text in ax.get_legend().get_texts()]
+
+    fig, ax = plot_candidate_map(cand)
+    assert "masked streams" in labels(ax)
+    plt.close(fig)
+    fig, ax = plot_candidate_map(cand, show_stream_mask=False)
+    assert "masked streams" not in labels(ax)
+    plt.close(fig)
+    cand.mask_streams = False
+    fig, ax = plot_candidate_map(cand)
+    assert "masked streams" not in labels(ax)
+    plt.close(fig)
+
+
 # Each of on, off, difference; the difference with symmetric limits; an unknown diagram or no Hess: ValueError
 def test_plot_candidate_hess(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
     cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],

@@ -44,6 +44,19 @@ def empty_lvdb(tmp_path_factory):
         patch.setattr(overlapped_objects.urllib.request, "urlopen", no_download)
         yield
 
+
+@pytest.fixture(scope="session", autouse=True)
+def no_masked_streams(tmp_path_factory):
+    """No galstreams track and no listed candidate in the stream masks of CandidateInvestigation, unless a test
+    sets its own (the local candidate list and the galstreams library are never read)."""
+    from streameucliddes.analysis import candidate_investigation
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(candidate_investigation, "galstreams_mask_tracks", lambda *args, **kwargs: [])
+        patch.setattr(candidate_investigation, "DEFAULT_CANDIDATES_PATH",
+                      tmp_path_factory.mktemp("candidates") / "no_candidates.csv")
+        yield
+
 NSIDE = 64
 LON0, LAT0 = 50.0, -25.0  # patch centre (deg)
 HALF_WIDTH = (20.0, 15.0)  # patch half-size in projected x, y (deg)

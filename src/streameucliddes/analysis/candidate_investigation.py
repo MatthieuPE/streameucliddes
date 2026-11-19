@@ -18,9 +18,10 @@ Two layers, in this module:
   result put back in the object (e.g. ``cand.regions = stream_regions(...)``).
 
 The track is straight for now: phi2 = ``phi2_centre`` over ``phi1_range``.
-Its width is the sigma of a Gaussian plus a background (a constant by
-default, a polynomial of higher degree if needed), fitted to the phi2
-density profile of the stars in the match filter, near the track
+Its width is the sigma of a Gaussian plus a background (linear by default,
+a constant or a polynomial of higher degree if needed), fitted to the phi2
+density profile of the stars in the match filter between the endpoints
+(counts and unmasked areas summed over that phi1 range), near the track
 (``analysis.fit_stream.DEFAULT_FIT_HALF_WIDTH_DEG``). The on region is
 ``|phi2 - phi2_centre| <= on_n_sigma * sigma``; there are two off regions,
 one below and one above the track, from ``off_n_sigma[0] * sigma`` to
@@ -34,7 +35,12 @@ streams; its ``selection_snr`` gives the excess and SNR of ``summary``. Each
 region is also a phi1/phi2 window (``region_windows``), for the outlines and
 the phi1 profile. Areas and densities are outside the excluded mask
 (footprint OR masked objects, ``analysis.build_masks.excluded_healpix_mask``),
-so that the stars, the maps and the areas see the same masks.
+so that the stars, the maps and the areas see the same masks. With
+``mask_streams`` (default), the other streams are excluded too: bands along
+the galstreams tracks crossing the loaded box and along the other listed
+candidates (``analysis.build_masks.streams_healpix_mask``), so that the width,
+the regions, the SNR and the Hess diagrams of the candidate do not take their
+stars; the maps (``search``) still show them.
 
 Steps of ``CandidateInvestigation``, in order:
 
@@ -54,21 +60,31 @@ Steps of ``CandidateInvestigation``, in order:
 
 References
 ----------
-Shipp et al. 2018, ApJ 862, 114 (Gaussian width with a constant background;
+Shipp et al. 2018, ApJ 862, 114 (Gaussian width with a linear foreground;
 on - off Hess diagrams). On region 1.4 sigma, off regions 3.5 to 6 sigma: user
 choices, no reference.
 """
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import TYPE_CHECKING, Any
 
+import healpy as hp
 import numpy as np
 import pandas as pd
 
-from streameucliddes.analysis.build_masks import excluded_healpix_mask
+from streameucliddes.analysis.build_masks import (
+    STREAM_MASK_MAX_DM_DIFFERENCE,
+    STREAM_MASK_MAX_WIDTH_DEG,
+    excluded_healpix_mask,
+    fraction_on_stream_band,
+    streams_healpix_mask,
+    streams_near_distance_modulus,
+    streams_not_wider_than,
+)
 from streameucliddes.analysis.cmd_match_filter import (
     isochrone_cmd_track,
     match_filter_cmd_columns,
@@ -89,8 +105,15 @@ from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_scan,
     stream_frame_search_single_dm,
 )
+from streameucliddes.catalogs.galstreams_catalog import galstreams_mask_tracks
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, isochrone_from_feh
-from streameucliddes.catalogs.stream_candidates import DEFAULT_CANDIDATES_PATH, candidate_endpoints, get_candidate
+from streameucliddes.catalogs.stream_candidates import (
+    DEFAULT_CANDIDATES_PATH,
+    candidate_endpoints,
+    candidate_mask_tracks,
+    get_candidate,
+    load_candidates,
+)
 from streameucliddes.catalogs.survey_footprint import footprint_mask_from_stars, in_healpix_mask, unmasked_area_deg2
 from streameucliddes.stream_frames import (
     DEFAULT_MIN_PHI2_HALF_WIDTH_DEG,
@@ -112,6 +135,8 @@ if TYPE_CHECKING:
 
     from streameucliddes.analysis.stream_frame_search import PreparedSearch
 
+LOGGER = logging.getLogger(__name__)
+
 DEFAULT_PHI2_BIN_DEG = 0.05  # bins of the phi2 profile
 DEFAULT_PHI1_BIN_DEG = 0.5  # bins of the phi1 profile
 DEFAULT_WIDTH_MAP_BINS_DEG = (0.5, 0.2)  # (phi1, phi2) cells of the 2D map of the width fit
@@ -122,19 +147,32 @@ DEFAULT_TRACK_POINTS = 100
 CANDIDATE_FIGURES_DIR = Path(__file__).resolve().parents[3] / "figures" / "outputs" / "candidates"
 UNNAMED_FIGURE_FOLDER = "unnamed"
 CATALOG_EDGE_TOLERANCE_DEG = 0.1  # window outline beyond the outermost stars by less than this: still inside
+# A stream whose band covers more of the track between the endpoints than this is not masked (warned): it is the
+# candidate itself (e.g. one of the list investigated from its endpoints) or a stream along it
+OWN_TRACK_OVERLAP_FRACTION = 0.5
 # Steps of run_all_steps that take step_kwargs, in order (prepare, between compute_sky_map and compute_zoom_map, takes
 # footprint_mask, nest and the prepare_kwargs of the object)
 RUN_ALL_STEPS = ("compute_sky_map", "compute_zoom_map", "scan_distance_moduli", "fit_width", "define_regions",
                  "compute_hess", "compute_isochrone")
 WINDOW_FIELDS = ("padding_phi1_deg", "padding_phi2_deg", "min_phi2_half_width_deg")
 # Results that depend on the frame: cleared by prepare and set_endpoints (not sky_map nor isochrone_track)
-FRAME_RESULTS = ("search", "excluded_healpix_mask", "stars_not_excluded", "zoom_map", "maps", "phi2_profile", "width_fit", "width_map",
-                 "regions", "band_regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
+FRAME_RESULTS = ("search", "footprint_and_objects_mask", "excluded_healpix_mask", "stars_not_excluded", "zoom_map",
+                 "maps", "phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
+                 "on_hess", "off_hess", "diff_hess")
 # Results computed from the distance modulus (the stars in the match filter, from fit_width on)
 DISTANCE_MODULUS_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
                             "on_hess",
                             "off_hess", "diff_hess", "isochrone_track")
 REGION_RESULTS = ("regions", "band_regions", "areas", "phi1_profile", "on_hess", "off_hess", "diff_hess")
+# The streams that can be masked, those masked and their mask: they depend on the footprint, not on the frame (kept
+# by set_endpoints)
+STREAM_MASK_RESULTS = ("stream_mask_tracks", "masked_streams", "overlapping_streams", "stream_healpix_mask")
+# Results computed from the stars outside the excluded mask (the maps are not: they see every prepared star)
+EXCLUDED_MASK_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
+                         "on_hess", "off_hess", "diff_hess")
+# Inputs of the stream mask: a change applies it again at once (_apply_stream_mask), no new prepare needed
+STREAM_MASK_INPUTS = ("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg",
+                      "unmasked_streams", "candidate_id", "candidates_path")
 # Results cleared when an input changes after a step: those computed from it (the maps and the zoom map carry their
 # own distance modulus; prepare_search keeps the isochrone only as a default the candidate never uses)
 INPUT_RESULTS = {
@@ -144,6 +182,10 @@ INPUT_RESULTS = {
     "match_filter": ("sky_map", *FRAME_RESULTS, "isochrone_track"),
     "prepare_kwargs": FRAME_RESULTS,
     **dict.fromkeys(("on_n_sigma", "off_n_sigma"), REGION_RESULTS),
+    **dict.fromkeys(("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg"),
+                    EXCLUDED_MASK_RESULTS),
+    **dict.fromkeys(("unmasked_streams", "candidate_id", "candidates_path"),
+                    (*STREAM_MASK_RESULTS, *EXCLUDED_MASK_RESULTS)),
 }
 
 
@@ -556,6 +598,36 @@ class CandidateInvestigation:
         ``CANDIDATE_FIGURES_DIR / "unnamed"`` (``figures/outputs/candidates/unnamed``);
         from ``from_candidate_id``, ``CANDIDATE_FIGURES_DIR / "<id>"``. Not
         created here.
+    mask_streams : bool, optional
+        Exclude the other streams (``excluded_healpix_mask``): the galstreams
+        tracks crossing the footprint of the catalog
+        (``galstreams_mask_tracks``: one per stream, no Ibata et al. 2024
+        track) and the listed candidates but this one
+        (``candidate_mask_tracks``) not wider than
+        ``stream_mask_max_width_deg`` (``build_masks.streams_not_wider_than``:
+        a broad stream is a smooth background over the regions, subtracted
+        by the off regions) and whose distance modulus comes within
+        ``stream_mask_max_dm_difference`` of ``distance_modulus``
+        (``build_masks.streams_near_distance_modulus``; all of them while
+        ``distance_modulus`` is None), but those covering more than
+        ``OWN_TRACK_OVERLAP_FRACTION`` of the track between the endpoints
+        (the candidate itself, or a stream along it: ``overlapping_streams``,
+        warned), over ``STREAM_MASK_N_SIGMA`` times
+        their width, when unknown ``DEFAULT_STREAM_MASK_HALF_WIDTH_DEG`` for
+        the known streams and ``CANDIDATE_MASK_HALF_WIDTH_DEG`` for the
+        candidates (``build_masks.streams_healpix_mask``). A change of
+        ``distance_modulus`` or of an input of the stream mask applies it
+        again at once (no new ``prepare``).
+    stream_mask_max_dm_difference, stream_mask_max_width_deg : float, optional
+        See ``mask_streams``.
+    unmasked_streams : sequence of str, optional
+        Names of streams not masked (a track name, a stream name or
+        ``"candidate_<id>"``), e.g. the known stream the candidate is.
+    candidate_id : int, optional
+        Id of the candidate in the list, left out of the stream mask; set by
+        ``from_candidate_id``.
+    candidates_path : str or pathlib.Path, optional
+        CSV list of the candidates masked. Default: ``DEFAULT_CANDIDATES_PATH``.
 
     Attributes
     ----------
@@ -574,7 +646,21 @@ class CandidateInvestigation:
     search : PreparedSearch
         From ``prepare_search``.
     excluded_healpix_mask : numpy.ndarray of bool
-        Footprint OR masked objects, RING (``build_masks.excluded_healpix_mask``).
+        Footprint OR masked objects, RING (``build_masks.excluded_healpix_mask``),
+        OR ``stream_healpix_mask`` with ``mask_streams``.
+    footprint_and_objects_mask : numpy.ndarray of bool
+        Footprint OR masked objects, RING: ``excluded_healpix_mask`` without
+        the streams.
+    stream_mask_tracks : list of dict
+        The tracks of the streams that can be masked (galstreams crossing the
+        footprint and the other candidates), built once per footprint.
+    masked_streams : list of str
+        Names of those masked (near ``distance_modulus``).
+    overlapping_streams : list of str
+        Names of those not masked because they cover the track of the
+        candidate: their stars stay in its regions.
+    stream_healpix_mask : numpy.ndarray of bool
+        Their mask, RING, at the nside of ``excluded_healpix_mask``.
     stars_not_excluded : numpy.ndarray of bool
         True for the stars of ``search.stars`` outside ``excluded_healpix_mask``:
         those counted in the regions, whose areas leave the mask out
@@ -620,6 +706,12 @@ class CandidateInvestigation:
     off_n_sigma: tuple[float, float] = DEFAULT_OFF_N_SIGMA
     prepare_kwargs: dict = field(default_factory=dict)
     figure_folder: str | Path | None = None
+    mask_streams: bool = True
+    stream_mask_max_dm_difference: float = STREAM_MASK_MAX_DM_DIFFERENCE
+    stream_mask_max_width_deg: float = STREAM_MASK_MAX_WIDTH_DEG
+    unmasked_streams: Sequence[str] = ()
+    candidate_id: int | None = None
+    candidates_path: str | Path | None = None
     # Results, None until computed
     stream_frame: Any = None
     window: tuple | None = None
@@ -630,6 +722,11 @@ class CandidateInvestigation:
     search: PreparedSearch | None = None
     excluded_healpix_mask: NDArray | None = None
     stars_not_excluded: NDArray | None = None
+    footprint_and_objects_mask: NDArray | None = None
+    stream_mask_tracks: list | None = None
+    masked_streams: list | None = None
+    overlapping_streams: list | None = None
+    stream_healpix_mask: NDArray | None = None
     sky_map: dict | None = None
     zoom_map: dict | None = None
     maps: dict | None = None
@@ -657,6 +754,7 @@ class CandidateInvestigation:
         if self.figure_folder is None:
             self.figure_folder = CANDIDATE_FIGURES_DIR / UNNAMED_FIGURE_FOLDER
         self._set_frame_and_window()
+        object.__setattr__(self, "_cleared_by", {})  # result name: the input change that cleared it (_require)
         object.__setattr__(self, "_track_inputs", True)  # from now on, a changed input clears its results
 
     def __setattr__(self, name: str, value: Any) -> None:
@@ -664,12 +762,29 @@ class CandidateInvestigation:
 
         E.g. a new ``distance_modulus`` after ``define_regions`` clears the
         width, the regions and the Hess diagrams: ``summary`` and the plots
-        never mix results of different inputs. The endpoints and the window
-        change with ``set_endpoints``.
+        never mix results of different inputs (a step asking for a cleared
+        result names the change). The endpoints and the window change with
+        ``set_endpoints``. A changed ``distance_modulus`` (with
+        ``mask_streams``) or input of the stream mask (``STREAM_MASK_INPUTS``)
+        applies the stream mask again, once the stars are prepared.
         """
-        if self.__dict__.get("_track_inputs") and name in INPUT_RESULTS and _changed(self.__dict__.get(name), value):
+        cleared_by = self.__dict__.get("_cleared_by")
+        changed = bool(self.__dict__.get("_track_inputs")) and name in INPUT_RESULTS and _changed(
+            self.__dict__.get(name), value)
+        if changed:
+            old = self.__dict__.get(name)
+            change = f"cand.{name} was changed" + (
+                f" ({old} -> {value})" if all(v is None or isinstance(v, (int, float)) for v in (old, value)) else "")
+            for result in INPUT_RESULTS[name]:
+                if self.__dict__.get(result) is not None:
+                    cleared_by[result] = change
             self._clear_results(INPUT_RESULTS[name])
+        elif cleared_by is not None and value is not None:
+            cleared_by.pop(name, None)  # computed again
         object.__setattr__(self, name, value)
+        if changed and self.footprint_and_objects_mask is not None and (
+                name in STREAM_MASK_INPUTS or (name == "distance_modulus" and self.mask_streams)):
+            self._apply_stream_mask()
 
     @classmethod
     def from_candidate_id(
@@ -684,7 +799,9 @@ class CandidateInvestigation:
 
         Its endpoints and its ``best_dm`` (as ``distance_modulus``) come from
         the list, its figures go to ``CANDIDATE_FIGURES_DIR / "<id>"``
-        (``figure_folder``); the other inputs are those of the class. For a candidate
+        (``figure_folder``); it is left out of the stream mask
+        (``candidate_id``), the other candidates of ``path`` masked
+        (``candidates_path``); the other inputs are those of the class. For a candidate
         not in the list, give the endpoints to the class itself.
 
         Parameters
@@ -713,6 +830,8 @@ class CandidateInvestigation:
         endpoint_1, endpoint_2 = candidate_endpoints(candidate)
         inputs.setdefault("distance_modulus", float(candidate["best_dm"]))
         inputs.setdefault("figure_folder", CANDIDATE_FIGURES_DIR / str(int(candidate["id"])))
+        inputs.setdefault("candidate_id", int(candidate["id"]))
+        inputs.setdefault("candidates_path", path)
         return cls(f"candidate_{int(candidate['id'])}" if name is None else name, endpoint_1, endpoint_2, **inputs)
 
     @property
@@ -791,6 +910,7 @@ class CandidateInvestigation:
         )
         if catalog is not self.catalog:
             self.footprint_mask = None  # that of another catalog
+            self._clear_results(STREAM_MASK_RESULTS)
         self.catalog = catalog
         return self
 
@@ -806,8 +926,9 @@ class CandidateInvestigation:
         ``prepare_search`` with the frame, window, isochrone, match filter and
         ``distance_moduli`` of the object, and ``prepare_kwargs``; then the
         excluded mask: the footprint OR the objects masked by
-        ``prepare_search`` (``build_masks.excluded_healpix_mask``, RING). The
-        results of the later steps are cleared.
+        ``prepare_search`` (``build_masks.excluded_healpix_mask``, RING), OR
+        the other streams with ``mask_streams``. The results of the later
+        steps are cleared.
 
         The footprint is not that of ``sky_map``: the generic search adds the
         masked objects to it at its own nside; here the objects come at the
@@ -846,9 +967,11 @@ class CandidateInvestigation:
         self._check_window_in_catalog(catalog)
         if catalog is not self.catalog:
             self.footprint_mask = None  # that of another catalog
+            self._clear_results(STREAM_MASK_RESULTS)
         self.catalog = catalog
         if footprint_mask is not None:
             self.footprint_mask, self.footprint_nest = np.asarray(footprint_mask, dtype=bool), nest
+            self._clear_results(STREAM_MASK_RESULTS)
         elif self.footprint_mask is None:
             # coarser for a sparse catalog; the partly covered edge pixels left out
             self.footprint_mask = footprint_mask_from_stars(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(),
@@ -959,12 +1082,55 @@ class CandidateInvestigation:
             distance_moduli=self.distance_moduli, footprint_mask=self.footprint_mask, nest=self.footprint_nest,
             object_healpix_mask=object_healpix_mask, **self.prepare_kwargs,
         )
-        self.excluded_healpix_mask, _ = excluded_healpix_mask(
+        self.footprint_and_objects_mask, _ = excluded_healpix_mask(
             self.footprint_mask, self.search.object_healpix_mask, nest=self.footprint_nest
         )
+        self._apply_stream_mask()
+
+    def _apply_stream_mask(self) -> None:
+        """``excluded_healpix_mask``: ``footprint_and_objects_mask``, OR the streams near ``distance_modulus`` with
+        ``mask_streams``; and ``stars_not_excluded``."""
+        mask = self.footprint_and_objects_mask
+        if self.mask_streams:
+            mask = mask | self._stream_healpix_mask(hp.npix2nside(mask.size))
+        else:
+            self.masked_streams = self.overlapping_streams = None
+        self.excluded_healpix_mask = mask
         stars = self.search.stars
-        self.stars_not_excluded = ~in_healpix_mask(stars["ra"].to_numpy(), stars["dec"].to_numpy(),
-                                                   self.excluded_healpix_mask, nest=False)
+        self.stars_not_excluded = ~in_healpix_mask(stars["ra"].to_numpy(), stars["dec"].to_numpy(), mask, nest=False)
+
+    def _stream_healpix_mask(self, nside: int) -> NDArray[np.bool_]:
+        """Mask of the other streams near ``distance_modulus`` at ``nside`` (RING); the tracks kept, the mask built
+        again when the streams masked or the nside change."""
+        if self.stream_mask_tracks is None:
+            path = DEFAULT_CANDIDATES_PATH if self.candidates_path is None else self.candidates_path
+            tracks = galstreams_mask_tracks(self.footprint_mask, nest=self.footprint_nest)
+            tracks += candidate_mask_tracks(load_candidates(path),
+                                            exclude_ids=() if self.candidate_id is None else (self.candidate_id,))
+            unmasked = set(self.unmasked_streams)
+            self.stream_mask_tracks = [track for track in tracks
+                                       if track["name"] not in unmasked and track["stream_name"] not in unmasked]
+        narrow = streams_not_wider_than(self.stream_mask_tracks, self.stream_mask_max_width_deg)
+        near = streams_near_distance_modulus(narrow, self.distance_modulus,
+                                             max_dm_difference=self.stream_mask_max_dm_difference)
+        phi1 = np.linspace(*self._endpoints_phi1_range(), DEFAULT_TRACK_POINTS)
+        own_ra, own_dec = phi12_to_radec(phi1, np.zeros(phi1.size), self.stream_frame)
+        masked, overlapping = [], []
+        for track in near:
+            covers = fraction_on_stream_band(own_ra, own_dec, track) > OWN_TRACK_OVERLAP_FRACTION
+            (overlapping if covers else masked).append(track)
+        overlapping_names = [track["name"] for track in overlapping]
+        if overlapping_names and overlapping_names != self.overlapping_streams:
+            LOGGER.warning("%s: not masked, they cover more than %.0f %% of the track between the endpoints: %s (the "
+                           "candidate itself, or a stream along it, whose stars stay in the regions).", self.name,
+                           100 * OWN_TRACK_OVERLAP_FRACTION, ", ".join(overlapping_names))
+        self.overlapping_streams = overlapping_names
+        names = [track["name"] for track in masked]
+        if (self.stream_healpix_mask is None or self.stream_healpix_mask.size != hp.nside2npix(nside)
+                or names != self.masked_streams):
+            self.stream_healpix_mask = streams_healpix_mask(masked, nside, nest=False)
+            self.masked_streams = names
+        return self.stream_healpix_mask
 
     def _endpoints_phi1_range(self) -> tuple[float, float]:
         """phi1 of endpoint_1 and endpoint_2 (deg): negative, then positive."""
@@ -998,8 +1164,13 @@ class CandidateInvestigation:
         )
 
     def _require(self, field_name: str, step: str) -> None:
-        """ValueError naming the missing step when ``field_name`` is not computed."""
+        """ValueError naming the missing step when ``field_name`` is not computed, and the input change that cleared
+        it, if any."""
         if getattr(self, field_name) is None:
+            cleared_by = self.__dict__.get("_cleared_by", {}).get(field_name)
+            if cleared_by is not None:
+                raise ValueError(f"No {field_name}: cleared because {cleared_by}; call {step}() again (and the steps "
+                                 "before it that it needs).")
             raise ValueError(f"No {field_name}: call {step}() first.")
 
     def _clear_results(self, names: Sequence[str]) -> None:
@@ -1211,7 +1382,9 @@ class CandidateInvestigation:
         """
         self._require("search", "prepare")
         if (phi2_centre is None or sigma is None) and self.width_fit is None:
-            raise ValueError("No width_fit: call fit_width() first, or give phi2_centre and sigma.")
+            cleared_by = self.__dict__.get("_cleared_by", {}).get("width_fit")
+            reason = "" if cleared_by is None else f" (cleared because {cleared_by})"
+            raise ValueError(f"No width_fit{reason}: call fit_width() first, or give phi2_centre and sigma.")
         phi2_centre = self.width_fit["phi2_centre"] if phi2_centre is None else phi2_centre
         sigma = self.width_fit["sigma"] if sigma is None else sigma
         phi1_range = self._endpoints_phi1_range() if phi1_range is None else tuple(phi1_range)
@@ -1422,9 +1595,13 @@ class CandidateInvestigation:
         summary : dict
             ``{"name", "endpoint_1", "endpoint_2", "window", "age",
             "metallicity", "feh", "distance_modulus", "distance_kpc",
-            "phi2_centre", "sigma", "phi1_range", "area_on_deg2",
-            "area_off_deg2", "n_on", "n_off", "n_excess", "n_excess_error",
-            "snr"}``; None for the steps not done. ``metallicity`` is the Z
+            "masked_streams", "overlapping_streams", "phi2_centre", "sigma", "phi1_range",
+            "area_on_deg2", "area_off_deg2", "n_on", "n_off", "n_excess",
+            "n_excess_error", "snr"}``; None for the steps not done.
+            ``masked_streams``: names of the streams masked (near
+            ``distance_modulus``), ``overlapping_streams`` those left in
+            because they cover the candidate; None before ``prepare`` or
+            without ``mask_streams``. ``metallicity`` is the Z
             used (``isochrone``). ``n_on`` and ``n_off``: stars in the match
             filter at ``distance_modulus`` outside the excluded mask, in the
             on region and in the two off regions; ``n_excess = area_on * (n_on
@@ -1441,6 +1618,8 @@ class CandidateInvestigation:
             "distance_modulus": self.distance_modulus,
             "distance_kpc": None if self.distance_modulus is None
             else float(convert_DM_to_kpc(self.distance_modulus).value),
+            "masked_streams": None if self.masked_streams is None else list(self.masked_streams),
+            "overlapping_streams": None if self.overlapping_streams is None else list(self.overlapping_streams),
         }
         fit = self.width_fit if self.regions is None else self.regions
         if self.regions is not None and self.search is not None:

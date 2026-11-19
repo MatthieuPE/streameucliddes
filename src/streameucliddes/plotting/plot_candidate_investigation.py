@@ -28,6 +28,7 @@ from matplotlib.patheffects import withStroke
 
 from streameucliddes.analysis.candidate_investigation import region_windows
 from streameucliddes.analysis.fit_stream import stream_width_model
+from streameucliddes.catalogs.survey_footprint import in_healpix_mask
 from streameucliddes.catalogs.stream_candidates import (
     DEFAULT_CANDIDATES_PATH,
     candidate_endpoints,
@@ -89,6 +90,10 @@ RESIDUAL_CMAP = "RdBu_r"
 ON_REGION_COLOR = CATEGORICAL_COLORS[1]
 OFF_REGION_COLOR = CATEGORICAL_COLORS[2]
 PROFILE_COLOR = CATEGORICAL_COLORS[3]
+# The streams masked (cand.stream_healpix_mask) on the maps: hatched, outlined, the map still seen below
+STREAM_MASK_COLOR = "0.15"
+STREAM_MASK_HATCH = "////"
+STREAM_MASK_LABEL = "masked streams"
 FIT_COLOR = CATEGORICAL_COLORS[4]
 # The list of candidates on the sky
 CANDIDATE_COLOR = CATEGORICAL_COLORS[1]  # listed candidates (the known streams: CATEGORICAL_COLORS[0])
@@ -141,6 +146,51 @@ def draw_stream_regions(
         lines += draw_stream_track(ax, *phi12_window_outline(window), label="off" if index == 0 else None,
                                    color=off_color, ls="-", alpha=0.9)
     return lines
+
+
+def draw_stream_mask(
+    ax: Axes,
+    cand: CandidateInvestigation,
+    phi1_centres: ArrayLike,
+    phi2_centres: ArrayLike,
+) -> list[Artist]:
+    """The streams masked for a candidate (``cand.stream_healpix_mask``), hatched and outlined on a phi1/phi2 map.
+
+    The bins of the map whose centre is on the mask: the stars left out of
+    the width, the regions, the SNR and the Hess diagrams (the map itself
+    keeps them). Nothing is drawn without ``mask_streams``, before
+    ``prepare`` or when the mask misses the bins.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes of a phi1/phi2 map of the candidate.
+    cand : CandidateInvestigation
+        With ``stream_healpix_mask`` (``prepare``).
+    phi1_centres, phi2_centres : array_like
+        Bin centres of the map (deg).
+
+    Returns
+    -------
+    artists : list of matplotlib.artist.Artist
+        The hatched area, its outline and the legend entry (``STREAM_MASK_LABEL``); empty when nothing is drawn.
+    """
+    if not cand.mask_streams or cand.stream_healpix_mask is None:
+        return []
+    phi1_centres, phi2_centres = np.asarray(phi1_centres, dtype=float), np.asarray(phi2_centres, dtype=float)
+    grid_1, grid_2 = np.meshgrid(phi1_centres, phi2_centres, indexing="ij")
+    on_mask = in_healpix_mask(*phi12_to_radec(grid_1.ravel(), grid_2.ravel(), cand.stream_frame),
+                              cand.stream_healpix_mask, nest=False).reshape(grid_1.shape).astype(float)
+    if not on_mask.any():
+        return []
+    with plt.rc_context({"hatch.color": STREAM_MASK_COLOR, "hatch.linewidth": 0.6}):
+        fill = ax.contourf(phi1_centres, phi2_centres, on_mask.T, levels=[0.5, 1.5], colors="none",
+                           hatches=[STREAM_MASK_HATCH])
+    outline = ax.contour(phi1_centres, phi2_centres, on_mask.T, levels=[0.5], colors=STREAM_MASK_COLOR,
+                         linewidths=0.8)
+    (entry,) = ax.fill([], [], facecolor="none", edgecolor=STREAM_MASK_COLOR, hatch=STREAM_MASK_HATCH,
+                       label=STREAM_MASK_LABEL)
+    return [fill, outline, entry]
 
 
 def plot_phi2_profile(
@@ -380,6 +430,7 @@ def plot_candidate_map(
     *,
     ax: Axes | None = None,
     show_regions: bool = True,
+    show_stream_mask: bool = True,
     phi1_range: tuple[float, float] | None = None,
     phi2_range: tuple[float, float] | None = None,
     vmin: float | None = None,
@@ -388,9 +439,9 @@ def plot_candidate_map(
     """Matched-filter map in the frame, with the track and the regions.
 
     ``plot_stream_frame_search_single_dm``, ``draw_stream_track`` of
-    ``cand.track_phi12()`` (the arc between the endpoints before the regions)
-    and ``draw_stream_regions``. The title gives the distance modulus of the
-    map drawn.
+    ``cand.track_phi12()`` (the arc between the endpoints before the regions),
+    ``draw_stream_regions`` and ``draw_stream_mask`` (the other streams
+    masked, hatched). The title gives the distance modulus of the map drawn.
 
     Parameters
     ----------
@@ -403,6 +454,8 @@ def plot_candidate_map(
         Default: a new figure.
     show_regions : bool, optional
         Draw the regions, when defined.
+    show_stream_mask : bool, optional
+        Hatch the streams masked (``draw_stream_mask``).
     phi1_range, phi2_range : tuple of float, optional
         Part of the map shown (deg), e.g. to leave out a dense object: the
         axis limits and the colour scale (``plot_stream_frame_search_single_dm``).
@@ -418,8 +471,11 @@ def plot_candidate_map(
     ValueError
         No map: neither ``maps`` nor a ``zoom_map`` at this distance modulus.
     """
-    fig, ax = plot_stream_frame_search_single_dm(_candidate_map(cand, distance_modulus), ax=ax,
-                                                 phi1_range=phi1_range, phi2_range=phi2_range, vmin=vmin, vmax=vmax,)
+    result = _candidate_map(cand, distance_modulus)
+    fig, ax = plot_stream_frame_search_single_dm(result, ax=ax, phi1_range=phi1_range, phi2_range=phi2_range,
+                                                 vmin=vmin, vmax=vmax)
+    if show_stream_mask:
+        draw_stream_mask(ax, cand, result["phi1_centres"], result["phi2_centres"])
     draw_stream_track(ax, *cand.track_phi12(), label="track" if cand.regions is not None else "endpoints arc")
     if show_regions and cand.regions is not None:
         draw_stream_regions(ax, cand.regions)

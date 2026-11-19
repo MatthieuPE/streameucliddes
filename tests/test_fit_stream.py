@@ -53,7 +53,7 @@ def test_fit_near_the_track_with_a_gradient(rng, candidate_endpoints):
     assert abs(fit["phi2_centre"] - centre) < 3 * fit["errors"]["phi2_centre"]
     assert abs(fit["sigma"] - sigma) < 3 * fit["errors"]["sigma"]
     narrow = fit_stream_width(profile, phi2_fit_range=(-1.0, 1.5))
-    assert narrow["phi2_fit_range"] == (-1.0, 1.5) and narrow["n_dof"] == 25 - 4
+    assert narrow["phi2_fit_range"] == (-1.0, 1.5) and narrow["n_dof"] == 25 - 3 - len(narrow["background_coefficients"])
     np.testing.assert_allclose(stream_width_model(fit, profile["centres"]), fit["model"])
 
 
@@ -77,7 +77,7 @@ def test_fit_linear_background(rng, candidate_endpoints):
     assert fit["background_reference"] == 0.0 and fit["background"] == fit["background_coefficients"][0]
     field = 60_000 / unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0]  # stars/deg² before thinning
     assert fit["background_coefficients"][1] == pytest.approx(0.032 * field, rel=0.3)
-    assert len(fit_stream_width(profile)["background_coefficients"]) == 1
+    assert len(fit_stream_width(profile, background_degree=0)["background_coefficients"]) == 1
     with pytest.raises(ValueError, match="background_degree"):
         fit_stream_width(profile, background_degree=-1)
 

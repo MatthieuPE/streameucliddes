@@ -490,6 +490,50 @@ def galstreams_width_phi2(track_name: str, mws: galstreams.MWStreams) -> float:
     return width if width > 0 else np.nan
 
 
+def galstreams_mask_tracks(
+    footprint_mask: NDArray[np.bool_],
+    *,
+    nest: bool,
+    mws: galstreams.MWStreams | None = None,
+) -> list[dict]:
+    """The known streams crossing a footprint, as tracks to mask (``analysis.build_masks.streams_healpix_mask``).
+
+    The tracks of ``select_galstreams_in_footprint`` (its default cuts: dm >
+    14, at least 1 deg in the footprint, no Ibata et al. 2024 track), one per
+    stream (``galstreams_default_tracks``), with their width
+    (``galstreams_width_phi2``, NaN when unknown) and their distance moduli
+    over the part counted in the footprint.
+
+    Parameters
+    ----------
+    footprint_mask : numpy.ndarray of bool
+        HEALPix mask, True outside the footprint, e.g. that of the stars of
+        a candidate box.
+    nest : bool
+        HEALPix ordering of ``footprint_mask``.
+    mws : galstreams.MWStreams, optional
+        Default: ``load_galstreams()``.
+
+    Returns
+    -------
+    tracks : list of dict
+        One per stream: ``name`` (the track name), ``stream_name``, ``ra``,
+        ``dec`` (deg, the track points), ``stream_frame`` (that of the
+        track), ``width_deg``, ``dm_min`` and ``dm_max`` (those of the
+        selection).
+    """
+    mws = load_galstreams() if mws is None else mws
+    selection = galstreams_default_tracks(select_galstreams_in_footprint(mws, footprint_mask, nest=nest), mws)
+    tracks = []
+    for row in selection.itertuples(index=False):
+        track = mws[row.track_name]
+        tracks.append({"name": row.track_name, "stream_name": row.stream_name, "ra": track.track.ra.deg,
+                       "dec": track.track.dec.deg, "stream_frame": track.stream_frame,
+                       "width_deg": galstreams_width_phi2(row.track_name, mws), "dm_min": float(row.dm_min),
+                       "dm_max": float(row.dm_max)})
+    return tracks
+
+
 def _is_ibata2024(track: galstreams.Track6D) -> bool:
     """Whether the track is one of Ibata et al. 2024, without distances in galstreams."""
     return str(track.ref) == IBATA2024_REFERENCE
