@@ -12,6 +12,7 @@ import pytest
 from astropy.coordinates import angular_separation
 from scipy.integrate import quad
 
+from streameucliddes.analysis.build_masks import excluded_healpix_mask, objects_healpix_mask, streams_healpix_mask
 from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.cmd_match_filter import on_off_hess
 from streameucliddes.analysis.on_off_regions import (
@@ -63,13 +64,13 @@ def bands(catalog, gc_frame):
     return _bands(catalog, gc_frame)
 
 
-def _band_area_deg2(track_phi2, low, high):
-    """Exact area of the band from low to high off a track over PHI1_RANGE: the integral of
+def _band_area_deg2(track_phi2, low, high, phi1_range=PHI1_RANGE):
+    """Exact area of the band from low to high off a track over phi1_range: the integral of
     dphi1 (sin phi2_top - sin phi2_bottom), in deg²."""
     def strip(phi1):
         centre = float(track_phi2(phi1))
         return np.degrees(np.sin(np.radians(centre + high)) - np.sin(np.radians(centre + low)))
-    return quad(strip, *PHI1_RANGE)[0]
+    return quad(strip, *phi1_range)[0]
 
 
 def _masked_object(frame):
@@ -295,3 +296,126 @@ def test_region_on_off_hess(catalog, bands):
                            [bands["off_below_area_deg2"], bands["off_above_area_deg2"]])
     for result, reference in zip((on_hess, off_hess, difference), expected):
         np.testing.assert_allclose(result["density"], reference["density"])
+
+
+# ===================================================
+# Areas with the HEALPix masks of a candidate investigation (analytic shapes)
+# ===================================================
+
+# Masks of the investigation, at their usual resolutions: the footprint at nside 512, objects and streams at 2048
+# (object_mask_nside of 0.1 deg bins). In the bands of the tilted track (on: |offset| <= 0.3 deg; off: 0.6 to 1 deg),
+# disjoint shapes of known area:
+AREA_NSIDE, FOOTPRINT_NSIDE = 2048, 512
+FOOTPRINT_EDGE_PHI1 = 2.5  # footprint: phi1 <= 2.5 deg (the sky beyond excluded)
+DISC_PHI1, DISC_RADIUS_DEG = 1.0, 0.25  # a circular object on the track, inside the on band
+ELLIPSE_PHI1, ELLIPSE_OFFSET = 2.0, 0.8  # an elliptical object in the off band above the track
+ELLIPSE_SEMI_MAJOR_DEG, ELLIPSE_ELLIPTICITY, ELLIPSE_POSITION_ANGLE = 0.15, 0.5, 30.0
+STREAM_PHI1, STREAM_ANGLE_DEG, STREAM_HALF_WIDTH_DEG = -2.0, 60.0, 0.1  # a stream crossing the three bands
+BAND_OFFSETS = {"on": (-ON_N_SIGMA * SIGMA, ON_N_SIGMA * SIGMA),
+                "off_below": (-OFF_N_SIGMA[1] * SIGMA, -OFF_N_SIGMA[0] * SIGMA),
+                "off_above": (OFF_N_SIGMA[0] * SIGMA, OFF_N_SIGMA[1] * SIGMA)}
+
+
+def _footprint_mask(frame, nside=FOOTPRINT_NSIDE):
+    """True on the pixels near the bands with phi1 > FOOTPRINT_EDGE_PHI1 (only those: no full-sky transform)."""
+    mask = np.zeros(hp.nside2npix(nside), dtype=bool)
+    centre = hp.ang2vec(*phi12_to_radec(np.array([0.0]), np.array([0.0]), frame), lonlat=True)[0]
+    near = hp.query_disc(nside, centre, np.radians(8.0))
+    phi1, _ = radec_to_phi12(*hp.pix2ang(nside, near, lonlat=True), frame)
+    mask[near[phi1 > FOOTPRINT_EDGE_PHI1]] = True
+    return mask
+
+
+def _objects(frame):
+    """The disc on the track and the ellipse above it, as catalogs.overlapped_objects tables (radius_scale 1)."""
+    ra, dec = phi12_to_radec(np.array([DISC_PHI1, ELLIPSE_PHI1]),
+                             np.array([tilted_track(DISC_PHI1), tilted_track(ELLIPSE_PHI1) + ELLIPSE_OFFSET]), frame)
+    return pd.DataFrame({"ra": ra, "dec": dec, "radius_arcmin": [DISC_RADIUS_DEG * 60, ELLIPSE_SEMI_MAJOR_DEG * 60],
+                         "ellipticity": [np.nan, ELLIPSE_ELLIPTICITY],
+                         "position_angle": [np.nan, ELLIPSE_POSITION_ANGLE]})
+
+
+def _crossing_stream(frame):
+    """A stream track crossing the three bands at STREAM_PHI1, straight in the frame at STREAM_ANGLE_DEG to phi1."""
+    t = np.array([-3.0, 3.0])
+    angle = np.radians(STREAM_ANGLE_DEG)
+    ra, dec = phi12_to_radec(STREAM_PHI1 + t * np.cos(angle), tilted_track(STREAM_PHI1) + t * np.sin(angle), frame)
+    return {"name": "Cross", "stream_name": "Cross", "ra": ra, "dec": dec, "stream_frame": frame,
+            "width_deg": STREAM_HALF_WIDTH_DEG}
+
+
+def _expected_removed_deg2(kind):
+    """Area of each band (deg²) under a mask, from the shapes: the footprint beyond its edge, the spherical cap of the
+    disc, the ellipse (pi a b), the parallelogram where the stream band crosses each band."""
+    removed = dict.fromkeys(BAND_OFFSETS, 0.0)
+    if kind == "footprint":
+        for name, (low, high) in BAND_OFFSETS.items():
+            removed[name] = _band_area_deg2(tilted_track, low, high, (FOOTPRINT_EDGE_PHI1, PHI1_RANGE[1]))
+    elif kind == "disc":
+        removed["on"] = 2 * np.pi * (1 - np.cos(np.radians(DISC_RADIUS_DEG))) * np.degrees(1.0) ** 2
+    elif kind == "ellipse":
+        removed["off_above"] = np.pi * ELLIPSE_SEMI_MAJOR_DEG ** 2 * (1 - ELLIPSE_ELLIPTICITY)
+    elif kind == "stream":
+        band_angle = np.arctan(SLOPE)  # the bands follow the tilted track
+        crossing = np.radians(STREAM_ANGLE_DEG) - band_angle
+        for name, (low, high) in BAND_OFFSETS.items():
+            perpendicular_width = (high - low) * np.cos(band_angle)
+            removed[name] = 2 * STREAM_HALF_WIDTH_DEG * perpendicular_width / np.sin(crossing)
+    return removed
+
+
+def _excluded(kind, frame):
+    """The excluded HEALPix mask of one kind of mask (RING)."""
+    if kind == "footprint":
+        return _footprint_mask(frame)
+    if kind in ("disc", "ellipse"):
+        objects = _objects(frame).iloc[[0] if kind == "disc" else [1]]
+        return objects_healpix_mask(objects, AREA_NSIDE, nest=False, radius_scale=1.0, mask_centre_pixel=False)
+    return streams_healpix_mask([_crossing_stream(frame)], AREA_NSIDE, nest=False, n_sigma=1.0)
+
+
+# Each mask alone: the area it takes from each band is that of its shape, to the pixels of its edge (a few per cent of
+# the shape; the footprint, at nside 512, along a straight edge: 1 %); nothing from the other bands
+@pytest.mark.parametrize("kind", ["footprint", "disc", "ellipse", "stream"])
+def test_band_areas_with_healpix_masks(catalog, gc_frame, bands, kind):
+    regions = _bands(catalog, gc_frame, excluded_healpix_mask=_excluded(kind, gc_frame))
+    expected = _expected_removed_deg2(kind)
+    tolerance = 0.01 if kind == "footprint" else 0.04
+    for name in BAND_OFFSETS:
+        removed = bands[f"{name}_area_deg2"] - regions[f"{name}_area_deg2"]
+        if expected[name] == 0:
+            assert removed == pytest.approx(0.0, abs=1e-9), name
+        else:
+            assert removed == pytest.approx(expected[name], rel=tolerance), name
+
+
+# An object inside a band: the area taken is that of its masked pixels (their number times the pixel area), to the
+# area pieces along the pixel edges, far closer than to the shape
+@pytest.mark.parametrize(("kind", "band"), [("disc", "on"), ("ellipse", "off_above")])
+def test_band_areas_match_masked_pixels(catalog, gc_frame, bands, kind, band):
+    excluded = _excluded(kind, gc_frame)
+    regions = _bands(catalog, gc_frame, excluded_healpix_mask=excluded)
+    pixels_area = excluded.sum() * hp.nside2pixarea(AREA_NSIDE, degrees=True)
+    assert bands[f"{band}_area_deg2"] - regions[f"{band}_area_deg2"] == pytest.approx(pixels_area, rel=5e-3)
+
+
+# Every mask at once, combined as in the investigation (footprint at nside 512 brought to 2048, OR the objects and
+# the stream: build_masks.excluded_healpix_mask): each band loses the sum of the areas of the shapes on it
+def test_band_areas_with_all_masks(catalog, gc_frame, bands):
+    objects_and_stream = (objects_healpix_mask(_objects(gc_frame), AREA_NSIDE, nest=False, radius_scale=1.0,
+                                               mask_centre_pixel=False)
+                          | streams_healpix_mask([_crossing_stream(gc_frame)], AREA_NSIDE, nest=False, n_sigma=1.0))
+    excluded, nside = excluded_healpix_mask(_footprint_mask(gc_frame),
+                                            objects_and_stream, nest=False)
+    assert nside == AREA_NSIDE
+    regions = _bands(catalog, gc_frame, excluded_healpix_mask=excluded)
+    removed = {kind: _expected_removed_deg2(kind) for kind in ("footprint", "disc", "ellipse", "stream")}
+    for name in BAND_OFFSETS:
+        expected = sum(removed[kind][name] for kind in removed)
+        tolerance = 0.01 * removed["footprint"][name] + 0.04 * sum(removed[kind][name] for kind in
+                                                                   ("disc", "ellipse", "stream"))
+        assert bands[f"{name}_area_deg2"] - regions[f"{name}_area_deg2"] == pytest.approx(expected, abs=tolerance)
+        assert regions[f"{name}_area_fraction"] == pytest.approx(1 - expected / bands[f"{name}_area_deg2"],
+                                                                 abs=tolerance / bands[f"{name}_area_deg2"])
+    on_masks = in_healpix_mask(catalog["ra"], catalog["dec"], excluded, nest=False)
+    np.testing.assert_array_equal(regions["excluded"], on_masks)

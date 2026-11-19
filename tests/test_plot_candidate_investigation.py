@@ -7,9 +7,11 @@ import numpy as np
 import pytest
 import skyproj
 from matplotlib.backend_bases import MouseEvent
+from scipy.ndimage import gaussian_filter
 
-from streameucliddes.analysis.candidate_investigation import CandidateInvestigation
+from streameucliddes.analysis.candidate_investigation import CandidateInvestigation, hess_error_table
 from streameucliddes.analysis.candidate_investigation import region_windows
+from streameucliddes.analysis.cmd_match_filter import match_filter_cmd_columns
 from streameucliddes.catalogs.stream_candidates import add_candidate
 from streameucliddes.plotting.plot_candidate_investigation import (
     EndpointPicker,
@@ -26,6 +28,7 @@ from streameucliddes.plotting.plot_candidate_investigation import (
     plot_width_fit_map,
     sky_axes_to_radec,
 )
+from streameucliddes.plotting.plot_cmd import DEFAULT_DIFFERENCE_SMOOTHING_BINS, plot_on_off_difference_hess
 from streameucliddes.stream_frames import radec_to_phi12, stream_frame_from_endpoints
 
 pytestmark = pytest.mark.plot_candidate_investigation
@@ -174,6 +177,31 @@ def test_plot_candidate_hess(candidate_endpoints, candidate_stream_catalog, cand
     plt.close(fig)
     with pytest.raises(ValueError, match="which"):
         plot_candidate_hess(cand, "both")
+
+
+# The table saved (hess_error_table) holds the raw diagrams, not the smoothed ones of the figures: after the smoothed
+# plots, the densities are still the counts of the on region per deg² (np.histogram2d) and the difference is on - off,
+# not its smoothed version
+def test_saved_hess_not_smoothed(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    cand.prepare(candidate_stream_catalog).fit_width().define_regions().compute_hess()
+    on_before = cand.on_hess["density"].copy()
+    for fig in (plot_candidate_hess(cand)[0],
+                plot_on_off_difference_hess(cand.on_hess, cand.off_hess, cand.diff_hess, smoothing_bins=2.0)[0]):
+        plt.close(fig)
+    np.testing.assert_array_equal(cand.on_hess["density"], on_before)
+    table = hess_error_table(cand.on_hess, cand.off_hess)
+
+    mag_column, color_column = match_filter_cmd_columns(cand.search.match_filter)[0]
+    stars = cand.search.stars[np.asarray(cand.band_regions["on"], dtype=bool)]
+    counts, _, _ = np.histogram2d(stars[mag_column] - stars[color_column], stars[mag_column],
+                                  bins=[cand.on_hess["color_edges"], cand.on_hess["mag_edges"]])
+    np.testing.assert_allclose(table["on_density"], (counts / cand.areas["on"]).ravel())
+    raw_difference = (cand.on_hess["density"] - cand.off_hess["density"]).ravel()
+    np.testing.assert_allclose(table["difference_density"], raw_difference)
+    smoothed = gaussian_filter(cand.diff_hess["density"], DEFAULT_DIFFERENCE_SMOOTHING_BINS).ravel()
+    assert not np.allclose(table["difference_density"], smoothed)
 
 
 # Four panels: the map with the regions, the phi2 and phi1 profiles, the difference Hess with the isochrone;

@@ -466,6 +466,7 @@ def plot_hess(
     smoothing_bins: float = 0.0,
     colorbar: bool = True,
     title: str | None = None,
+    per_area: bool | None = None,
 ) -> tuple[Figure, Axes]:
     """Draw a colour-magnitude 2D histogram: counts, a Hess diagram, or on - off.
 
@@ -500,6 +501,13 @@ def plot_hess(
         Add a colour bar: ``HESS_COLORBAR_LABEL`` per deg², "N" for counts.
     title : str, optional
         Default: the number of stars and the area.
+    per_area : bool, optional
+        Draw ``hess["density"]`` (per deg², True) or ``hess["counts"]``
+        (stars per bin, False). Default: per deg² when the diagram has an
+        area. On - off (``difference_hess``): the counts are the excess stars
+        of the on region, ``density * area_deg2`` (the on area). Off diagram
+        of two off regions (``mean_off_hess``): the counts are those of the
+        two regions together, not the background of the on region.
 
     Returns
     -------
@@ -509,7 +517,8 @@ def plot_hess(
     Raises
     ------
     ValueError
-        ``norm`` neither None nor "log".
+        ``norm`` neither None nor "log"; ``per_area`` True for a diagram
+        without area.
 
     Notes
     -----
@@ -518,10 +527,13 @@ def plot_hess(
     if norm not in (None, "log"):
         raise ValueError(f"Invalid norm: {norm}. Use None or 'log'.")
     fig, ax = (ax.figure, ax) if ax is not None else plt.subplots(figsize=HESS_FIGSIZE)
-    density = np.asarray(hess["density"], dtype=float)
+    has_area = hess.get("area_deg2") is not None
+    per_area = has_area if per_area is None else bool(per_area)
+    if per_area and not has_area:
+        raise ValueError("per_area=True needs a diagram with an area_deg2 (densities per deg²).")
+    density = np.asarray(hess["density"] if per_area else hess["counts"], dtype=float)  # drawn: per deg² or stars
     if smoothing_bins > 0:
         density = gaussian_filter(density, smoothing_bins)
-    per_area = hess.get("area_deg2") is not None
     if difference:
         if vlim is None:
             values = np.abs(density[np.isfinite(density)])

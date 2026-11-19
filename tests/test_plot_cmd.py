@@ -388,3 +388,22 @@ def test_plot_isochrone_label_model():
     assert (plot_isochrone(ax, {**track, "isochrone_model": DEFAULT_ISOCHRONE_MODEL}).get_label()
             == "12 Gyr, Z = 0.0003, dm 17.0")
     plt.close(fig)
+
+
+# per_area False: the counts drawn (the excess stars of the on region for on - off), "N" on the colour bar; True:
+# the densities; True without area: ValueError
+def test_plot_hess_per_area():
+    edges = {"color_edges": np.array([0.0, 0.5, 1.0]), "mag_edges": np.array([20.0, 21.0, 22.0]),
+             "color_label": "VIS - H", "mag_label": "VIS"}
+    diff = {**edges, "density": np.array([[1.0, -2.0], [0.5, 3.0]]), "area_deg2": 4.0, "n_stars": 10.0}
+    diff["counts"] = diff["density"] * diff["area_deg2"]
+    fig, ax = plot_hess(diff, difference=True, per_area=False)
+    np.testing.assert_array_equal(ax.images[0].get_array(), diff["counts"].T)
+    assert fig.axes[-1].get_ylabel() == "N"
+    plt.close(fig)
+    fig, ax = plot_hess(diff, difference=True)  # default: per deg²
+    np.testing.assert_array_equal(ax.images[0].get_array(), diff["density"].T)
+    plt.close(fig)
+    counts_only = {**edges, "density": np.ones((2, 2)), "counts": np.ones((2, 2)), "area_deg2": None, "n_stars": 4}
+    with pytest.raises(ValueError, match="per_area"):
+        plot_hess(counts_only, per_area=True)
