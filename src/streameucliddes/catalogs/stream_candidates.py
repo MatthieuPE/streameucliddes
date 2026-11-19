@@ -21,7 +21,6 @@ from typing import TYPE_CHECKING
 import numpy as np
 import pandas as pd
 
-from streameucliddes.stream_frames import stream_frame_from_endpoints
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
@@ -31,11 +30,8 @@ CANDIDATES_DIR = Path(__file__).resolve().parents[3] / "data" / "candidates"
 DEFAULT_CANDIDATES_PATH = CANDIDATES_DIR / "candidates_info.csv"
 CANDIDATE_COLUMNS = ("id", "endpoint_1_ra", "endpoint_1_dec", "endpoint_2_ra", "endpoint_2_dec", "best_dm")
 # Optional column, added by hand: Gaussian sigma in phi2 of a candidate (deg), the width of its mask when another
-# candidate is investigated (candidate_mask_tracks)
+# candidate is investigated (analysis.build_masks.candidate_mask_tracks)
 CANDIDATE_WIDTH_COLUMN = "sigma_deg"
-# Half-width of the mask of a candidate without a width (deg): narrower than for the known streams of unknown width
-# (analysis.build_masks.DEFAULT_STREAM_MASK_HALF_WIDTH_DEG), the candidates being thin (user choice, 2026-11-19)
-CANDIDATE_MASK_HALF_WIDTH_DEG = 0.3
 
 
 def load_candidates(path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.DataFrame:
@@ -155,53 +151,6 @@ def candidate_endpoints(candidate: pd.Series) -> tuple[tuple[float, float], tupl
     """(ra, dec) of the two endpoints of a candidate (a row of ``load_candidates``), in deg."""
     return ((float(candidate["endpoint_1_ra"]), float(candidate["endpoint_1_dec"])),
             (float(candidate["endpoint_2_ra"]), float(candidate["endpoint_2_dec"])))
-
-
-def candidate_mask_tracks(
-    candidates: pd.DataFrame,
-    *,
-    exclude_ids: Sequence[int] = (),
-    default_half_width_deg: float = CANDIDATE_MASK_HALF_WIDTH_DEG,
-) -> list[dict]:
-    """The listed candidates as tracks to mask (``analysis.build_masks.streams_healpix_mask``), but some.
-
-    Each candidate is the great circle between its endpoints
-    (``stream_frames.stream_frame_from_endpoints``), its width the optional
-    column ``CANDIDATE_WIDTH_COLUMN`` (its Gaussian sigma in phi2, added by
-    hand; NaN when absent or empty: unknown).
-
-    Parameters
-    ----------
-    candidates : pandas.DataFrame
-        From ``load_candidates``.
-    exclude_ids : sequence of int, optional
-        Candidates left out, e.g. the one investigated.
-    default_half_width_deg : float, optional
-        Half-width of the mask of a candidate without a width (deg), in each
-        track (``default_half_width_deg``, used by ``streams_healpix_mask``).
-
-    Returns
-    -------
-    tracks : list of dict
-        One per candidate kept: ``name`` and ``stream_name``
-        (``"candidate_<id>"``), ``ra``, ``dec`` (deg, its two endpoints),
-        ``stream_frame``, ``width_deg``, ``dm_min`` and ``dm_max`` (its
-        ``best_dm``) and ``default_half_width_deg``.
-    """
-    excluded = {int(candidate_id) for candidate_id in exclude_ids}
-    tracks = []
-    for _, candidate in candidates.iterrows():
-        if int(candidate["id"]) in excluded:
-            continue
-        endpoint_1, endpoint_2 = candidate_endpoints(candidate)
-        name = f"candidate_{int(candidate['id'])}"
-        width = float(candidate[CANDIDATE_WIDTH_COLUMN]) if CANDIDATE_WIDTH_COLUMN in candidate.index else np.nan
-        tracks.append({"name": name, "stream_name": name, "ra": np.array([endpoint_1[0], endpoint_2[0]]),
-                       "dec": np.array([endpoint_1[1], endpoint_2[1]]),
-                       "stream_frame": stream_frame_from_endpoints(endpoint_1, endpoint_2), "width_deg": width,
-                       "dm_min": float(candidate["best_dm"]), "dm_max": float(candidate["best_dm"]),
-                       "default_half_width_deg": float(default_half_width_deg)})
-    return tracks
 
 
 def _radec(endpoint: Sequence[float]) -> tuple[float, float]:

@@ -10,6 +10,7 @@ from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis import candidate_investigation as candidate_investigation_module
 from streameucliddes.analysis import stream_frame_search as stream_frame_search_module
 from streameucliddes.analysis.build_masks import (
+    CANDIDATE_MASK_HALF_WIDTH_DEG,
     STREAM_MASK_N_SIGMA,
     object_mask_nside,
     streams_healpix_mask,
@@ -34,7 +35,7 @@ from streameucliddes.analysis.cmd_match_filter import (
     match_filter_cmd_columns,
     photometric_errors_by_magnitude,
 )
-from streameucliddes.catalogs.stream_candidates import CANDIDATE_MASK_HALF_WIDTH_DEG, add_candidate
+from streameucliddes.catalogs.stream_candidates import add_candidate
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import (

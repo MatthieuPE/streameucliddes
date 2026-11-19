@@ -1,5 +1,8 @@
 """Tests of analysis/build_masks.py, with mock objects (no LVDB download)."""
 
+from types import SimpleNamespace
+
+import astropy.coordinates as coord
 import astropy.units as u
 import healpy as hp
 import numpy as np
@@ -8,6 +11,7 @@ import pytest
 from astropy.coordinates import SkyCoord
 
 from streameucliddes.analysis.build_masks import (
+    CANDIDATE_MASK_HALF_WIDTH_DEG,
     DEFAULT_RADIUS_SCALE,
     DEFAULT_STREAM_MASK_HALF_WIDTH_DEG,
     STREAM_MASK_MAX_DM_DIFFERENCE,
@@ -18,11 +22,13 @@ from streameucliddes.analysis.build_masks import (
     GC_REFERENCE_RADIUS_SCALE,
     GC_REFERENCE_SURFACE_BRIGHTNESS,
     OBJECT_TYPES,
+    candidate_mask_tracks,
     ellipse_outline_radec,
     elliptical_radius_deg,
     excluded_healpix_mask,
     fraction_on_stream_band,
     galaxies_healpix_mask,
+    galstreams_mask_tracks,
     globular_cluster_radius_scales,
     globular_clusters_healpix_mask,
     mask_radius_scales,
@@ -35,6 +41,7 @@ from streameucliddes.analysis.build_masks import (
     streams_not_wider_than,
 )
 from streameucliddes.catalogs import overlapped_objects
+from streameucliddes.catalogs.stream_candidates import CANDIDATE_WIDTH_COLUMN, add_candidate, load_candidates
 from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12, stream_frame_from_endpoints
 
 pytestmark = pytest.mark.build_masks
@@ -411,3 +418,66 @@ def test_track_default_half_width():
                                                        default_half_width_deg=5.0), expected)
     on_band = phi12_to_radec(np.array([0.0]), np.array([0.5]), track["stream_frame"])
     assert fraction_on_stream_band(*on_band, track, default_half_width_deg=5.0) == 0.0
+
+
+# ===================================================
+# Test galstreams_mask_tracks and candidate_mask_tracks
+# ===================================================
+
+
+def _galstreams_track(frame, phi1_range, distance_kpc, name, ref="synthetic"):
+    """A galstreams-like track along phi2 = 0 of a frame, at one distance."""
+    phi1 = np.linspace(*phi1_range, 201)
+    points = coord.SkyCoord(phi1=phi1 * u.deg, phi2=np.zeros(phi1.size) * u.deg,
+                            distance=np.full(phi1.size, distance_kpc) * u.kpc, frame=frame).transform_to(coord.ICRS())
+    return SimpleNamespace(track=points, stream_frame=frame, InfoFlags="1111", track_name=name,
+                           stream_name=name.rsplit("-", 1)[0], ref=ref)
+
+
+# The tracks to mask: those of the default selection (in the footprint; no Ibata et al. 2024 track), their points,
+# frame, width from the summary (NaN when unknown) and distance moduli over the footprint
+def test_galstreams_mask_tracks(gc_frame):
+    class FakeMWStreams(dict):
+        pass
+
+    mws = FakeMWStreams({
+        "Kept-T00": _galstreams_track(gc_frame, (-10.0, 10.0), 20.0, "Kept-T00"),
+        "Unknown-T00": _galstreams_track(gc_frame, (0.0, 5.0), 30.0, "Unknown-T00"),
+        "Outside-T00": _galstreams_track(gc_frame, (100.0, 110.0), 20.0, "Outside-T00"),
+        "Ibata-I24": _galstreams_track(gc_frame, (-12.0, 12.0), 1.0, "Ibata-I24", ref="ibata2024"),
+    })
+    mws.summary = pd.DataFrame({"On": True, "width_phi2": [0.3, -1.0, 0.3, 0.3]}, index=list(mws))
+    ra, dec = hp.pix2ang(64, np.arange(hp.nside2npix(64)), lonlat=True)
+    phi1, phi2 = radec_to_phi12(ra, dec, gc_frame)
+    footprint = ~((np.abs(phi1) < 15) & (np.abs(phi2) < 5))
+    tracks = galstreams_mask_tracks(footprint, nest=False, mws=mws)
+    assert [track["name"] for track in tracks] == ["Kept-T00", "Unknown-T00"]
+    assert [track["stream_name"] for track in tracks] == ["Kept", "Unknown"]
+    assert tracks[0]["width_deg"] == 0.3 and np.isnan(tracks[1]["width_deg"])
+    np.testing.assert_array_equal(tracks[0]["ra"], mws["Kept-T00"].track.ra.deg)
+    assert tracks[0]["stream_frame"] is gc_frame
+    dm_20_kpc = 5 * np.log10(20.0e3) - 5
+    assert tracks[0]["dm_min"] == pytest.approx(dm_20_kpc, abs=1e-3) and tracks[0]["dm_max"] == pytest.approx(
+        dm_20_kpc, abs=1e-3)
+
+
+# The candidates as tracks to mask: the great circle between the endpoints, but the excluded ids; the width from
+# the optional column, NaN without it or empty
+def test_candidate_mask_tracks(tmp_path):
+    path = tmp_path / "candidates.csv"
+    add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
+    add_candidate((77.0, -40.0), (70.0, -43.0), 17.5, path=path)
+    candidates = load_candidates(path)
+    (track,) = candidate_mask_tracks(candidates, exclude_ids=[1])
+    assert track["name"] == track["stream_name"] == "candidate_2" and np.isnan(track["width_deg"])
+    assert track["dm_min"] == track["dm_max"] == 17.5
+    assert track["default_half_width_deg"] == CANDIDATE_MASK_HALF_WIDTH_DEG
+    assert candidate_mask_tracks(candidates, default_half_width_deg=0.5)[0]["default_half_width_deg"] == 0.5
+    np.testing.assert_allclose(track["ra"], [77.0, 70.0])
+    np.testing.assert_allclose(track["dec"], [-40.0, -43.0])
+    _, phi2 = radec_to_phi12(track["ra"], track["dec"], track["stream_frame"])
+    np.testing.assert_allclose(phi2, 0.0, atol=1e-9)
+    candidates[CANDIDATE_WIDTH_COLUMN] = [0.3, np.nan]
+    widths = [track["width_deg"] for track in candidate_mask_tracks(candidates)]
+    assert widths[0] == 0.3 and np.isnan(widths[1])
+    assert candidate_mask_tracks(load_candidates(tmp_path / "none.csv")) == []

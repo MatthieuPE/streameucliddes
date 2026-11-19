@@ -428,6 +428,20 @@ Done:
     areas between the endpoints only. SNR kept as Shipp et al. 2018, S = (on
     - off) / sqrt(off) (Li & Ma 1983 would add the noise of the off regions,
     sqrt(N_on + alpha^2 N_off): not adopted).
+  - 2026-11-19, stream mask tracks: `galstreams_mask_tracks` and
+    `candidate_mask_tracks` are in `analysis/build_masks.py` (user choice:
+    the masks there, not in the catalog modules), with
+    `CANDIDATE_MASK_HALF_WIDTH_DEG`.
+  - 2026-11-19, systematics, step 1: photometric errors of the stars of the
+    on region per bin of VIS (`cmd_match_filter.photometric_errors_by_magnitude`,
+    median by default, `statistic="mean"` as an option: user choice;
+    `CandidateInvestigation.compute_photometric_errors`, `in_match_filter`
+    option; `plot_candidate_investigation.plot_photometric_errors`). Saved
+    with the Hess diagrams by `candidate_investigation.hess_error_table`
+    (names and place: user choices): bin centres, on - off density, on and
+    off counts, and beside them, on their own magnitude bins,
+    `error_mag_centre` and the errors; a cell of the example notebook
+    writes it as CSV.
 
 ## 4. New functions, by module
 

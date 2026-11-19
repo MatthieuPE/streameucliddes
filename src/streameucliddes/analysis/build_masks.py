@@ -22,9 +22,10 @@ so that no star is counted there and the background is fitted on the rest.
 
 The streams are masked only when one candidate is investigated
 (``analysis.candidate_investigation.CandidateInvestigation``, ``mask_streams``):
-bands along the galstreams tracks and the other listed candidates
-(``streams_healpix_mask``), so that its width, SNR and Hess diagrams do not
-take their stars. The searches do not mask them.
+bands along the galstreams tracks (``galstreams_mask_tracks``) and the other
+listed candidates (``candidate_mask_tracks``) (``streams_healpix_mask``), so
+that its width, SNR and Hess diagrams do not take their stars. The searches
+do not mask them.
 """
 
 from __future__ import annotations
@@ -40,12 +41,20 @@ import numpy as np
 from astropy.coordinates import SkyCoord, angular_separation, position_angle
 
 from streameucliddes.catalogs import overlapped_objects
+from streameucliddes.catalogs.galstreams_catalog import (
+    galstreams_default_tracks,
+    galstreams_width_phi2,
+    load_galstreams,
+    select_galstreams_in_footprint,
+)
+from streameucliddes.catalogs.stream_candidates import CANDIDATE_WIDTH_COLUMN, candidate_endpoints
 from streameucliddes.catalogs.survey_footprint import convert_footprint_healpix_mask
-from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12
+from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12, stream_frame_from_endpoints
 
 if TYPE_CHECKING:
     from collections.abc import Sequence
 
+    import galstreams
     import pandas as pd
     from numpy.typing import ArrayLike, NDArray
 
@@ -91,6 +100,9 @@ DEFAULT_RADIUS_SCALES = types.MappingProxyType({
 # investigation), DEFAULT_STREAM_MASK_HALF_WIDTH_DEG when its width is unknown (user choices, 2026-11-19)
 STREAM_MASK_N_SIGMA = 1.4
 DEFAULT_STREAM_MASK_HALF_WIDTH_DEG = 0.75
+# Half-width of the mask of a listed candidate without a width (deg): narrower, the candidates being thin (user
+# choice, 2026-11-19)
+CANDIDATE_MASK_HALF_WIDTH_DEG = 0.3
 # Only the streams whose distance modulus comes within this of that of the candidate are masked: the match filter
 # selects few stars of the others (user choice, 2026-11-19)
 STREAM_MASK_MAX_DM_DIFFERENCE = 1.5
@@ -491,6 +503,97 @@ def overlapped_objects_healpix_mask(
     return mask
 
 
+def galstreams_mask_tracks(
+    footprint_mask: NDArray[np.bool_],
+    *,
+    nest: bool,
+    mws: galstreams.MWStreams | None = None,
+) -> list[dict]:
+    """The known streams crossing a footprint, as tracks to mask (``streams_healpix_mask``).
+
+    The tracks of ``catalogs.galstreams_catalog.select_galstreams_in_footprint`` (its default cuts: dm >
+    14, at least 1 deg in the footprint, no Ibata et al. 2024 track), one per
+    stream (``galstreams_default_tracks``), with their width
+    (``galstreams_width_phi2``, NaN when unknown) and their distance moduli
+    over the part counted in the footprint.
+
+    Parameters
+    ----------
+    footprint_mask : numpy.ndarray of bool
+        HEALPix mask, True outside the footprint, e.g. that of the stars of
+        a candidate box.
+    nest : bool
+        HEALPix ordering of ``footprint_mask``.
+    mws : galstreams.MWStreams, optional
+        Default: ``load_galstreams()``.
+
+    Returns
+    -------
+    tracks : list of dict
+        One per stream: ``name`` (the track name), ``stream_name``, ``ra``,
+        ``dec`` (deg, the track points), ``stream_frame`` (that of the
+        track), ``width_deg``, ``dm_min`` and ``dm_max`` (those of the
+        selection).
+    """
+    mws = load_galstreams() if mws is None else mws
+    selection = galstreams_default_tracks(select_galstreams_in_footprint(mws, footprint_mask, nest=nest), mws)
+    tracks = []
+    for row in selection.itertuples(index=False):
+        track = mws[row.track_name]
+        tracks.append({"name": row.track_name, "stream_name": row.stream_name, "ra": track.track.ra.deg,
+                       "dec": track.track.dec.deg, "stream_frame": track.stream_frame,
+                       "width_deg": galstreams_width_phi2(row.track_name, mws), "dm_min": float(row.dm_min),
+                       "dm_max": float(row.dm_max)})
+    return tracks
+
+
+def candidate_mask_tracks(
+    candidates: pd.DataFrame,
+    *,
+    exclude_ids: Sequence[int] = (),
+    default_half_width_deg: float = CANDIDATE_MASK_HALF_WIDTH_DEG,
+) -> list[dict]:
+    """The listed candidates (``catalogs.stream_candidates``) as tracks to mask (``streams_healpix_mask``), but some.
+
+    Each candidate is the great circle between its endpoints
+    (``stream_frames.stream_frame_from_endpoints``), its width the optional
+    column ``catalogs.stream_candidates.CANDIDATE_WIDTH_COLUMN`` (its Gaussian sigma in phi2, added by
+    hand; NaN when absent or empty: unknown).
+
+    Parameters
+    ----------
+    candidates : pandas.DataFrame
+        From ``catalogs.stream_candidates.load_candidates``.
+    exclude_ids : sequence of int, optional
+        Candidates left out, e.g. the one investigated.
+    default_half_width_deg : float, optional
+        Half-width of the mask of a candidate without a width (deg), in each
+        track (``default_half_width_deg``, used by ``streams_healpix_mask``).
+
+    Returns
+    -------
+    tracks : list of dict
+        One per candidate kept: ``name`` and ``stream_name``
+        (``"candidate_<id>"``), ``ra``, ``dec`` (deg, its two endpoints),
+        ``stream_frame``, ``width_deg``, ``dm_min`` and ``dm_max`` (its
+        ``best_dm``) and ``default_half_width_deg``.
+    """
+    excluded = {int(candidate_id) for candidate_id in exclude_ids}
+    tracks = []
+    for _, candidate in candidates.iterrows():
+        if int(candidate["id"]) in excluded:
+            continue
+        endpoint_1, endpoint_2 = candidate_endpoints(candidate)
+        name = f"candidate_{int(candidate['id'])}"
+        width = float(candidate[CANDIDATE_WIDTH_COLUMN]) if CANDIDATE_WIDTH_COLUMN in candidate.index else np.nan
+        tracks.append({"name": name, "stream_name": name, "ra": np.array([endpoint_1[0], endpoint_2[0]]),
+                       "dec": np.array([endpoint_1[1], endpoint_2[1]]),
+                       "stream_frame": stream_frame_from_endpoints(endpoint_1, endpoint_2), "width_deg": width,
+                       "dm_min": float(candidate["best_dm"]), "dm_max": float(candidate["best_dm"]),
+                       "default_half_width_deg": float(default_half_width_deg)})
+    return tracks
+
+
 def stream_mask_half_width_deg(
     width_deg: float,
     *,
@@ -533,8 +636,7 @@ def streams_near_distance_modulus(
     ----------
     tracks : sequence of mapping
         Each with ``dm_min`` and ``dm_max``, e.g. from
-        ``catalogs.galstreams_catalog.galstreams_mask_tracks`` and
-        ``catalogs.stream_candidates.candidate_mask_tracks``.
+        ``galstreams_mask_tracks`` and ``candidate_mask_tracks``.
     distance_modulus : float or None
         Distance modulus of the candidate. None: every track kept.
     max_dm_difference : float, optional
@@ -602,8 +704,8 @@ def streams_healpix_mask(
         phi2 = 0) and ``width_deg`` (its Gaussian sigma in phi2; NaN when
         unknown); optionally ``default_half_width_deg``, its half-width when
         its width is unknown, instead of the argument (e.g. the thinner
-        candidates). E.g. from ``catalogs.galstreams_catalog.galstreams_mask_tracks``
-        and ``catalogs.stream_candidates.candidate_mask_tracks``.
+        candidates). E.g. from ``galstreams_mask_tracks`` and
+        ``candidate_mask_tracks``.
     nside : int
         HEALPix resolution of the mask.
     nest : bool

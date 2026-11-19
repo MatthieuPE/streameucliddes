@@ -85,8 +85,10 @@ import pandas as pd
 from streameucliddes.analysis.build_masks import (
     STREAM_MASK_MAX_DM_DIFFERENCE,
     STREAM_MASK_MAX_WIDTH_DEG,
+    candidate_mask_tracks,
     excluded_healpix_mask,
     fraction_on_stream_band,
+    galstreams_mask_tracks,
     streams_healpix_mask,
     streams_near_distance_modulus,
     streams_not_wider_than,
@@ -114,12 +116,10 @@ from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_scan,
     stream_frame_search_single_dm,
 )
-from streameucliddes.catalogs.galstreams_catalog import galstreams_mask_tracks
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, isochrone_from_feh
 from streameucliddes.catalogs.stream_candidates import (
     DEFAULT_CANDIDATES_PATH,
     candidate_endpoints,
-    candidate_mask_tracks,
     get_candidate,
     load_candidates,
 )
