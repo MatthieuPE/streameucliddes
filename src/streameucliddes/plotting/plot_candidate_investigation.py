@@ -13,7 +13,10 @@ Two kinds of functions:
   ``plot_stream_frame_search``, ``plot_cmd`` and the functions above on its
   results; ``build_gif``, its maps over distance moduli as frames and a GIF,
   with its track and the known streams and other candidates
-  (``draw_other_tracks``) in another colour;
+  (``draw_other_tracks``) in another colour; ``plot_candidate_depth_dust_map``
+  and ``plot_candidate_depth_dust_maps``, the depth and dust maps of the
+  candidate (``cand.depth_dust_maps``) drawn as its star maps, with its track
+  and regions, beside its star map;
 - the list of candidates on the sky (``catalogs.stream_candidates``):
   ``plot_candidates`` draws the listed candidates over a skyproj sky map
   (the arc between the two endpoints of each, its endpoints and its id, in
@@ -119,6 +122,13 @@ GIF_DM_STEP = 0.1
 GIF_FRAME_DURATION_MS = 300
 GIF_DPI = 110
 GIF_FRAMES_FOLDER = "frames"
+# Depth and dust maps (cand.depth_dust_maps): colour map and colour-bar format of each quantity (the dust: E(B-V)
+# of a few hundredths of mag, three decimals), size of one panel and panels per row of plot_candidate_depth_dust_maps
+DEPTH_DUST_CMAPS = {"MAGLIM": "viridis", "FRACDET": "cividis", "EBV": "magma_r"}
+DEPTH_DUST_COLORBAR_FORMATS = {"MAGLIM": "%.2f", "FRACDET": "%.2f", "EBV": "%.3f"}
+DEPTH_DUST_OUTLINE_COLOR, DEPTH_DUST_OUTLINE_WIDTH = "0.1", 1.5  # dark outline of the lines drawn over these maps
+DEPTH_DUST_PANEL_SIZE = (8.0, 4.5)
+DEPTH_DUST_NCOLS = 2
 # The list of candidates on the sky
 CANDIDATE_COLOR = CATEGORICAL_COLORS[1]  # listed candidates (the known streams: CATEGORICAL_COLORS[0])
 CANDIDATE_ARC_STYLE = {"color": CANDIDATE_COLOR, "lw": 1.5, "ls": "-", "alpha": 0.9}
@@ -546,6 +556,7 @@ def plot_candidate_map(
     phi2_range: tuple[float, float] | None = None,
     vmin: float | None = None,
     vmax: float | None = None,
+    **map_kwargs: Any,
 ) -> tuple[Figure, Axes]:
     """Matched-filter map in the frame, with the track and the regions.
 
@@ -581,6 +592,10 @@ def plot_candidate_map(
         Part of the map shown (deg), e.g. to leave out a dense object: the
         axis limits and the colour scale (``plot_stream_frame_search_single_dm``).
         Default: the whole window.
+    **map_kwargs
+        More arguments of ``plot_stream_frame_search_single_dm`` (``cmap``,
+        ``title``, ``colorbar_label``, ``colorbar_format``), e.g. for a depth
+        or dust map (``plot_candidate_depth_dust_map``).
 
     Returns
     -------
@@ -594,7 +609,7 @@ def plot_candidate_map(
     """
     result = _candidate_map(cand, distance_modulus) if map_result is None else map_result
     fig, ax = plot_stream_frame_search_single_dm(result, ax=ax, phi1_range=phi1_range, phi2_range=phi2_range,
-                                                 vmin=vmin, vmax=vmax)
+                                                 vmin=vmin, vmax=vmax, **map_kwargs)
     if show_stream_mask:
         draw_stream_mask(ax, cand, result["phi1_centres"], result["phi2_centres"])
     draw_stream_track(ax, *cand.track_phi12(), label="track" if cand.regions is not None else "endpoints arc")
@@ -632,6 +647,124 @@ def _candidate_map(cand: CandidateInvestigation, distance_modulus: float | None)
     scanned = f" (the scanned maps go from {min(cand.maps):g} to {max(cand.maps):g})" if cand.maps else ""
     at = "no distance modulus" if distance_modulus is None else f"dm {distance_modulus:g}"
     raise ValueError(f"No map at {at}{scanned}: call cand.scan_distance_moduli() with it, or cand.compute_zoom_map().")
+
+
+# ===================================================
+# Depth and dust maps
+def plot_candidate_depth_dust_map(
+    cand: CandidateInvestigation,
+    map_values: Mapping[str, Any],
+    *,
+    ax: Axes | None = None,
+    show_regions: bool = True,
+    show_stream_mask: bool = True,
+    other_tracks: Sequence[tuple[str, ArrayLike, ArrayLike]] | None = None,
+    phi1_range: tuple[float, float] | None = None,
+    phi2_range: tuple[float, float] | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
+) -> tuple[Figure, Axes]:
+    """One depth or dust map in the frame, with the track and the regions of the candidate.
+
+    ``plot_candidate_map`` of a map of ``cand.depth_dust_maps``
+    (``compute_depth_dust_maps``): the same grid, view, track, regions,
+    masked streams and other tracks as the star maps; the colour map of its
+    quantity (``DEPTH_DUST_CMAPS``), the colour scale over the bins shown
+    (``plot_stream_frame_search_single_dm``); bins outside the depth map grey.
+
+    Parameters
+    ----------
+    cand : CandidateInvestigation
+        The candidate, for its track, regions and masks.
+    map_values : mapping
+        A map of ``cand.depth_dust_maps``, e.g. ``cand.depth_dust_maps["MAGLIM_VIS"]``
+        or ``cand.depth_dust_maps["EBV"]``.
+    ax, show_regions, show_stream_mask, other_tracks, phi1_range, phi2_range, vmin, vmax
+        See ``plot_candidate_map``.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax : matplotlib.axes.Axes
+    """
+    quantity, unit = map_values["quantity"], map_values["unit"]
+    result = {"density": map_values["values"], "phi1_centres": map_values["phi1_centres"],
+              "phi2_centres": map_values["phi2_centres"], "bin_size_deg": map_values["bin_size_deg"]}
+    fig, ax = plot_candidate_map(
+        cand, ax=ax, map_result=result, show_regions=show_regions, show_stream_mask=show_stream_mask,
+        other_tracks=other_tracks, phi1_range=phi1_range, phi2_range=phi2_range, vmin=vmin, vmax=vmax,
+        cmap=DEPTH_DUST_CMAPS[quantity], colorbar_format=DEPTH_DUST_COLORBAR_FORMATS[quantity],
+        colorbar_label=f"{map_values['name']} [{unit}]" if unit else map_values["name"],
+        title=f"{escape_underscores(cand.name)}: {map_values['name']}",
+    )
+    for line in ax.lines:  # the track, regions and other tracks, outlined: seen on every colour of the map
+        line.set_path_effects([withStroke(linewidth=line.get_linewidth() + DEPTH_DUST_OUTLINE_WIDTH,
+                                          foreground=DEPTH_DUST_OUTLINE_COLOR)])
+    return fig, ax
+
+
+def plot_candidate_depth_dust_maps(
+    cand: CandidateInvestigation,
+    *,
+    show_star_map: bool = True,
+    distance_modulus: float | None = None,
+    ncols: int = DEPTH_DUST_NCOLS,
+    show_regions: bool = True,
+    show_stream_mask: bool = True,
+    other_tracks: Sequence[tuple[str, ArrayLike, ArrayLike]] | None = None,
+    phi1_range: tuple[float, float] | None = None,
+    phi2_range: tuple[float, float] | None = None,
+) -> tuple[Figure, list[Axes]]:
+    """The star map and every depth and dust map of the candidate, one panel each, on the same view.
+
+    The matched-filter map (``plot_candidate_map``, ``show_star_map``)
+    first, then each map of ``cand.depth_dust_maps`` in its order (depth of
+    each band, then dust: ``plot_candidate_depth_dust_map``), ``ncols``
+    panels per row: does the candidate follow a fluctuation of the depth or
+    of the dust?
+
+    Parameters
+    ----------
+    cand : CandidateInvestigation
+        With ``depth_dust_maps`` (``compute_depth_dust_maps``), and a star
+        map with ``show_star_map``.
+    show_star_map : bool, optional
+        Draw the matched-filter map in the first panel.
+    distance_modulus : float, optional
+        Of the star map (see ``plot_candidate_map``).
+    ncols : int, optional
+        Panels per row.
+    show_regions, show_stream_mask, other_tracks, phi1_range, phi2_range
+        See ``plot_candidate_map``; the same on every panel.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : list of matplotlib.axes.Axes
+        The panels drawn, in order (the empty ones of the last row are hidden).
+
+    Raises
+    ------
+    ValueError
+        ``compute_depth_dust_maps`` not done; no star map with ``show_star_map``.
+    """
+    if cand.depth_dust_maps is None:
+        raise ValueError("No depth and dust maps: call cand.compute_depth_dust_maps() first.")
+    n_panels = len(cand.depth_dust_maps) + bool(show_star_map)
+    nrows = -(-n_panels // ncols)
+    fig, grid = plt.subplots(nrows, ncols, squeeze=False, layout="constrained",
+                             figsize=(DEPTH_DUST_PANEL_SIZE[0] * ncols, DEPTH_DUST_PANEL_SIZE[1] * nrows))
+    axes = list(grid.flat[:n_panels])
+    for ax in grid.flat[n_panels:]:
+        ax.set_visible(False)
+    common = {"show_regions": show_regions, "show_stream_mask": show_stream_mask, "other_tracks": other_tracks,
+              "phi1_range": phi1_range, "phi2_range": phi2_range}
+    panels = iter(axes)
+    if show_star_map:
+        plot_candidate_map(cand, distance_modulus, ax=next(panels), **common)
+    for map_values, ax in zip(cand.depth_dust_maps.values(), panels):
+        plot_candidate_depth_dust_map(cand, map_values, ax=ax, **common)
+    return fig, axes
 
 
 

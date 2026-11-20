@@ -59,7 +59,10 @@ Steps of ``CandidateInvestigation``, in order:
 Systematics, after ``define_regions`` (not in ``run_all_steps``):
 ``compute_photometric_errors``, the median photometric error of each band of
 the stars of the on region per bin of its magnitude
-(``analysis.cmd_match_filter.photometric_errors_by_magnitude``).
+(``analysis.cmd_match_filter.photometric_errors_by_magnitude``); after
+``prepare``: ``compute_depth_dust_maps``, the depth maps of each band and
+the dust map on the grid of the maps in the frame
+(``catalogs.depth_dust_maps.depth_dust_phi12_maps``), to compare with them.
 
 ``run_all_steps`` does them all. The figures take the object
 (``plotting.plot_candidate_investigation``); ``other_tracks_phi12`` gives
@@ -119,7 +122,8 @@ from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_scan,
     stream_frame_search_single_dm,
 )
-from streameucliddes.catalogs.euclid_catalog import LOADED_BOX_ATTR
+from streameucliddes.catalogs.depth_dust_maps import DEFAULT_DEPTH_QUANTITIES, depth_dust_phi12_maps
+from streameucliddes.catalogs.euclid_catalog import DEFAULT_DUST_CORRECTION, LOADED_BOX_ATTR
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, isochrone_from_feh
 from streameucliddes.catalogs.stream_candidates import (
     BEST_DM_COLUMN,
@@ -163,6 +167,7 @@ OTHER_TRACK_STEP_DEG = 0.05  # points along the other streams and candidates dra
 # "unnamed" for one given by its endpoints, its id for one of the list (from_candidate_id)
 CANDIDATE_FIGURES_DIR = Path(__file__).resolve().parents[3] / "figures" / "outputs" / "candidates"
 UNNAMED_FIGURE_FOLDER = "unnamed"
+CROSS_CHECK_FOLDER = "cross_check"  # subfolder of figure_folder: the cross-checks (depth and dust maps)
 CATALOG_EDGE_TOLERANCE_DEG = 0.1  # window outline beyond the outermost stars by less than this: still inside
 # A stream whose band covers more of the track between the endpoints than this is not masked (warned): it is the
 # candidate itself (e.g. one of the list investigated from its endpoints) or a stream along it
@@ -175,7 +180,7 @@ WINDOW_FIELDS = ("padding_phi1_deg", "padding_phi2_deg", "min_phi2_half_width_de
 # Results that depend on the frame: cleared by prepare and set_endpoints (not sky_map nor isochrone_track)
 FRAME_RESULTS = ("search", "footprint_and_objects_mask", "excluded_healpix_mask", "stars_not_excluded", "zoom_map",
                  "maps", "phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
-                 "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test")
+                 "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test", "depth_dust_maps")
 # Results computed from the distance modulus (the stars in the match filter, from fit_width on)
 DISTANCE_MODULUS_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
                             "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test", "isochrone_track")
@@ -684,7 +689,8 @@ class CandidateInvestigation:
         Folder of the figures of the candidate. Default:
         ``CANDIDATE_FIGURES_DIR / "unnamed"`` (``figures/outputs/candidates/unnamed``);
         from ``from_candidate_id``, ``CANDIDATE_FIGURES_DIR / "<id>"``. Not
-        created here.
+        created here. The figures of the cross-checks go to its subfolder
+        ``cross_check_folder``.
     mask_streams : bool, optional
         Exclude the other streams (``excluded_healpix_mask``): the galstreams
         tracks crossing the footprint of the catalog
@@ -783,6 +789,8 @@ class CandidateInvestigation:
         Hess diagrams and SNR.
     isochrone_track : dict
         ``isochrone_cmd_track`` result.
+    depth_dust_maps : dict
+        ``depth_dust_phi12_maps`` result (``compute_depth_dust_maps``).
     """
 
     # Inputs
@@ -841,6 +849,7 @@ class CandidateInvestigation:
     null_test: dict | None = None
     photometric_errors: dict | None = None
     isochrone_track: dict | None = None
+    depth_dust_maps: dict | None = None
 
     def __post_init__(self) -> None:
         """Frame, window and (ra, dec) box from the endpoints (``stream_frames``).
@@ -952,6 +961,15 @@ class CandidateInvestigation:
         """
         return isochrone_from_feh(self.age, feh=self.feh, metallicity=self.metallicity,
                                   isochrone_model=self.isochrone_model)
+
+    @property
+    def cross_check_folder(self) -> Path:
+        """Folder of the figures of the cross-checks (e.g. the depth and dust maps): ``figure_folder / CROSS_CHECK_FOLDER``.
+
+        ``figures/outputs/candidates/<id>/cross_check`` for a candidate of the
+        list. Not created here.
+        """
+        return Path(self.figure_folder) / CROSS_CHECK_FOLDER
 
     def _set_frame_and_window(self) -> None:
         """Frame from the endpoints, window around them, (ra, dec) box of the window."""
@@ -1731,6 +1749,49 @@ class CandidateInvestigation:
             mag_bins=mag_bins, statistic=statistic,
         )
         self.photometric_errors = {**errors, "in_match_filter": bool(in_match_filter), "color_index": int(color_index)}
+        return self
+
+    def compute_depth_dust_maps(
+        self,
+        *,
+        dust_correction: str | None = DEFAULT_DUST_CORRECTION,
+        bands: Sequence[str] | None = None,
+        depth_quantities: Sequence[str] = DEFAULT_DEPTH_QUANTITIES,
+    ) -> CandidateInvestigation:
+        """Depth maps of each band and dust map in the frame, in ``depth_dust_maps``.
+
+        ``depth_dust_phi12_maps`` on the grid of the maps in the frame (the
+        window and bin size of ``search``): the depth or the dust can be
+        compared bin by bin with the star maps, e.g. to see whether the
+        candidate follows a fluctuation of either
+        (``plot_candidate_investigation.plot_candidate_depth_dust_maps``).
+
+        Parameters
+        ----------
+        dust_correction : str or None, optional
+            Dust map: ``"SFD98"`` or ``"PLANCK"``, that of the dust correction
+            given to ``get_euclid_stars``; None: no dust map.
+        bands : sequence of str, optional
+            Bands of the depth maps. Default: all those with a map
+            (``depth_dust_maps.depth_map_bands``).
+        depth_quantities : sequence of str, optional
+            ``"MAGLIM"`` (limiting magnitude) and/or ``"FRACDET"`` (detection
+            fraction).
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            ``prepare`` not done.
+        """
+        self._require("search", "prepare")
+        self.depth_dust_maps = depth_dust_phi12_maps(
+            self.stream_frame, self.search.window, self.search.bin_size_deg, bands=bands,
+            depth_quantities=depth_quantities, dust_correction=dust_correction,
+        )
         return self
 
     def compute_isochrone(

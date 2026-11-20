@@ -74,6 +74,7 @@ markers = [
     "fit_stream: analysis/fit_stream.py (fits of a stream in its frame: width in phi2)",
     "candidate_investigation: analysis/candidate_investigation.py (regions, width and investigation of one stream candidate)",
     "stream_candidates: catalogs/stream_candidates.py (CSV list of the stream candidates)",
+    "depth_dust_maps: catalogs/depth_dust_maps.py (depth maps of each band and dust maps, on a phi1/phi2 grid)",
     "plot_candidate_investigation: plotting/plot_candidate_investigation.py (figures of a candidate investigation: tracks, regions, profiles; the list of candidates on the sky, clicked endpoints)",
     "gc_dwarf_optimization: analysis/gc_dwarf_optimization.py (cuts and match filters tuned on known dwarf galaxies and globular clusters)",
     "on_off_regions: analysis/on_off_regions.py (on and off regions around an object or along a track: stars, areas, SNR, maps, Hess diagrams)",

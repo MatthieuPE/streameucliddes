@@ -18,6 +18,7 @@ from streameucliddes.plotting.plot_candidate_investigation import (
     CANDIDATE_COLOR,
     CANDIDATE_NO_STATUS_COLOR,
     CANDIDATE_STATUS_COLORS,
+    DEPTH_DUST_CMAPS,
     OTHER_TRACK_COLOR,
     OTHER_TRACKS_LABEL,
     EndpointPicker,
@@ -25,6 +26,8 @@ from streameucliddes.plotting.plot_candidate_investigation import (
     draw_other_tracks,
     draw_stream_regions,
     endpoints_arc_radec,
+    plot_candidate_depth_dust_map,
+    plot_candidate_depth_dust_maps,
     plot_candidate_frame_check,
     plot_candidate_hess,
     plot_candidate_map,
@@ -528,3 +531,32 @@ def test_plot_candidates_status_colors(sky_ax, tmp_path):
     assert {artist.get_color() for artist in plot_candidates(sky_ax, path=path, arc_style={"color": "k"},
                                                              endpoint_style={"color": "k"})} == {"k"}
     assert CANDIDATE_COLOR == CANDIDATE_STATUS_COLORS["strong"]  # a list without statuses: as before
+
+
+# One depth or dust map: the colour map of its quantity, its name in the title and colour bar, the track drawn
+def test_plot_candidate_depth_dust_map(candidate_with_maps, synthetic_depth_dust_maps):
+    cand = candidate_with_maps.compute_depth_dust_maps(dust_correction="PLANCK")
+    for name, map_values in cand.depth_dust_maps.items():
+        fig, ax = plot_candidate_depth_dust_map(cand, map_values)
+        (image,) = ax.images
+        assert image.get_cmap().name == DEPTH_DUST_CMAPS[map_values["quantity"]]
+        assert map_values["name"] in ax.get_title() and cand.name in ax.get_title()
+        assert ax.child_axes[0].get_ylabel() == f"{map_values['name']} [mag]"  # the colour bar, an inset
+        assert "endpoints arc" in {line.get_label() for line in ax.lines}
+        plt.close(fig)
+
+
+# The star map and every depth and dust map, one panel each, the empty panel hidden; the maps must be computed
+def test_plot_candidate_depth_dust_maps(candidate_with_maps, synthetic_depth_dust_maps):
+    cand = candidate_with_maps
+    with pytest.raises(ValueError, match="compute_depth_dust_maps"):
+        plot_candidate_depth_dust_maps(cand)
+    cand.compute_depth_dust_maps()
+    fig, axes = plot_candidate_depth_dust_maps(cand, ncols=2)
+    assert len(axes) == 4 and "dm 17.0" in axes[0].get_title()
+    assert [ax.get_title().split(": ")[-1] for ax in axes[1:]] == [
+        map_values["name"] for map_values in cand.depth_dust_maps.values()]
+    plt.close(fig)
+    fig, axes = plot_candidate_depth_dust_maps(cand, show_star_map=False, ncols=2)
+    assert len(axes) == 3 and not fig.axes[3].get_visible()
+    plt.close(fig)

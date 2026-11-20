@@ -1120,3 +1120,29 @@ def test_hess_error_table(stars_with_errors):
     many_bins = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=np.arange(20.0, 23.01, 0.25))  # 12 bins
     table = hess_error_table(on, off, many_bins)
     assert len(table) == 12 and table["mag_centre"][6:].isna().all() and table["error_mag_centre_H"].notna().all()
+
+
+# Depth and dust maps on the grid of the maps in the frame (that of the zoom map); prepare needed; cleared with the
+# frame (set_endpoints)
+def test_compute_depth_dust_maps(candidate_endpoints, candidate_with_maps, synthetic_depth_dust_maps):
+    with pytest.raises(ValueError, match="prepare"):
+        CandidateInvestigation("test", *candidate_endpoints).compute_depth_dust_maps()
+    cand = candidate_with_maps
+    assert cand.compute_depth_dust_maps(dust_correction="SFD98") is cand
+    assert list(cand.depth_dust_maps) == ["MAGLIM_VIS", "MAGLIM_H", "EBV"]
+    for map_values in cand.depth_dust_maps.values():
+        assert map_values["phi1_centres"] == pytest.approx(cand.zoom_map["phi1_centres"])
+        assert map_values["phi2_centres"] == pytest.approx(cand.zoom_map["phi2_centres"])
+        assert map_values["values"].shape == np.shape(cand.zoom_map["density"])
+    assert cand.depth_dust_maps["EBV"]["dust_correction"] == "SFD98"
+    cand.compute_depth_dust_maps(dust_correction=None, bands=["H"], depth_quantities=("FRACDET",))
+    assert list(cand.depth_dust_maps) == ["FRACDET_H"]
+    cand.set_endpoints((76.0, -41.0), (69.0, -44.0))
+    assert cand.depth_dust_maps is None
+
+
+# The cross-checks in the subfolder CROSS_CHECK_FOLDER of the figure folder of the candidate (not created)
+def test_cross_check_folder(candidate_endpoints, tmp_path):
+    cand = CandidateInvestigation("test", *candidate_endpoints, figure_folder=tmp_path / "7")
+    assert cand.cross_check_folder == tmp_path / "7" / candidate_investigation_module.CROSS_CHECK_FOLDER
+    assert not cand.cross_check_folder.exists()
