@@ -15,6 +15,9 @@ from streameucliddes.analysis.candidate_investigation import region_windows
 from streameucliddes.analysis.cmd_match_filter import match_filter_cmd_columns
 from streameucliddes.catalogs.stream_candidates import STATUS_COLUMN, add_candidate, write_candidates
 from streameucliddes.plotting.plot_candidate_investigation import (
+    CANDIDATE_COLOR,
+    CANDIDATE_NO_STATUS_COLOR,
+    CANDIDATE_STATUS_COLORS,
     OTHER_TRACK_COLOR,
     OTHER_TRACKS_LABEL,
     EndpointPicker,
@@ -506,3 +509,22 @@ def test_plot_photometric_errors():
     assert [line.get_xdata().size for line in ax.lines] == [2, 3]
     assert ax.get_title() == "5 stars"
     plt.close(fig)
+
+
+# One colour per status (arc, endpoints, id), one legend entry per status; a color given: that of all
+def test_plot_candidates_status_colors(sky_ax, tmp_path):
+    path = tmp_path / "candidates.csv"
+    statuses = ["strong", "good", "bad", None, "strong"]
+    for index, _ in enumerate(statuses):
+        candidates = add_candidate((40.0 + 3 * index, -45.0), (39.0 + 3 * index, -51.0), 17.0, path=path)
+    candidates[STATUS_COLUMN] = statuses
+    write_candidates(candidates, path)
+    artists = plot_candidates(sky_ax, path=path, include_bad_candidates=True)
+    expected = [CANDIDATE_STATUS_COLORS["strong"], CANDIDATE_STATUS_COLORS["good"], CANDIDATE_STATUS_COLORS["bad"],
+                CANDIDATE_NO_STATUS_COLOR, CANDIDATE_STATUS_COLORS["strong"]]
+    assert [artist.get_color() for artist in artists] == [color for color in expected for _ in range(3)]
+    assert [label for label in (artist.get_label() for artist in artists) if label and label[0] != "_"] == [
+        "strong candidates", "good candidates", "bad candidates", "candidates"]
+    assert {artist.get_color() for artist in plot_candidates(sky_ax, path=path, arc_style={"color": "k"},
+                                                             endpoint_style={"color": "k"})} == {"k"}
+    assert CANDIDATE_COLOR == CANDIDATE_STATUS_COLORS["strong"]  # a list without statuses: as before

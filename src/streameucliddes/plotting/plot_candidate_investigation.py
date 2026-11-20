@@ -16,7 +16,8 @@ Two kinds of functions:
   (``draw_other_tracks``) in another colour;
 - the list of candidates on the sky (``catalogs.stream_candidates``):
   ``plot_candidates`` draws the listed candidates over a skyproj sky map
-  (the arc between the two endpoints of each, its endpoints and its id), and
+  (the arc between the two endpoints of each, its endpoints and its id, in
+  the colour of its status), and
   ``EndpointPicker`` gives the (ra, dec) of two clicks on such a map, the
   endpoints of a new candidate (needs ``%matplotlib widget``, from ipympl).
 """
@@ -28,6 +29,7 @@ from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from matplotlib.patheffects import withStroke
 from scipy.ndimage import gaussian_filter
 
@@ -37,6 +39,7 @@ from streameucliddes.analysis.stream_frame_search import stream_frame_search_dm_
 from streameucliddes.catalogs.survey_footprint import in_healpix_mask
 from streameucliddes.catalogs.stream_candidates import (
     DEFAULT_CANDIDATES_PATH,
+    STATUS_COLUMN,
     candidate_endpoints,
     load_candidates,
 )
@@ -76,7 +79,6 @@ if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
     from typing import Any
 
-    import pandas as pd
     from matplotlib.artist import Artist
     from matplotlib.axes import Axes
     from matplotlib.backend_bases import MouseEvent
@@ -121,6 +123,9 @@ GIF_FRAMES_FOLDER = "frames"
 CANDIDATE_COLOR = CATEGORICAL_COLORS[1]  # listed candidates (the known streams: CATEGORICAL_COLORS[0])
 CANDIDATE_ARC_STYLE = {"color": CANDIDATE_COLOR, "lw": 1.5, "ls": "-", "alpha": 0.9}
 CANDIDATE_ENDPOINT_STYLE = {"ls": "none", "marker": "o", "ms": 4, "color": CANDIDATE_COLOR}
+# One colour per status of the candidates (stream_candidates.STATUS_COLUMN); without a status: CANDIDATE_NO_STATUS_COLOR
+CANDIDATE_STATUS_COLORS = {"strong": CANDIDATE_COLOR, "good": CATEGORICAL_COLORS[2], "bad": CATEGORICAL_COLORS[4]}
+CANDIDATE_NO_STATUS_COLOR = CATEGORICAL_COLORS[5]
 PICK_ARC_STYLE = {"color": ENDPOINT_STYLE["mec"], "lw": 1.5, "ls": "-", "alpha": 0.9}  # endpoints being picked:
 # ENDPOINT_STYLE, as the endpoints of the frame check
 ARC_POINTS = 100
@@ -944,6 +949,11 @@ def plot_candidates(
 ) -> list[Artist]:
     """Overplot the listed candidates on a sky map: arc between the endpoints, endpoints, id.
 
+    Each in the colour of its status (``CANDIDATE_STATUS_COLORS``,
+    ``CANDIDATE_NO_STATUS_COLOR`` without one; ``CANDIDATE_COLOR`` for all
+    when the list has no ``STATUS_COLUMN``), one legend entry per status
+    drawn (``"<status> candidates"``, ``"candidates"`` without a status).
+
     Parameters
     ----------
     ax : skyproj.SkyAxes
@@ -961,7 +971,8 @@ def plot_candidates(
         Write the id of each candidate next to its first endpoint.
     arc_style, endpoint_style : dict, optional
         Arguments of ``ax.plot`` updating ``CANDIDATE_ARC_STYLE`` and
-        ``CANDIDATE_ENDPOINT_STYLE``.
+        ``CANDIDATE_ENDPOINT_STYLE``; a ``color`` given here is that of
+        every candidate.
 
     Returns
     -------
@@ -971,16 +982,24 @@ def plot_candidates(
     """
     if candidates is None:
         candidates = load_candidates(path, include_bad_candidates=include_bad_candidates)
-    arc_style = {**CANDIDATE_ARC_STYLE, **(arc_style or {})}
-    endpoint_style = {**CANDIDATE_ENDPOINT_STYLE, **(endpoint_style or {})}
     artists: list[Artist] = []
-    for index, (_, candidate) in enumerate(candidates.iterrows()):
+    labelled = set()
+    for _, candidate in candidates.iterrows():
+        status = candidate.get(STATUS_COLUMN)
+        status = None if pd.isna(status) else str(status)
+        color = (CANDIDATE_STATUS_COLORS.get(status, CANDIDATE_NO_STATUS_COLOR)
+                 if STATUS_COLUMN in candidates.columns else CANDIDATE_COLOR)
+        label = "candidates" if status is None else f"{status} candidates"
+        candidate_arc_style = {**CANDIDATE_ARC_STYLE, "color": color, **(arc_style or {})}
+        candidate_endpoint_style = {**CANDIDATE_ENDPOINT_STYLE, "color": color, **(endpoint_style or {})}
         endpoint_1, endpoint_2 = candidate_endpoints(candidate)
         artists += draw_stream_track_on_sky(ax, *endpoints_arc_radec(endpoint_1, endpoint_2),
-                                            label="candidates" if index == 0 else None, **arc_style)
-        artists += ax.plot([endpoint_1[0], endpoint_2[0]], [endpoint_1[1], endpoint_2[1]], **endpoint_style)
+                                            label=None if label in labelled else label, **candidate_arc_style)
+        labelled.add(label)
+        artists += ax.plot([endpoint_1[0], endpoint_2[0]], [endpoint_1[1], endpoint_2[1]],
+                           **candidate_endpoint_style)
         if label_ids:
-            artists.append(ax.text(*endpoint_1, f" {int(candidate['id'])}", color=arc_style["color"],
+            artists.append(ax.text(*endpoint_1, f" {int(candidate['id'])}", color=candidate_arc_style["color"],
                                    fontsize=LABEL_FONTSIZE, fontweight="bold", ha="left", va="bottom",
                                    path_effects=[withStroke(linewidth=2.5, foreground="white")]))
     return artists
