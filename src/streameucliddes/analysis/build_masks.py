@@ -735,7 +735,7 @@ def streams_healpix_mask(
         half_width = stream_mask_half_width_deg(
             track["width_deg"], n_sigma=n_sigma,
             default_half_width_deg=track.get("default_half_width_deg", default_half_width_deg))
-        ra, dec = _points_along_track(track, half_width / STREAM_MASK_DISCS_PER_HALF_WIDTH)
+        ra, dec = points_along_track(track, half_width / STREAM_MASK_DISCS_PER_HALF_WIDTH)
         for vector in hp.ang2vec(ra, dec, lonlat=True):
             mask[hp.query_disc(nside, vector, np.radians(half_width), nest=nest)] = True
     return mask
@@ -776,14 +776,30 @@ def fraction_on_stream_band(
     half_width = stream_mask_half_width_deg(
         track["width_deg"], n_sigma=n_sigma,
         default_half_width_deg=track.get("default_half_width_deg", default_half_width_deg))
-    centres = hp.ang2vec(*_points_along_track(track, half_width / STREAM_MASK_DISCS_PER_HALF_WIDTH), lonlat=True)
+    centres = hp.ang2vec(*points_along_track(track, half_width / STREAM_MASK_DISCS_PER_HALF_WIDTH), lonlat=True)
     points = hp.ang2vec(ra, dec, lonlat=True).reshape(-1, 3)
     largest_cosine = (points @ centres.T).max(axis=1)  # of the angle to the nearest disc centre
     return float((largest_cosine >= np.cos(np.radians(half_width))).mean())
 
 
-def _points_along_track(track: Mapping, step_deg: float) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
-    """(ra, dec) of points at most ``step_deg`` apart along a track, straight between its points in its frame."""
+def points_along_track(track: Mapping, step_deg: float) -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """(ra, dec) of points at most ``step_deg`` apart along a track, straight between its points in its frame.
+
+    E.g. the great circle between the two endpoints of a candidate
+    (``candidate_mask_tracks``), for its mask or to draw it in another frame.
+
+    Parameters
+    ----------
+    track : mapping
+        With ``ra``, ``dec`` (deg, at least two points, in order) and ``stream_frame``.
+    step_deg : float
+        Largest distance between two points (deg).
+
+    Returns
+    -------
+    ra, dec : numpy.ndarray
+        (deg), from the first point of the track to its last.
+    """
     phi1, phi2 = radec_to_phi12(np.asarray(track["ra"], dtype=float), np.asarray(track["dec"], dtype=float),
                                 track["stream_frame"])
     d_phi1 = (np.diff(phi1) + 180.0) % 360.0 - 180.0  # no jump at phi1 = +-180

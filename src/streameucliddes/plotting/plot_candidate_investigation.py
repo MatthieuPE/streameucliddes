@@ -11,7 +11,9 @@ Two kinds of functions:
 - thin wrappers, ``plot_candidate_*``: each takes a
   ``CandidateInvestigation`` and calls the plots of ``plot_generic_search``,
   ``plot_stream_frame_search``, ``plot_cmd`` and the functions above on its
-  results;
+  results; ``build_gif``, its maps over distance moduli as frames and a GIF,
+  with its track and the known streams and other candidates
+  (``draw_other_tracks``) in another colour;
 - the list of candidates on the sky (``catalogs.stream_candidates``):
   ``plot_candidates`` draws the listed candidates over a skyproj sky map
   (the arc between the two endpoints of each, its endpoints and its id), and
@@ -21,6 +23,7 @@ Two kinds of functions:
 
 from __future__ import annotations
 
+from pathlib import Path
 from typing import TYPE_CHECKING
 
 import matplotlib.pyplot as plt
@@ -30,6 +33,7 @@ from scipy.ndimage import gaussian_filter
 
 from streameucliddes.analysis.candidate_investigation import region_windows
 from streameucliddes.analysis.fit_stream import stream_width_model
+from streameucliddes.analysis.stream_frame_search import stream_frame_search_dm_scan
 from streameucliddes.catalogs.survey_footprint import in_healpix_mask
 from streameucliddes.catalogs.stream_candidates import (
     DEFAULT_CANDIDATES_PATH,
@@ -44,9 +48,11 @@ from streameucliddes.plotting.plot_cmd import (
     plot_isochrone,
     plot_match_filter_polygon,
 )
+from streameucliddes.plotting.make_videos import make_gif_from_plots
 from streameucliddes.plotting.plot_generic_search import plot_generic_search_residual_map
 from streameucliddes.plotting.plot_stream_frame_search import (
     FOOTPRINT_OUTSIDE_GREY,
+    _single_dm_title,
     _view_limits,
     bins_in_phi12_range,
     draw_stream_track,
@@ -68,7 +74,6 @@ from streameucliddes.stream_frames import (
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
-    from pathlib import Path
     from typing import Any
 
     import pandas as pd
@@ -101,6 +106,17 @@ STREAM_MASK_COLOR = "0.15"
 STREAM_MASK_HATCH = "////"
 STREAM_MASK_LABEL = "masked streams"
 FIT_COLOR = CATEGORICAL_COLORS[4]
+# The known streams and the other candidates on the maps in the frame (cand.other_tracks_phi12): one colour, not
+# that of the track of the candidate (plot_stream_frame_search.TRACK_COLOR) nor those of the regions and endpoints
+OTHER_TRACK_COLOR = CATEGORICAL_COLORS[5]
+OTHER_TRACK_STYLE = {"color": OTHER_TRACK_COLOR, "lw": 1.2, "ls": "--", "alpha": 0.9}
+OTHER_TRACKS_LABEL = "other streams and candidates"
+# build_gif: distance moduli around that of the candidate, time per frame, resolution of the frames
+GIF_DM_HALF_RANGE = 1.0
+GIF_DM_STEP = 0.1
+GIF_FRAME_DURATION_MS = 300
+GIF_DPI = 110
+GIF_FRAMES_FOLDER = "frames"
 # The list of candidates on the sky
 CANDIDATE_COLOR = CATEGORICAL_COLORS[1]  # listed candidates (the known streams: CATEGORICAL_COLORS[0])
 CANDIDATE_ARC_STYLE = {"color": CANDIDATE_COLOR, "lw": 1.5, "ls": "-", "alpha": 0.9}
@@ -197,6 +213,45 @@ def draw_stream_mask(
     (entry,) = ax.fill([], [], facecolor="none", edgecolor=STREAM_MASK_COLOR, hatch=STREAM_MASK_HATCH,
                        label=STREAM_MASK_LABEL)
     return [fill, outline, entry]
+
+
+def draw_other_tracks(
+    ax: Axes,
+    tracks: Sequence[tuple[str, ArrayLike, ArrayLike]],
+) -> list[Artist]:
+    """The known streams and the other candidates on a phi1/phi2 map, in ``OTHER_TRACK_COLOR``, each with its name.
+
+    One legend entry for all (``OTHER_TRACKS_LABEL``); the name of each a
+    quarter of the way along its points in the window (not in the middle: a
+    track crossing the candidate crosses it near the centre of the map),
+    outlined in white.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes of a phi1/phi2 map of the candidate.
+    tracks : sequence of (str, array_like, array_like)
+        ``(name, phi1, phi2)`` (deg; NaN outside the window), e.g.
+        ``cand.other_tracks_phi12()``.
+
+    Returns
+    -------
+    artists : list of matplotlib.artist.Artist
+        The lines and the names; empty without tracks.
+    """
+    artists: list[Artist] = []
+    for index, (name, phi1, phi2) in enumerate(tracks):
+        phi1, phi2 = np.asarray(phi1, dtype=float), np.asarray(phi2, dtype=float)
+        artists += draw_stream_track(ax, phi1, phi2, label=OTHER_TRACKS_LABEL if index == 0 else None,
+                                     **OTHER_TRACK_STYLE)
+        shown = np.flatnonzero(np.isfinite(phi1) & np.isfinite(phi2))
+        if shown.size:
+            point = shown[shown.size // 4]
+            artists.append(ax.text(phi1[point], phi2[point], f" {escape_underscores(name)}",
+                                   color=OTHER_TRACK_COLOR, fontsize=LABEL_FONTSIZE, fontweight="bold", ha="left",
+                                   va="bottom", clip_on=True,
+                                   path_effects=[withStroke(linewidth=2.5, foreground="white")]))
+    return artists
 
 
 def plot_phi2_profile(
@@ -480,6 +535,8 @@ def plot_candidate_map(
     ax: Axes | None = None,
     show_regions: bool = True,
     show_stream_mask: bool = True,
+    other_tracks: Sequence[tuple[str, ArrayLike, ArrayLike]] | None = None,
+    map_result: Mapping[str, Any] | None = None,
     phi1_range: tuple[float, float] | None = None,
     phi2_range: tuple[float, float] | None = None,
     vmin: float | None = None,
@@ -489,8 +546,10 @@ def plot_candidate_map(
 
     ``plot_stream_frame_search_single_dm``, ``draw_stream_track`` of
     ``cand.track_phi12()`` (the arc between the endpoints before the regions),
-    ``draw_stream_regions`` and ``draw_stream_mask`` (the other streams
-    masked, hatched). The title gives the distance modulus of the map drawn.
+    ``draw_stream_regions``, ``draw_stream_mask`` (the other streams
+    masked, hatched) and ``draw_other_tracks`` (the known streams and the
+    other candidates, when given). The title gives the distance modulus of
+    the map drawn.
 
     Parameters
     ----------
@@ -505,6 +564,14 @@ def plot_candidate_map(
         Draw the regions, when defined.
     show_stream_mask : bool, optional
         Hatch the streams masked (``draw_stream_mask``).
+    other_tracks : sequence of (str, array_like, array_like), optional
+        The known streams and the other candidates, ``(name, phi1, phi2)``,
+        e.g. ``cand.other_tracks_phi12()`` (``draw_other_tracks``). Default:
+        none drawn.
+    map_result : mapping, optional
+        A map of ``stream_frame_search_single_dm`` (or of a scan) in the
+        frame of the candidate, drawn instead of one of ``cand.maps``
+        (``distance_modulus`` is then not used), e.g. those of ``build_gif``.
     phi1_range, phi2_range : tuple of float, optional
         Part of the map shown (deg), e.g. to leave out a dense object: the
         axis limits and the colour scale (``plot_stream_frame_search_single_dm``).
@@ -520,7 +587,7 @@ def plot_candidate_map(
     ValueError
         No map: neither ``maps`` nor a ``zoom_map`` at this distance modulus.
     """
-    result = _candidate_map(cand, distance_modulus)
+    result = _candidate_map(cand, distance_modulus) if map_result is None else map_result
     fig, ax = plot_stream_frame_search_single_dm(result, ax=ax, phi1_range=phi1_range, phi2_range=phi2_range,
                                                  vmin=vmin, vmax=vmax)
     if show_stream_mask:
@@ -528,6 +595,8 @@ def plot_candidate_map(
     draw_stream_track(ax, *cand.track_phi12(), label="track" if cand.regions is not None else "endpoints arc")
     if show_regions and cand.regions is not None:
         draw_stream_regions(ax, cand.regions)
+    if other_tracks:
+        draw_other_tracks(ax, other_tracks)
     ax.legend(loc="upper right", fontsize="small", framealpha=0.8)
     return fig, ax
 
@@ -728,6 +797,110 @@ def plot_candidate_overview(cand: CandidateInvestigation) -> tuple[Figure, list[
     return fig, [map_ax, phi2_ax, phi1_ax, hess_ax]
 
 
+def build_gif(
+    cand: CandidateInvestigation,
+    distance_moduli: Sequence[float] | None = None,
+    *,
+    dm_half_range: float = GIF_DM_HALF_RANGE,
+    dm_step: float = GIF_DM_STEP,
+    show_other_tracks: bool = True,
+    file_prefix: str | None = None,
+    frame_duration_ms: int = GIF_FRAME_DURATION_MS,
+    dpi: int = GIF_DPI,
+    scan_kwargs: Mapping[str, Any] | None = None,
+    **map_kwargs: Any,
+) -> tuple[Path, list[Path]]:
+    """GIF of the candidate over distance moduli: its map in its frame at each, with its track and the other streams.
+
+    The maps of ``stream_frame_search_dm_scan`` on the prepared stars, with
+    the isochrone of the object (``cand.maps`` is left as it is), each drawn
+    by ``plot_candidate_map`` with the track of the candidate
+    (``cand.track_phi12``: the arc between the endpoints, or the fitted track
+    after ``define_regions``) and, in ``OTHER_TRACK_COLOR``, the known
+    streams and the other candidates in the window
+    (``cand.other_tracks_phi12``, ``draw_other_tracks``). The frame at
+    ``cand.distance_modulus`` says "best dm" in its title. Frames
+    ``<file_prefix>_dm<dm>.png`` in ``cand.figure_folder / "frames"``, GIF
+    ``<file_prefix>_dm_scan.gif`` in ``cand.figure_folder``
+    (``make_videos.make_gif_from_plots``, from the frames of this call only:
+    older frames of the folder are left out). Each frame has the colour scale
+    of its own map (``plot_stream_frame_search_single_dm``), unless ``vmin``
+    and ``vmax`` are given.
+
+    Parameters
+    ----------
+    cand : CandidateInvestigation
+        Prepared (``prepare``).
+    distance_moduli : sequence of float, optional
+        Distance moduli of the frames. Default: from ``cand.distance_modulus
+        - dm_half_range`` to ``cand.distance_modulus + dm_half_range`` every
+        ``dm_step`` (for a listed candidate, its best distance modulus:
+        ``from_candidate_id``); without ``distance_modulus``, the grid of
+        the scan (``cand.search.distance_moduli``: ``cand.distance_moduli``,
+        else that of ``prepare_search``).
+    dm_half_range, dm_step : float, optional
+        See ``distance_moduli``.
+    show_other_tracks : bool, optional
+        Draw the known streams and the other candidates.
+    file_prefix : str, optional
+        Start of the names of the frames and of the GIF. Default:
+        ``cand.name``; another one keeps the files of another isochrone in
+        the same folder, e.g. ``cand.name + "_fitted_isochrone"``.
+    frame_duration_ms : int, optional
+        Time per frame in the GIF (ms).
+    dpi : int, optional
+        Resolution of the frames.
+    scan_kwargs : mapping, optional
+        Arguments of ``stream_frame_search_dm_scan`` (``smoothing_deg``,
+        ``n_workers``).
+    **map_kwargs
+        Arguments of ``plot_candidate_map`` (``phi1_range``, ``phi2_range``,
+        ``vmin``, ``vmax``, ``show_regions`` and ``show_stream_mask``, both
+        False by default here).
+
+    Returns
+    -------
+    gif_path : pathlib.Path
+    frame_paths : list of pathlib.Path
+        In the order of ``distance_moduli``.
+
+    Raises
+    ------
+    ValueError
+        ``prepare`` not done, or ``dm_step`` not positive.
+    """
+    if cand.search is None:
+        raise ValueError("No prepared stars: call cand.prepare(catalog) first.")
+    if distance_moduli is None and cand.distance_modulus is None:
+        distance_moduli = cand.search.distance_moduli
+    elif distance_moduli is None:
+        if dm_step <= 0:
+            raise ValueError(f"dm_step must be positive, not {dm_step}.")
+        n_steps = int(round(dm_half_range / dm_step))
+        distance_moduli = cand.distance_modulus + dm_step * np.arange(-n_steps, n_steps + 1)
+    distance_moduli = [round(float(dm), 6) for dm in distance_moduli]  # 16.35, not 16.350000000000001
+    file_prefix = cand.name if file_prefix is None else file_prefix
+    map_kwargs = {"show_regions": False, "show_stream_mask": False, **map_kwargs}
+    other_tracks = cand.other_tracks_phi12() if show_other_tracks else None
+    folder = Path(cand.figure_folder)
+    frames_folder = folder / GIF_FRAMES_FOLDER
+    frames_folder.mkdir(parents=True, exist_ok=True)
+
+    frame_paths = []
+    for dm, result in stream_frame_search_dm_scan(search=cand.search, distance_moduli=distance_moduli,
+                                                  isochrone=cand.isochrone, **(scan_kwargs or {})):
+        fig, ax = plot_candidate_map(cand, map_result=result, other_tracks=other_tracks, **map_kwargs)
+        best = cand.distance_modulus is not None and np.isclose(dm, cand.distance_modulus)
+        ax.set_title(f"{escape_underscores(cand.name)}: {_single_dm_title(result)}" + (", best dm" if best else ""),
+                     color=ax.title.get_color())
+        frame_paths.append(frames_folder / f"{file_prefix}_dm{dm:05.2f}.png")  # 05.2f: the names sort as the dm
+        fig.savefig(frame_paths[-1], dpi=dpi)
+        plt.close(fig)
+    gif_path = folder / f"{file_prefix}_dm_scan.gif"
+    make_gif_from_plots(gif_path, pattern=frame_paths, duration=frame_duration_ms)
+    return gif_path, frame_paths
+
+
 # ===================================================
 # The list of candidates on the sky
 # ===================================================
@@ -764,6 +937,7 @@ def plot_candidates(
     candidates: pd.DataFrame | None = None,
     *,
     path: str | Path = DEFAULT_CANDIDATES_PATH,
+    include_bad_candidates: bool = False,
     label_ids: bool = True,
     arc_style: dict[str, Any] | None = None,
     endpoint_style: dict[str, Any] | None = None,
@@ -776,10 +950,13 @@ def plot_candidates(
         Axes of a sky map, e.g. from ``plot_generic_search_residual_map``;
         its ``plot`` and ``text`` take (ra, dec) in degrees.
     candidates : pandas.DataFrame, optional
-        From ``catalogs.stream_candidates.load_candidates``. Default: those
-        of the file ``path``.
+        From ``catalogs.stream_candidates.load_candidates`` (all drawn).
+        Default: those of the file ``path``.
     path : str or pathlib.Path, optional
         CSV file read when ``candidates`` is not given.
+    include_bad_candidates : bool, optional
+        Also draw the bad candidates of ``path`` (status ``bad``,
+        ``load_candidates``) when ``candidates`` is not given.
     label_ids : bool, optional
         Write the id of each candidate next to its first endpoint.
     arc_style, endpoint_style : dict, optional
@@ -793,7 +970,7 @@ def plot_candidates(
         candidate.
     """
     if candidates is None:
-        candidates = load_candidates(path)
+        candidates = load_candidates(path, include_bad_candidates=include_bad_candidates)
     arc_style = {**CANDIDATE_ARC_STYLE, **(arc_style or {})}
     endpoint_style = {**CANDIDATE_ENDPOINT_STYLE, **(endpoint_style or {})}
     artists: list[Artist] = []

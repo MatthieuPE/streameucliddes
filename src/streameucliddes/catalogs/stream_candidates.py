@@ -8,6 +8,11 @@ on the maps (``best_dm_by_eye``): the inputs of
 distance modulus of its largest SNR, is computed by
 ``analysis.candidate_investigation.update_candidate_best_dm`` (empty until
 then); ``candidate_best_dm`` gives it, else the one by eye.
+The optional column ``status`` (``STATUS_COLUMN``, added by hand) rates
+each candidate ``strong``, ``good`` or ``bad`` (``CANDIDATE_STATUSES``);
+``load_candidates`` leaves the bad ones out unless
+``include_bad_candidates`` (so do the masks of the other candidates and the
+plots, which read the list through it), empty: not bad.
 The file is in ``data/candidates/`` (local, gitignored with the rest of
 ``data/``). Columns added by hand are kept when a candidate is added.
 
@@ -38,15 +43,27 @@ BEST_DM_COLUMN = "best_dm"
 # Optional column, added by hand: Gaussian sigma in phi2 of a candidate (deg), the width of its mask when another
 # candidate is investigated (analysis.build_masks.candidate_mask_tracks)
 CANDIDATE_WIDTH_COLUMN = "sigma_deg"
+# Optional column, added by hand: how good a candidate looks, one of CANDIDATE_STATUSES (empty: not rated). The bad
+# ones are left out of the list (load_candidates), of the masks and of the plots unless include_bad_candidates
+STATUS_COLUMN = "status"
+CANDIDATE_STATUSES = ("strong", "good", "bad")
+BAD_STATUS = "bad"
 
 
-def load_candidates(path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.DataFrame:
-    """The candidates of the CSV file.
+def load_candidates(
+    path: str | Path = DEFAULT_CANDIDATES_PATH,
+    *,
+    include_bad_candidates: bool = False,
+) -> pd.DataFrame:
+    """The candidates of the CSV file, without the bad ones unless ``include_bad_candidates``.
 
     Parameters
     ----------
     path : str or pathlib.Path, optional
         CSV file. Missing or empty: no candidate.
+    include_bad_candidates : bool, optional
+        Keep the candidates whose ``STATUS_COLUMN`` is ``BAD_STATUS``
+        (always kept without the column).
 
     Returns
     -------
@@ -54,14 +71,15 @@ def load_candidates(path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.DataFrame:
         ``CANDIDATE_COLUMNS``, ``BEST_DM_COLUMN`` (NaN where not computed,
         all NaN when the file has no such column), then any column added by
         hand; ``id`` as integers. Empty, with these columns, when there is
-        no candidate.
+        no candidate. The index is that of the rows of the file.
 
     Raises
     ------
     ValueError
         A column of ``CANDIDATE_COLUMNS`` missing from the file (a file of
         the former format, ``best_dm`` by eye and no ``best_dm_by_eye``: a
-        message to rename it).
+        message to rename it), or a ``STATUS_COLUMN`` value not in
+        ``CANDIDATE_STATUSES``.
     """
     path = Path(path)
     if not path.exists() or path.stat().st_size == 0:
@@ -77,6 +95,14 @@ def load_candidates(path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.DataFrame:
     candidates["id"] = candidates["id"].astype(int)
     if BEST_DM_COLUMN not in candidates.columns:
         candidates[BEST_DM_COLUMN] = np.nan
+    if STATUS_COLUMN in candidates.columns:
+        status = candidates[STATUS_COLUMN]
+        unknown = sorted(set(status.dropna()) - set(CANDIDATE_STATUSES))
+        if unknown:
+            raise ValueError(f"{path}: {STATUS_COLUMN!r} {unknown} of no known status; the statuses are "
+                             f"{CANDIDATE_STATUSES} (or empty).")
+        if not include_bad_candidates:
+            candidates = candidates[status != BAD_STATUS]
     return _ordered(candidates)
 
 
@@ -100,14 +126,15 @@ def add_candidate(
         ``BEST_DM_COLUMN`` is left empty (``update_candidate_best_dm``).
     candidate_id : int, optional
         Default: one more than the largest ``id`` of the file (1 for the
-        first candidate).
+        first candidate, bad ones included).
     path : str or pathlib.Path, optional
         CSV file.
 
     Returns
     -------
     candidates : pandas.DataFrame
-        The list with the new candidate, as written.
+        The list with the new candidate, as written (the bad candidates
+        included; the new one without a status).
 
     Raises
     ------
@@ -119,7 +146,7 @@ def add_candidate(
     if np.isclose(ra_1, ra_2) and np.isclose(dec_1, dec_2):
         raise ValueError(f"The two endpoints are at the same position ({ra_1:g}, {dec_1:g}) deg.")
     path = Path(path)
-    candidates = load_candidates(path)
+    candidates = load_candidates(path, include_bad_candidates=True)  # written back: the bad ones kept
     if candidate_id is None:
         candidate_id = int(candidates["id"].max()) + 1 if len(candidates) else 1
     elif int(candidate_id) in set(candidates["id"]):
@@ -161,7 +188,7 @@ def candidate_best_dm(candidate: pd.Series) -> float:
 
 
 def get_candidate(candidate_id: int, path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.Series:
-    """The candidate of an id, a row of ``load_candidates``.
+    """The candidate of an id, a row of ``load_candidates``, a bad one too (asked for by its id).
 
     Parameters
     ----------
@@ -180,7 +207,7 @@ def get_candidate(candidate_id: int, path: str | Path = DEFAULT_CANDIDATES_PATH)
     ValueError
         No candidate with this id (the ids of the file are listed).
     """
-    candidates = load_candidates(path)
+    candidates = load_candidates(path, include_bad_candidates=True)
     rows = candidates[candidates["id"] == int(candidate_id)]
     if rows.empty:
         raise ValueError(f"No candidate with id {candidate_id} in {path}; the ids are {candidates['id'].tolist()}.")

@@ -62,7 +62,9 @@ the stars of the on region per bin of its magnitude
 (``analysis.cmd_match_filter.photometric_errors_by_magnitude``).
 
 ``run_all_steps`` does them all. The figures take the object
-(``plotting.plot_candidate_investigation``).
+(``plotting.plot_candidate_investigation``); ``other_tracks_phi12`` gives
+them the known streams and the other candidates in the window (e.g. the
+distance-modulus scan GIF, ``plot_candidate_investigation.build_gif``).
 
 References
 ----------
@@ -89,6 +91,7 @@ from streameucliddes.analysis.build_masks import (
     excluded_healpix_mask,
     fraction_on_stream_band,
     galstreams_mask_tracks,
+    points_along_track,
     streams_healpix_mask,
     streams_near_distance_modulus,
     streams_not_wider_than,
@@ -154,6 +157,7 @@ DEFAULT_PHI1_BIN_DEG = 0.5  # bins of the phi1 profile
 DEFAULT_WIDTH_MAP_BINS_DEG = (0.5, 0.2)  # (phi1, phi2) cells of the 2D map of the width fit
 DEFAULT_FOOTPRINT_NSIDE = 512  # footprint from the stars (finest nside; coarser for sparse stars)
 DEFAULT_TRACK_POINTS = 100
+OTHER_TRACK_STEP_DEG = 0.05  # points along the other streams and candidates drawn on the maps (other_tracks_phi12)
 # Figures of the candidates: figures/outputs/ of the repository (gitignored), one folder per candidate,
 # "unnamed" for one given by its endpoints, its id for one of the list (from_candidate_id)
 CANDIDATE_FIGURES_DIR = Path(__file__).resolve().parents[3] / "figures" / "outputs" / "candidates"
@@ -184,7 +188,7 @@ EXCLUDED_MASK_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "b
                          "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test")
 # Inputs of the stream mask: a change applies it again at once (_apply_stream_mask), no new prepare needed
 STREAM_MASK_INPUTS = ("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg",
-                      "unmasked_streams", "candidate_id", "candidates_path")
+                      "unmasked_streams", "candidate_id", "candidates_path", "include_bad_candidates")
 # Results cleared when an input changes after a step: those computed from it (the maps and the zoom map carry their
 # own distance modulus; prepare_search keeps the isochrone only as a default the candidate never uses)
 INPUT_RESULTS = {
@@ -196,7 +200,7 @@ INPUT_RESULTS = {
     **dict.fromkeys(("on_n_sigma", "off_n_sigma"), REGION_RESULTS),
     **dict.fromkeys(("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg"),
                     EXCLUDED_MASK_RESULTS),
-    **dict.fromkeys(("unmasked_streams", "candidate_id", "candidates_path"),
+    **dict.fromkeys(("unmasked_streams", "candidate_id", "candidates_path", "include_bad_candidates"),
                     (*STREAM_MASK_RESULTS, *EXCLUDED_MASK_RESULTS)),
 }
 
@@ -711,6 +715,9 @@ class CandidateInvestigation:
         ``from_candidate_id``.
     candidates_path : str or pathlib.Path, optional
         CSV list of the candidates masked. Default: ``DEFAULT_CANDIDATES_PATH``.
+    include_bad_candidates : bool, optional
+        Mask and draw (``other_tracks_phi12``) the other candidates of
+        status ``bad`` too (``load_candidates``); by default they are ignored.
 
     Attributes
     ----------
@@ -801,6 +808,7 @@ class CandidateInvestigation:
     unmasked_streams: Sequence[str] = ()
     candidate_id: int | None = None
     candidates_path: str | Path | None = None
+    include_bad_candidates: bool = False
     # Results, None until computed
     stream_frame: Any = None
     window: tuple | None = None
@@ -1195,10 +1203,8 @@ class CandidateInvestigation:
         """Mask of the other streams near ``distance_modulus`` at ``nside`` (RING); the tracks kept, the mask built
         again when the streams masked or the nside change."""
         if self.stream_mask_tracks is None:
-            path = DEFAULT_CANDIDATES_PATH if self.candidates_path is None else self.candidates_path
             tracks = galstreams_mask_tracks(self.footprint_mask, nest=self.footprint_nest)
-            tracks += candidate_mask_tracks(load_candidates(path),
-                                            exclude_ids=() if self.candidate_id is None else (self.candidate_id,))
+            tracks += self._other_candidate_tracks()
             unmasked = set(self.unmasked_streams)
             self.stream_mask_tracks = [track for track in tracks
                                        if track["name"] not in unmasked and track["stream_name"] not in unmasked]
@@ -1223,6 +1229,13 @@ class CandidateInvestigation:
             self.stream_healpix_mask = streams_healpix_mask(masked, nside, nest=False)
             self.masked_streams = names
         return self.stream_healpix_mask
+
+    def _other_candidate_tracks(self) -> list[dict]:
+        """The listed candidates of ``candidates_path`` but this one (``candidate_id``) and, unless
+        ``include_bad_candidates``, the bad ones, as tracks (``candidate_mask_tracks``)."""
+        path = DEFAULT_CANDIDATES_PATH if self.candidates_path is None else self.candidates_path
+        return candidate_mask_tracks(load_candidates(path, include_bad_candidates=self.include_bad_candidates),
+                                     exclude_ids=() if self.candidate_id is None else (self.candidate_id,))
 
     def _endpoints_phi1_range(self) -> tuple[float, float]:
         """phi1 of endpoint_1 and endpoint_2 (deg): negative, then positive."""
@@ -1845,6 +1858,56 @@ class CandidateInvestigation:
         """
         return phi12_to_radec(*self.track_phi12(n_points), self.stream_frame)
 
+    def compute_snr(self) -> float | None:
+        """SNR of the on region over the off regions, as in ``summary``."""
+        if self.regions is None or self.distance_modulus is None:
+            return None
+        band_regions = self._band_regions()
+        snr = selection_snr(band_regions, self.stars_in_match_filter())
+        self.snr = snr
+        return snr
+    
+    def other_tracks_phi12(self, step_deg: float = OTHER_TRACK_STEP_DEG) -> list[tuple[str, NDArray, NDArray]]:
+        """The known streams and the other listed candidates in the window, in the frame of the candidate.
+
+        For the maps: every galstreams track crossing the footprint
+        (``galstreams_mask_tracks``, ``build_masks.NEVER_MASKED_STREAMS``
+        included) and every listed candidate but this one
+        (``_other_candidate_tracks``), whether masked or not (wide, far in
+        distance modulus, in ``unmasked_streams``). Points at most
+        ``step_deg`` apart along each (``build_masks.points_along_track``: the
+        great circle between the endpoints of a candidate), NaN outside the
+        window, so that the line stops at its edges; a track with no point in
+        the window is left out.
+
+        Parameters
+        ----------
+        step_deg : float, optional
+            Largest distance between two points of a track (deg).
+
+        Returns
+        -------
+        tracks : list of (str, numpy.ndarray, numpy.ndarray)
+            ``(name, phi1, phi2)`` (deg): the galstreams track name or
+            ``"candidate_<id>"``.
+
+        Raises
+        ------
+        ValueError
+            ``prepare`` not done (the footprint).
+        """
+        self._require("footprint_mask", "prepare")
+        tracks = galstreams_mask_tracks(self.footprint_mask, nest=self.footprint_nest, never_masked=())
+        tracks += self._other_candidate_tracks()
+        phi1_min, phi1_max, phi2_min, phi2_max = self.window
+        in_window = []
+        for track in tracks:
+            phi1, phi2 = radec_to_phi12(*points_along_track(track, step_deg), self.stream_frame)
+            inside = (phi1 >= phi1_min) & (phi1 <= phi1_max) & (phi2 >= phi2_min) & (phi2 <= phi2_max)
+            if inside.any():
+                in_window.append((track["name"], np.where(inside, phi1, np.nan), np.where(inside, phi2, np.nan)))
+        return in_window
+
     def summary(self) -> dict[str, Any]:
         """Key numbers of the investigation, those computed so far.
 
@@ -1891,7 +1954,7 @@ class CandidateInvestigation:
             "n_on": None, "n_off": None, "n_excess": None, "n_excess_error": None, "snr": None,
         })
         if self.regions is not None and self.distance_modulus is not None:
-            snr = selection_snr(self._band_regions(), self.stars_in_match_filter())
+            snr = self.compute_snr()
             summary.update({"n_on": snr["n_on"], "n_off": snr["n_off"], "n_excess": snr["n_signal"],
                             "n_excess_error": snr["n_signal_error"], "snr": snr["snr"]})
         return summary
@@ -1909,6 +1972,7 @@ def update_candidate_best_dm(
     distance_moduli: Sequence[float] | None = None,
     path: str | Path = DEFAULT_CANDIDATES_PATH,
     replace_force: bool = False,
+    include_bad_candidates: bool = False,
     footprint_mask: NDArray | None = None,
     nest: bool = False,
     **inputs: Any,
@@ -1929,7 +1993,8 @@ def update_candidate_best_dm(
     catalog : pandas.DataFrame
         Stars of a box containing the windows of the candidates. Not copied.
     candidate_ids : sequence of int, optional
-        Default: every candidate of the list.
+        Default: every candidate of the list, but the bad ones unless
+        ``include_bad_candidates``.
     distance_moduli : sequence of float, optional
         Grid of the SNR. Default: ``distance_moduli`` of ``inputs``, else
         the grid of ``prepare_search``.
@@ -1937,6 +2002,10 @@ def update_candidate_best_dm(
         CSV file of the list.
     replace_force : bool, optional
         Compute again the ``best_dm`` already in the file.
+    include_bad_candidates : bool, optional
+        The bad candidates (status ``bad``, ``load_candidates``) in the
+        default ``candidate_ids`` and in the masks of the others
+        (``CandidateInvestigation.include_bad_candidates``).
     footprint_mask : numpy.ndarray of bool, optional
         HEALPix footprint (True outside), see ``prepare``. Default: from the
         stars of ``catalog`` (``footprint_mask_from_stars``), computed once.
@@ -1950,10 +2019,14 @@ def update_candidate_best_dm(
     Returns
     -------
     candidates : pandas.DataFrame
-        The list, as written.
+        The list, as written (the bad candidates included).
     """
-    candidates = load_candidates(path)
-    ids = candidates["id"].tolist() if candidate_ids is None else [int(candidate_id) for candidate_id in candidate_ids]
+    candidates = load_candidates(path, include_bad_candidates=True)  # written back: the bad ones kept
+    if candidate_ids is None:
+        ids = load_candidates(path, include_bad_candidates=include_bad_candidates)["id"].tolist()
+    else:
+        ids = [int(candidate_id) for candidate_id in candidate_ids]
+    inputs["include_bad_candidates"] = include_bad_candidates
     if footprint_mask is None:
         footprint_mask = footprint_mask_from_stars(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(),
                                                    DEFAULT_FOOTPRINT_NSIDE)

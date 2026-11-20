@@ -7,6 +7,7 @@ import pytest
 from streameucliddes.catalogs.stream_candidates import (
     BEST_DM_COLUMN,
     CANDIDATE_COLUMNS,
+    STATUS_COLUMN,
     add_candidate,
     candidate_best_dm,
     candidate_endpoints,
@@ -105,3 +106,35 @@ def test_get_candidate(tmp_path):
     assert candidate_endpoints(candidate) == ((77.0, -40.5), (70.0, -44.5))
     with pytest.raises(ValueError, match=r"\[1, 2\]"):
         get_candidate(3, path)
+
+
+def _list_with_statuses(path, statuses):
+    """A list of len(statuses) candidates (ids 1, 2, ...) with these statuses (None: empty)."""
+    for index, _ in enumerate(statuses):
+        candidates = add_candidate((45.0 + index, -45.0), (44.0 + index, -51.0), 17.0, path=path)
+    candidates[STATUS_COLUMN] = statuses
+    write_candidates(candidates, path)
+
+
+# The bad candidates left out unless include_bad_candidates, an empty status kept; a file without the column: all
+# kept; an unknown status: ValueError
+def test_load_candidates_status(tmp_path):
+    path = tmp_path / "candidates.csv"
+    _list_with_statuses(path, ["strong", "bad", "good", None])
+    assert load_candidates(path)["id"].tolist() == [1, 3, 4]
+    assert load_candidates(path, include_bad_candidates=True)["id"].tolist() == [1, 2, 3, 4]
+    pd.read_csv(path).drop(columns=STATUS_COLUMN).to_csv(path, index=False)
+    assert load_candidates(path)["id"].tolist() == [1, 2, 3, 4]
+    _list_with_statuses(tmp_path / "unknown.csv", ["strong", "maybe"])
+    with pytest.raises(ValueError, match="maybe"):
+        load_candidates(tmp_path / "unknown.csv")
+
+
+# Writing the file keeps the bad candidates: add_candidate after them (next id), get_candidate finds one by its id
+def test_bad_candidates_kept_in_the_file(tmp_path):
+    path = tmp_path / "candidates.csv"
+    _list_with_statuses(path, ["strong", "bad"])
+    candidates = add_candidate((10.0, 0.0), (12.0, 1.0), 16.0, path=path)
+    assert candidates["id"].tolist() == [1, 2, 3] and candidates[STATUS_COLUMN].tolist()[:2] == ["strong", "bad"]
+    assert pd.isna(candidates[STATUS_COLUMN].iloc[2])
+    assert get_candidate(2, path)[STATUS_COLUMN] == "bad"

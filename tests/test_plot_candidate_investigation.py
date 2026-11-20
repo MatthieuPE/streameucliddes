@@ -7,14 +7,19 @@ import numpy as np
 import pytest
 import skyproj
 from matplotlib.backend_bases import MouseEvent
+from PIL import Image
 from scipy.ndimage import gaussian_filter
 
 from streameucliddes.analysis.candidate_investigation import CandidateInvestigation, hess_error_table
 from streameucliddes.analysis.candidate_investigation import region_windows
 from streameucliddes.analysis.cmd_match_filter import match_filter_cmd_columns
-from streameucliddes.catalogs.stream_candidates import add_candidate
+from streameucliddes.catalogs.stream_candidates import STATUS_COLUMN, add_candidate, write_candidates
 from streameucliddes.plotting.plot_candidate_investigation import (
+    OTHER_TRACK_COLOR,
+    OTHER_TRACKS_LABEL,
     EndpointPicker,
+    build_gif,
+    draw_other_tracks,
     draw_stream_regions,
     endpoints_arc_radec,
     plot_candidate_frame_check,
@@ -30,6 +35,7 @@ from streameucliddes.plotting.plot_candidate_investigation import (
     sky_axes_to_radec,
 )
 from streameucliddes.plotting.plot_cmd import DEFAULT_DIFFERENCE_SMOOTHING_BINS, plot_on_off_difference_hess
+from streameucliddes.plotting.plot_style import escape_underscores
 from streameucliddes.stream_frames import radec_to_phi12, stream_frame_from_endpoints
 
 pytestmark = pytest.mark.plot_candidate_investigation
@@ -145,6 +151,70 @@ def test_plot_candidate_map_stream_mask(candidate_endpoints, candidate_catalog, 
     fig, ax = plot_candidate_map(cand)
     assert "masked streams" not in labels(ax)
     plt.close(fig)
+
+
+# The other tracks: one colour, one legend entry for all, the name of each; none given: nothing drawn
+def test_draw_other_tracks():
+    fig, ax = plt.subplots()
+    phi1 = np.linspace(-2.0, 2.0, 21)
+    tracks = [("Cross-T00", np.full(21, 0.5), np.where(np.abs(phi1) < 1.5, phi1, np.nan)),
+              ("candidate_2", phi1, np.full(21, 0.4))]
+    artists = draw_other_tracks(ax, tracks)
+    assert len(ax.lines) == 2 and len(ax.texts) == 2 and len(artists) == 4
+    assert {line.get_color() for line in ax.lines} == {OTHER_TRACK_COLOR}
+    assert [line.get_label() for line in ax.lines][0] == OTHER_TRACKS_LABEL
+    assert ax.lines[1].get_label().startswith("_")
+    assert [text.get_text().strip() for text in ax.texts] == ["Cross-T00", escape_underscores("candidate_2")]
+    assert draw_other_tracks(ax, []) == []
+    plt.close(fig)
+
+
+# The GIF: one frame per distance modulus around that of the candidate (the dm in the names), in
+# figure_folder/frames, the GIF beside it with as many frames; the maps of the candidate left as they were; with the
+# candidate track and the other tracks; without a distance modulus, the grid of the scan; another file_prefix;
+# not prepared: ValueError
+def test_build_gif(candidate_endpoints, candidate_catalog, no_object_masks, tmp_path, monkeypatch):
+    from streameucliddes.analysis import candidate_investigation
+
+    frame = stream_frame_from_endpoints((73.5, -48.0), (73.5, -35.0))
+    crossing = {"name": "Cross-T00", "stream_name": "Cross", "ra": np.array([73.5, 73.5]),
+                "dec": np.array([-48.0, -35.0]), "stream_frame": frame, "width_deg": 0.2, "dm_min": 17.0,
+                "dm_max": 17.0}
+    monkeypatch.setattr(candidate_investigation, "galstreams_mask_tracks", lambda *args, **kwargs: [crossing])
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0, figure_folder=tmp_path / "cand",
+                                  candidates_path=tmp_path / "none.csv", distance_moduli=[16.0, 18.0],
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    with pytest.raises(ValueError, match="prepare"):
+        build_gif(cand)
+    cand.prepare(candidate_catalog)
+    cand.maps = {17.0: "kept"}
+    drawn = []
+    original = plot_candidate_map
+
+    def spy(*args, **kwargs):
+        fig, ax = original(*args, **kwargs)
+        drawn.append(ax)  # read once build_gif has set the title
+        return fig, ax
+
+    monkeypatch.setattr("streameucliddes.plotting.plot_candidate_investigation.plot_candidate_map", spy)
+    gif_path, frame_paths = build_gif(cand, dm_half_range=0.2, dm_step=0.1)
+    assert [path.name for path in frame_paths] == [f"test_dm{dm:05.2f}.png" for dm in (16.8, 16.9, 17.0, 17.1, 17.2)]
+    assert all(path.parent == tmp_path / "cand" / "frames" and path.exists() for path in frame_paths)
+    assert gif_path == tmp_path / "cand" / "test_dm_scan.gif"
+    with Image.open(gif_path) as gif:
+        assert gif.n_frames == len(frame_paths)
+    assert cand.maps == {17.0: "kept"}
+    labels = {line.get_label() for line in drawn[2].lines}
+    assert {"endpoints arc", OTHER_TRACKS_LABEL} <= labels
+    assert "dm 17.0" in drawn[2].get_title() and "best dm" in drawn[2].get_title()
+    assert "best dm" not in drawn[0].get_title()
+
+    cand.distance_modulus = None
+    _, frame_paths = build_gif(cand, show_other_tracks=False)
+    assert [path.name for path in frame_paths] == ["test_dm16.00.png", "test_dm18.00.png"]
+    assert OTHER_TRACKS_LABEL not in {line.get_label() for line in drawn[-1].lines}
+    gif_path, frame_paths = build_gif(cand, [16.0], file_prefix="test_fitted", show_other_tracks=False)
+    assert gif_path.name == "test_fitted_dm_scan.gif" and frame_paths[0].name == "test_fitted_dm16.00.png"
 
 
 # Each of on, off, difference; the difference with symmetric limits; an unknown diagram or no Hess: ValueError
@@ -362,6 +432,21 @@ def test_plot_candidates(sky_ax, tmp_path):
     assert (texts[0].get_window_extent().x0, texts[0].get_window_extent().y0) == pytest.approx(first_endpoint)
     assert [artist.get_label() for artist in artists].count("candidates") == 1
     assert len(plot_candidates(sky_ax, path=path, label_ids=False)) == 2 * 2
+
+
+# The bad candidates not drawn unless include_bad_candidates
+def test_plot_candidates_without_bad_ones(sky_ax, tmp_path):
+    path = tmp_path / "candidates.csv"
+    add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
+    candidates = add_candidate((77.0, -40.5), (70.0, -44.5), 17.5, path=path)
+    candidates[STATUS_COLUMN] = ["bad", "strong"]
+    write_candidates(candidates, path)
+
+    def ids(**kwargs):
+        return [artist.get_text().strip() for artist in plot_candidates(sky_ax, path=path, **kwargs)
+                if isinstance(artist, plt.Text)]
+
+    assert ids() == ["2"] and ids(include_bad_candidates=True) == ["1", "2"]
 
 
 # Left clicks: the endpoints at the clicked (ra, dec), their arc; a third click starts a new pair;

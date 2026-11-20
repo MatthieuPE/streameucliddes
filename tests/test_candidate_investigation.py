@@ -36,7 +36,12 @@ from streameucliddes.analysis.cmd_match_filter import (
     match_filter_cmd_columns,
     photometric_errors_by_magnitude,
 )
-from streameucliddes.catalogs.stream_candidates import add_candidate, load_candidates
+from streameucliddes.catalogs.stream_candidates import (
+    STATUS_COLUMN,
+    add_candidate,
+    load_candidates,
+    write_candidates,
+)
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
 from streameucliddes.catalogs.isochrone_parameters import (
@@ -453,7 +458,64 @@ def test_prepare_leaves_out_streams_covering_the_candidate(tmp_path, candidate_e
     assert not caplog.text and cand.summary()["masked_streams"] == [] and cand.overlapping_streams == []
 
 
+# The other candidates masked and drawn: not the candidate itself, not the bad ones unless include_bad_candidates
+def test_other_candidates_without_bad_ones(tmp_path, candidate_endpoints):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, 17.0, path=path)
+    add_candidate((77.0, -39.5), (70.0, -42.5), 17.0, path=path)
+    candidates = add_candidate((76.0, -38.5), (70.0, -41.5), 17.0, path=path)
+    candidates[STATUS_COLUMN] = ["strong", "bad", "good"]
+    write_candidates(candidates, path)
+    cand = CandidateInvestigation.from_candidate_id(1, path=path)
+    assert [track["name"] for track in cand._other_candidate_tracks()] == ["candidate_3"]
+    cand.include_bad_candidates = True
+    assert [track["name"] for track in cand._other_candidate_tracks()] == ["candidate_2", "candidate_3"]
+    bad = CandidateInvestigation.from_candidate_id(2, path=path)  # a bad one asked for by its id
+    assert bad.candidate_id == 2
+    assert [track["name"] for track in bad._other_candidate_tracks()] == ["candidate_1", "candidate_3"]
+
+
 # No catalog given nor kept, or a window beyond the stars: ValueError
+# The other tracks for the maps: the galstreams tracks (never-masked ones asked for too) and the other candidates
+# with points in the window, not the candidate itself nor one outside; NaN outside the window, points at most
+# step_deg apart; before prepare: ValueError
+def test_other_tracks_phi12(tmp_path, candidate_endpoints, candidate_catalog, no_object_masks, monkeypatch):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, 17.0, path=path)  # id 1: the candidate
+    add_candidate((77.0, -39.5), (70.0, -42.5), 19.0, path=path)  # id 2: along it, 0.5 deg north
+    add_candidate((120.0, 10.0), (125.0, 12.0), 17.0, path=path)  # id 3: far away
+    crossing = {"name": "Cross-T00", "stream_name": "Cross", "ra": np.array([73.5, 73.5]),
+                "dec": np.array([-48.0, -35.0]), "stream_frame": stream_frame_from_endpoints((73.5, -48.0),
+                                                                                             (73.5, -35.0)),
+                "width_deg": 0.2, "dm_min": 17.0, "dm_max": 17.0}
+    calls = []
+
+    def galstreams_tracks(*args, **kwargs):
+        calls.append(kwargs)
+        return [crossing]
+
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", galstreams_tracks)
+    cand = CandidateInvestigation.from_candidate_id(1, path=path, prepare_kwargs={"bin_size_deg": BIN,
+                                                                                  **no_object_masks})
+    with pytest.raises(ValueError, match="prepare"):
+        cand.other_tracks_phi12()
+    cand.prepare(candidate_catalog)
+    step_deg = 0.1
+    tracks = cand.other_tracks_phi12(step_deg=step_deg)
+    assert calls[-1]["never_masked"] == ()
+    assert [name for name, _, _ in tracks] == ["Cross-T00", "candidate_2"]
+    phi1_min, phi1_max, phi2_min, phi2_max = cand.window
+    for _, phi1, phi2 in tracks:
+        shown = np.isfinite(phi1)
+        np.testing.assert_array_equal(shown, np.isfinite(phi2))
+        assert shown.sum() > 10
+        assert np.all((phi1[shown] >= phi1_min) & (phi1[shown] <= phi1_max))
+        assert np.all((phi2[shown] >= phi2_min) & (phi2[shown] <= phi2_max))
+        assert np.hypot(np.diff(phi1[shown]), np.diff(phi2[shown])).max() <= 1.01 * step_deg  # flat, not on the sphere
+    assert not np.isfinite(tracks[0][1]).all()  # the crossing track goes beyond the window
+    assert 0.3 < abs(np.nanmedian(tracks[1][2])) < 0.55  # candidate 2: 0.5 deg in dec, across the inclined track
+
+
 def test_prepare_errors(candidate_endpoints, candidate_catalog):
     with pytest.raises(ValueError, match="compute_sky_map"):
         CandidateInvestigation("test", *candidate_endpoints).prepare()
