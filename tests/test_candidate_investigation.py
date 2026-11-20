@@ -476,6 +476,48 @@ def test_other_candidates_without_bad_ones(tmp_path, candidate_endpoints):
     assert [track["name"] for track in bad._other_candidate_tracks()] == ["candidate_1", "candidate_3"]
 
 
+# Another candidate crossing the window at dm 19 is masked at dm 17 by candidate_mask_max_dm_difference, not by
+# stream_mask_max_dm_difference (that of the known streams); a change of it applies the mask again at once
+def test_candidate_mask_max_dm_difference(tmp_path, candidate_endpoints, candidate_catalog, no_object_masks,
+                                          monkeypatch):
+    path = tmp_path / "candidates.csv"
+    add_candidate((73.5, -48.0), (73.5, -35.0), 19.0, path=path)  # id 1, across the window
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", lambda *args, **kwargs: [])
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0, candidates_path=path,
+                                  stream_mask_max_dm_difference=1.5, candidate_mask_max_dm_difference=2.5,
+                                  prepare_kwargs={"bin_size_deg": BIN})
+    cand.prepare(candidate_catalog)
+    assert cand.masked_streams == ["candidate_1"] and cand.stream_healpix_mask.any()
+    cand.candidate_mask_max_dm_difference = 1.5
+    assert cand.masked_streams == [] and not cand.stream_healpix_mask.any()
+    cand.stream_mask_max_dm_difference = 2.5  # the known streams only
+    assert cand.masked_streams == []
+
+
+# always_masked_streams: masked whatever their distance modulus (a known stream or a candidate), but not when too
+# wide; the others only near the distance modulus; a change applies the mask again at once
+def test_always_masked_streams(tmp_path, candidate_endpoints, candidate_catalog, no_object_masks, monkeypatch):
+    def crossing(name, ra, dm, width=0.2):
+        return {"name": f"{name}-T00", "stream_name": name, "ra": np.array([ra, ra]), "dec": np.array([-48.0, -35.0]),
+                "stream_frame": stream_frame_from_endpoints((ra, -48.0), (ra, -35.0)), "width_deg": width,
+                "dm_min": dm, "dm_max": dm}
+
+    known = [crossing("Near", 72.5, 17.0), crossing("FarSeen", 73.5, 20.0), crossing("FarUnseen", 74.5, 20.0),
+             crossing("WideSeen", 75.0, 20.0, width=3.0)]
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", lambda *args, **kwargs: known)
+    path = tmp_path / "candidates.csv"
+    add_candidate((71.5, -48.0), (71.5, -35.0), 20.0, path=path)  # id 1, far in distance modulus
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0, candidates_path=path,
+                                  stream_mask_max_dm_difference=1.5, candidate_mask_max_dm_difference=1.5,
+                                  stream_mask_max_width_deg=1.0, prepare_kwargs={"bin_size_deg": BIN})
+    cand.prepare(candidate_catalog)
+    assert cand.masked_streams == ["Near-T00"]
+    before = cand.excluded_healpix_mask.copy()
+    cand.always_masked_streams = ["FarSeen", "WideSeen-T00", "candidate_1"]
+    assert cand.masked_streams == ["Near-T00", "FarSeen-T00", "candidate_1"]
+    assert (cand.excluded_healpix_mask >= before).all() and (cand.excluded_healpix_mask & ~before).any()
+
+
 # No catalog given nor kept, or a window beyond the stars: ValueError
 # The other tracks for the maps: the galstreams tracks (never-masked ones asked for too) and the other candidates
 # with points in the window, not the candidate itself nor one outside; NaN outside the window, points at most
@@ -523,6 +565,7 @@ def test_prepare_errors(candidate_endpoints, candidate_catalog):
     east = candidate_catalog[candidate_catalog["ra"] > 75.0]
     with pytest.raises(ValueError, match="load a larger box"):
         CandidateInvestigation("test", *candidate_endpoints).prepare(east)
+
 
 
 # A catalog read in a box (attrs[LOADED_BOX_ATTR], get_euclid_stars): a window beyond its stars but inside the box

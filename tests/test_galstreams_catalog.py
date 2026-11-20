@@ -508,3 +508,41 @@ def test_galstreams_footprint_from_stars_around_atlas(mws, rng):
     selection = select_galstreams_in_footprint(mws, footprint_mask, nest=False).set_index("track_name")
     assert "AAU-ATLAS-L21" in selection.index
     assert selection.loc["AAU-ATLAS-L21", "length_in_footprint_deg"] == pytest.approx(atlas.length.deg, rel=0.01)
+
+
+def _write_known_streams(path, observed, status, **columns):
+    """A file of known streams A, B, C... with these observed and status values."""
+    names = [chr(ord("A") + index) for index in range(len(status))]
+    pd.DataFrame({"stream_name": names, "track_name": [f"{name}-T00" for name in names], "observed": observed,
+                  "status": status, **columns}).to_csv(path, index=False)
+
+
+# The rows of the file, other columns kept; a missing column, an unknown observed or status, an empty status:
+# ValueError
+def test_load_known_streams(tmp_path):
+    path = tmp_path / "south.csv"
+    _write_known_streams(path, ["yes", None], ["masked", "not_masked"], comment=["seen", None])
+    streams = galstreams_catalog.load_known_streams(path)
+    assert streams["stream_name"].tolist() == ["A", "B"] and streams["comment"].iloc[0] == "seen"
+    assert pd.isna(streams["observed"].iloc[1])
+    for observed, status, match in [(["maybe"], ["masked"], "maybe"), (["no"], ["hidden"], "hidden"),
+                                    (["no"], [None], "empty")]:
+        _write_known_streams(path, observed, status)
+        with pytest.raises(ValueError, match=match):
+            galstreams_catalog.load_known_streams(path)
+    pd.read_csv(path).drop(columns="status").to_csv(path, index=False)
+    with pytest.raises(ValueError, match="status"):
+        galstreams_catalog.load_known_streams(path)
+
+
+# The not_masked and the observed (yes) track and stream names of every file of the folder; without a file: None
+# and ()
+def test_not_masked_and_observed_known_streams(tmp_path):
+    assert galstreams_catalog.not_masked_known_streams(tmp_path) is None
+    assert galstreams_catalog.observed_known_streams(tmp_path / "missing") == ()
+    _write_known_streams(tmp_path / "south.csv", ["yes", "unclear"], ["not_masked", "masked"])
+    _write_known_streams(tmp_path / "north.csv", [None, "no", "yes"], ["masked", "masked", "masked"])
+    assert galstreams_catalog.not_masked_known_streams(tmp_path) == ("A", "A-T00")
+    assert galstreams_catalog.observed_known_streams(tmp_path) == ("A", "A-T00", "C", "C-T00")
+    assert galstreams_catalog.not_masked_known_streams() is None  # the default folder: empty in the tests (conftest)
+    assert galstreams_catalog.known_streams_path("south") == galstreams_catalog.KNOWN_STREAMS_DIR / "south.csv"

@@ -13,6 +13,18 @@ The tracks of Ibata et al. 2024 (reference ``ibata2024``: 41 of the 141 in
 galstreams 1.2.1) have no distance in galstreams: they are all at 1 kpc,
 whatever their flag. Their distances are taken as unknown (NaN), and they are
 only selected with ``add_ibata2024``.
+
+The known streams of each Euclid footprint are listed by hand in a CSV file,
+``data/known_streams/<footprint>.csv`` (``known_streams_path``, e.g.
+``euclid_dr1_south``; local, gitignored with the rest of ``data/``): one row
+per stream, ``stream_name`` and ``track_name`` (those of galstreams),
+``observed`` (seen in the matched-filter maps: ``yes``, ``no``, ``unclear``,
+or empty) and ``status`` (``masked`` or ``not_masked``), any other column
+kept (``load_known_streams``). ``not_masked_known_streams`` gives the
+``not_masked`` ones of every file, never masked around a candidate
+(``analysis.build_masks.galstreams_mask_tracks``); ``observed_known_streams``
+the ``yes`` ones, e.g. for ``CandidateInvestigation(always_masked_streams=...)``.
+The notebook ``study_mask`` shows them on the maps, to fill the file.
 """
 
 from __future__ import annotations
@@ -51,6 +63,11 @@ LOGGER = logging.getLogger(__name__)
 # Cache of the galstreams library (see load_galstreams), next to the catalogs (see
 # euclid_catalog.DATA_DIR): the data/ folder of the repository, gitignored.
 GALSTREAMS_CACHE_DIR = Path(__file__).resolve().parents[3] / "data" / "galstreams"
+# The known streams of each footprint, listed by hand (see load_known_streams)
+KNOWN_STREAMS_DIR = Path(__file__).resolve().parents[3] / "data" / "known_streams"
+KNOWN_STREAM_COLUMNS = ("stream_name", "track_name", "observed", "status")
+OBSERVED_VALUES = ("yes", "no", "unclear")  # or empty: not looked at
+MASKED_STATUS, NOT_MASKED_STATUS = "masked", "not_masked"
 
 IBATA2024_REFERENCE = "ibata2024"  # galstreams reference of the Ibata et al. 2024 tracks
 # galstreams_dm_along_track(extrapolate=True): line fitted to the track points within this
@@ -543,3 +560,97 @@ def _segments_in_footprint(
             kept &= dm < dm_high
         kept &= ~np.isnan(dm)  # unknown distance: never within a range
     return lengths, kept, dm
+
+
+# ===================================================
+# The known streams of each footprint, listed by hand
+# ===================================================
+
+
+def known_streams_path(footprint_name: str) -> Path:
+    """CSV file of the known streams of a footprint, e.g. ``"euclid_dr1_south"`` (data name and subset)."""
+    return KNOWN_STREAMS_DIR / f"{footprint_name}.csv"
+
+
+def load_known_streams(path: str | Path) -> pd.DataFrame:
+    """The known streams of a footprint, as listed by hand.
+
+    Parameters
+    ----------
+    path : str or pathlib.Path
+        CSV file, e.g. ``known_streams_path("euclid_dr1_south")``.
+
+    Returns
+    -------
+    streams : pandas.DataFrame
+        The rows of the file: ``KNOWN_STREAM_COLUMNS`` and any other column.
+
+    Raises
+    ------
+    FileNotFoundError
+        No such file.
+    ValueError
+        A column of ``KNOWN_STREAM_COLUMNS`` missing, an ``observed`` not in
+        ``OBSERVED_VALUES`` (nor empty), or a ``status`` neither
+        ``masked`` nor ``not_masked``.
+    """
+    path = Path(path)
+    streams = pd.read_csv(path)
+    missing = [column for column in KNOWN_STREAM_COLUMNS if column not in streams.columns]
+    if missing:
+        raise ValueError(f"{path} has no column {missing}; the columns are {KNOWN_STREAM_COLUMNS}.")
+    unknown = sorted(set(streams["observed"].dropna()) - set(OBSERVED_VALUES))
+    if unknown:
+        raise ValueError(f"{path}: 'observed' {unknown} not among {OBSERVED_VALUES} (or empty).")
+    unknown = sorted(set(streams["status"].fillna("(empty)")) - {MASKED_STATUS, NOT_MASKED_STATUS})
+    if unknown:
+        raise ValueError(f"{path}: 'status' {unknown} not among {(MASKED_STATUS, NOT_MASKED_STATUS)}.")
+    return streams
+
+
+def not_masked_known_streams(folder: str | Path | None = None) -> tuple[str, ...] | None:
+    """Track and stream names of status ``not_masked`` in the files of every footprint.
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path, optional
+        Default: ``KNOWN_STREAMS_DIR``.
+
+    Returns
+    -------
+    names : tuple of str or None
+        Sorted. None when the folder has no CSV file (then
+        ``analysis.build_masks.NEVER_MASKED_STREAMS`` applies).
+    """
+    return _known_stream_names(folder, "status", NOT_MASKED_STATUS)
+
+
+def observed_known_streams(folder: str | Path | None = None) -> tuple[str, ...]:
+    """Track and stream names observed (``observed`` ``yes``) in the files of every footprint.
+
+    Parameters
+    ----------
+    folder : str or pathlib.Path, optional
+        Default: ``KNOWN_STREAMS_DIR``.
+
+    Returns
+    -------
+    names : tuple of str
+        Sorted; empty without a file.
+    """
+    return _known_stream_names(folder, "observed", "yes") or ()
+
+
+def _known_stream_names(folder: str | Path | None, column: str, value: str) -> tuple[str, ...] | None:
+    """Track and stream names of the rows whose ``column`` is ``value``, in every file; None without a file."""
+    folder = Path(KNOWN_STREAMS_DIR if folder is None else folder)
+    paths = sorted(folder.glob("*.csv")) if folder.is_dir() else []
+    if not paths:
+        return None
+    names = set()
+    for path in paths:
+        streams = load_known_streams(path)
+        rows = streams[streams[column] == value]
+        names.update(rows["stream_name"])
+        names.update(rows["track_name"])
+    return tuple(sorted(names))

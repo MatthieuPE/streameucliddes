@@ -57,6 +57,17 @@ def no_masked_streams(tmp_path_factory):
                       tmp_path_factory.mktemp("candidates") / "no_candidates.csv")
         yield
 
+
+@pytest.fixture(scope="session", autouse=True)
+def no_known_stream_files(tmp_path_factory):
+    """No file of known streams (galstreams_catalog.load_known_streams): the local ones in data/known_streams/ are
+    never read, the stream masks leave out build_masks.NEVER_MASKED_STREAMS, unless a test sets its own folder."""
+    from streameucliddes.catalogs import galstreams_catalog
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(galstreams_catalog, "KNOWN_STREAMS_DIR", tmp_path_factory.mktemp("known_streams"))
+        yield
+
 NSIDE = 64
 LON0, LAT0 = 50.0, -25.0  # patch centre (deg)
 HALF_WIDTH = (20.0, 15.0)  # patch half-size in projected x, y (deg)

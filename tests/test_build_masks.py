@@ -12,6 +12,7 @@ from astropy.coordinates import SkyCoord
 
 from streameucliddes.analysis.build_masks import (
     CANDIDATE_MASK_HALF_WIDTH_DEG,
+    CANDIDATE_MASK_MAX_DM_DIFFERENCE,
     DEFAULT_RADIUS_SCALE,
     DEFAULT_STREAM_MASK_HALF_WIDTH_DEG,
     NEVER_MASKED_STREAMS,
@@ -41,7 +42,7 @@ from streameucliddes.analysis.build_masks import (
     streams_near_distance_modulus,
     streams_not_wider_than,
 )
-from streameucliddes.catalogs import overlapped_objects
+from streameucliddes.catalogs import galstreams_catalog, overlapped_objects
 from streameucliddes.catalogs.stream_candidates import CANDIDATE_WIDTH_COLUMN, add_candidate, load_candidates
 from streameucliddes.stream_frames import phi12_to_radec, radec_to_phi12, stream_frame_from_endpoints
 
@@ -388,6 +389,16 @@ def test_streams_near_distance_modulus():
         streams_near_distance_modulus(tracks, 17.0, max_dm_difference=STREAM_MASK_MAX_DM_DIFFERENCE))
 
 
+# A track with its own max_dm_difference (a listed candidate) is kept or not by it, the others by the argument
+def test_streams_near_distance_modulus_own_difference():
+    tracks = [{"name": "stream", "dm_min": 19.0, "dm_max": 19.0},
+              {"name": "candidate", "dm_min": 19.0, "dm_max": 19.0, "max_dm_difference": 2.5}]
+    names = [track["name"] for track in streams_near_distance_modulus(tracks, 17.0, max_dm_difference=1.5)]
+    assert names == ["candidate"]
+    tracks[1]["max_dm_difference"] = 1.0
+    assert streams_near_distance_modulus(tracks, 17.0, max_dm_difference=2.5) == [tracks[0]]
+
+
 # Kept: tracks not wider than max_width_deg (bound included) and those of unknown width
 def test_streams_not_wider_than():
     tracks = [{"name": "narrow", "width_deg": 0.3}, {"name": "edge", "width_deg": 1.0},
@@ -462,8 +473,9 @@ def test_galstreams_mask_tracks(gc_frame):
         dm_20_kpc, abs=1e-3)
 
 
-# Streams never masked: left out by track name or stream name; by default those of NEVER_MASKED_STREAMS
-def test_galstreams_mask_tracks_never_masked(gc_frame):
+# Streams never masked: left out by track name or stream name; by default those of NEVER_MASKED_STREAMS without a
+# file of known streams, those of status not_masked in the files with one
+def test_galstreams_mask_tracks_never_masked(gc_frame, tmp_path, monkeypatch):
     class FakeMWStreams(dict):
         pass
 
@@ -478,6 +490,12 @@ def test_galstreams_mask_tracks_never_masked(gc_frame):
     assert never_masked_name not in default and "ByTrack-T00" in default
     chosen = galstreams_mask_tracks(footprint, nest=False, mws=mws, never_masked=("ByTrack-T00", "ByStream"))
     assert [track["name"] for track in chosen] == ["Kept-T00", never_masked_name]
+    monkeypatch.setattr(galstreams_catalog, "KNOWN_STREAMS_DIR", tmp_path)
+    pd.DataFrame({"stream_name": ["ByTrack", "ByStream"], "track_name": ["ByTrack-T00", "ByStream-T00"],
+                  "observed": [None, None], "status": ["masked", "not_masked"]}).to_csv(tmp_path / "south.csv",
+                                                                                       index=False)
+    default = [track["name"] for track in galstreams_mask_tracks(footprint, nest=False, mws=mws)]
+    assert default == ["Kept-T00", "ByTrack-T00", never_masked_name]
 
 
 # The candidates as tracks to mask: the great circle between the endpoints, but the excluded ids; the width from
@@ -491,6 +509,8 @@ def test_candidate_mask_tracks(tmp_path):
     assert track["name"] == track["stream_name"] == "candidate_2" and np.isnan(track["width_deg"])
     assert track["dm_min"] == track["dm_max"] == 17.5
     assert track["default_half_width_deg"] == CANDIDATE_MASK_HALF_WIDTH_DEG
+    assert track["max_dm_difference"] == CANDIDATE_MASK_MAX_DM_DIFFERENCE
+    assert candidate_mask_tracks(candidates, max_dm_difference=0.7)[0]["max_dm_difference"] == 0.7
     assert candidate_mask_tracks(candidates, default_half_width_deg=0.5)[0]["default_half_width_deg"] == 0.5
     np.testing.assert_allclose(track["ra"], [77.0, 70.0])
     np.testing.assert_allclose(track["dec"], [-40.0, -43.0])

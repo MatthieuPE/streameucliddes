@@ -88,6 +88,7 @@ import numpy as np
 import pandas as pd
 
 from streameucliddes.analysis.build_masks import (
+    CANDIDATE_MASK_MAX_DM_DIFFERENCE,
     STREAM_MASK_MAX_DM_DIFFERENCE,
     STREAM_MASK_MAX_WIDTH_DEG,
     candidate_mask_tracks,
@@ -194,7 +195,9 @@ EXCLUDED_MASK_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "b
                          "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test")
 # Inputs of the stream mask: a change applies it again at once (_apply_stream_mask), no new prepare needed
 STREAM_MASK_INPUTS = ("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg",
-                      "unmasked_streams", "candidate_id", "candidates_path", "include_bad_candidates")
+                      "always_masked_streams",
+                      "unmasked_streams", "candidate_id", "candidates_path", "include_bad_candidates",
+                      "candidate_mask_max_dm_difference")
 # Results cleared when an input changes after a step: those computed from it (the maps and the zoom map carry their
 # own distance modulus; prepare_search keeps the isochrone only as a default the candidate never uses)
 INPUT_RESULTS = {
@@ -204,9 +207,11 @@ INPUT_RESULTS = {
     "match_filter": ("sky_map", *FRAME_RESULTS, "isochrone_track"),
     "prepare_kwargs": FRAME_RESULTS,
     **dict.fromkeys(("on_n_sigma", "off_n_sigma"), REGION_RESULTS),
-    **dict.fromkeys(("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg"),
+    **dict.fromkeys(("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg",
+                     "always_masked_streams"),
                     EXCLUDED_MASK_RESULTS),
-    **dict.fromkeys(("unmasked_streams", "candidate_id", "candidates_path", "include_bad_candidates"),
+    **dict.fromkeys(("unmasked_streams", "candidate_id", "candidates_path", "include_bad_candidates",
+                     "candidate_mask_max_dm_difference"),
                     (*STREAM_MASK_RESULTS, *EXCLUDED_MASK_RESULTS)),
 }
 
@@ -695,14 +700,19 @@ class CandidateInvestigation:
         Exclude the other streams (``excluded_healpix_mask``): the galstreams
         tracks crossing the footprint of the catalog
         (``galstreams_mask_tracks``: one per stream, no Ibata et al. 2024
-        track, none of ``build_masks.NEVER_MASKED_STREAMS``) and the listed
+        track, none of status ``not_masked`` in ``data/known_streams/``:
+        ``catalogs.galstreams_catalog.load_known_streams``) and the listed
         candidates but this one
         (``candidate_mask_tracks``) not wider than
         ``stream_mask_max_width_deg`` (``build_masks.streams_not_wider_than``:
         a broad stream is a smooth background over the regions, subtracted
         by the off regions) and whose distance modulus comes within
         ``stream_mask_max_dm_difference`` of ``distance_modulus``
-        (``build_masks.streams_near_distance_modulus``; all of them while
+        (``candidate_mask_max_dm_difference`` for the candidates, from their
+        best distance modulus), or whatever their distance modulus for those
+        of ``always_masked_streams`` (but still not wider than
+        ``stream_mask_max_width_deg``;
+        ``build_masks.streams_near_distance_modulus``; all of them while
         ``distance_modulus`` is None), but those covering more than
         ``OWN_TRACK_OVERLAP_FRACTION`` of the track between the endpoints
         (the candidate itself, or a stream along it: ``overlapping_streams``,
@@ -714,9 +724,19 @@ class CandidateInvestigation:
         again at once (no new ``prepare``).
     stream_mask_max_dm_difference, stream_mask_max_width_deg : float, optional
         See ``mask_streams``.
+    candidate_mask_max_dm_difference : float, optional
+        The other listed candidates are masked only when their best
+        distance modulus (``candidate_best_dm``) comes within this of
+        ``distance_modulus``; see ``mask_streams``.
     unmasked_streams : sequence of str, optional
         Names of streams not masked (a track name, a stream name or
         ``"candidate_<id>"``), e.g. the known stream the candidate is.
+    always_masked_streams : sequence of str, optional
+        Names of streams (as ``unmasked_streams``) masked whatever their
+        distance modulus: one far from that of the candidate whose stars
+        could still leak into its Hess diagrams, e.g. a known stream seen in
+        the maps (``catalogs.galstreams_catalog.observed_known_streams``) or
+        another candidate.
     candidate_id : int, optional
         Id of the candidate in the list, left out of the stream mask; set by
         ``from_candidate_id``.
@@ -752,7 +772,8 @@ class CandidateInvestigation:
         The tracks of the streams that can be masked (galstreams crossing the
         footprint and the other candidates), built once per footprint.
     masked_streams : list of str
-        Names of those masked (near ``distance_modulus``).
+        Names of those masked (near ``distance_modulus``, or in
+        ``always_masked_streams``).
     overlapping_streams : list of str
         Names of those not masked because they cover the track of the
         candidate: their stars stay in its regions.
@@ -813,8 +834,10 @@ class CandidateInvestigation:
     figure_folder: str | Path | None = None
     mask_streams: bool = True
     stream_mask_max_dm_difference: float = STREAM_MASK_MAX_DM_DIFFERENCE
+    candidate_mask_max_dm_difference: float = CANDIDATE_MASK_MAX_DM_DIFFERENCE
     stream_mask_max_width_deg: float = STREAM_MASK_MAX_WIDTH_DEG
     unmasked_streams: Sequence[str] = ()
+    always_masked_streams: Sequence[str] = ()
     candidate_id: int | None = None
     candidates_path: str | Path | None = None
     include_bad_candidates: bool = False
@@ -1219,8 +1242,8 @@ class CandidateInvestigation:
         self.stars_not_excluded = ~in_healpix_mask(stars["ra"].to_numpy(), stars["dec"].to_numpy(), mask, nest=False)
 
     def _stream_healpix_mask(self, nside: int) -> NDArray[np.bool_]:
-        """Mask of the other streams near ``distance_modulus`` at ``nside`` (RING); the tracks kept, the mask built
-        again when the streams masked or the nside change."""
+        """Mask of the other streams near ``distance_modulus``, and of those of ``always_masked_streams``, at ``nside``
+        (RING); the tracks kept, the mask built again when the streams masked or the nside change."""
         if self.stream_mask_tracks is None:
             tracks = galstreams_mask_tracks(self.footprint_mask, nest=self.footprint_nest)
             tracks += self._other_candidate_tracks()
@@ -1230,6 +1253,9 @@ class CandidateInvestigation:
         narrow = streams_not_wider_than(self.stream_mask_tracks, self.stream_mask_max_width_deg)
         near = streams_near_distance_modulus(narrow, self.distance_modulus,
                                              max_dm_difference=self.stream_mask_max_dm_difference)
+        near_names, always = {track["name"] for track in near}, set(self.always_masked_streams)
+        near += [track for track in narrow if track["name"] not in near_names
+                 and (track["name"] in always or track["stream_name"] in always)]
         phi1 = np.linspace(*self._endpoints_phi1_range(), DEFAULT_TRACK_POINTS)
         own_ra, own_dec = phi12_to_radec(phi1, np.zeros(phi1.size), self.stream_frame)
         masked, overlapping = [], []
@@ -1254,7 +1280,8 @@ class CandidateInvestigation:
         ``include_bad_candidates``, the bad ones, as tracks (``candidate_mask_tracks``)."""
         path = DEFAULT_CANDIDATES_PATH if self.candidates_path is None else self.candidates_path
         return candidate_mask_tracks(load_candidates(path, include_bad_candidates=self.include_bad_candidates),
-                                     exclude_ids=() if self.candidate_id is None else (self.candidate_id,))
+                                     exclude_ids=() if self.candidate_id is None else (self.candidate_id,),
+                                     max_dm_difference=self.candidate_mask_max_dm_difference)
 
     def _endpoints_phi1_range(self) -> tuple[float, float]:
         """phi1 of endpoint_1 and endpoint_2 (deg): negative, then positive."""
