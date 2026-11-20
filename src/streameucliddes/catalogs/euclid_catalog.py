@@ -109,6 +109,10 @@ EUCLID_FLUX_COLUMNS = {
 # colours with other bands need "psf" explicitly.
 VIS_PHOTOMETRIES = ("psf", "templfit")
 DEFAULT_VIS_PHOTOMETRY = "templfit"
+# Attribute of the stars read in a box (get_euclid_stars, DataFrame.attrs): (ra_range, dec_range) asked for, so that
+# a survey edge inside the box (no star beyond it) is told apart from the edge of the box
+# (CandidateInvestigation: a window beyond the stars but inside the box is fine)
+LOADED_BOX_ATTR = "loaded_radec_box"
 # Euclid columns read by default, besides the fluxes, RA/Dec and E(B-V).
 EUCLID_DEFAULT_COLUMNS = [
     "OBJECT_ID",  # Euclid unique source identifier
@@ -1006,7 +1010,10 @@ def get_euclid_stars(
     Returns
     -------
     pd.DataFrame
-        The selected rows, with the :func:`add_magnitudes` columns.
+        The selected rows, with the :func:`add_magnitudes` columns. When read
+        here (``data`` None), ``attrs[LOADED_BOX_ATTR]`` is ``(ra_range,
+        dec_range)`` as read (None: no limit), e.g. to tell a survey edge from
+        the edge of the box.
     """
     _dust_correction(dust_correction)  # unknown name: fail before reading
     if columns is None and data is None:
@@ -1073,6 +1080,9 @@ def get_euclid_stars(
         add_gatto_color_box(data, catalog)
 
     stars = data[get_cut_mask(data, cuts)].reset_index(drop=True)
+    if n_input is None:  # read here, in this box
+        stars.attrs[LOADED_BOX_ATTR] = (None if ra_range is None else tuple(map(float, ra_range)),
+                                        None if dec_range is None else tuple(map(float, dec_range)))
     if verbose:
         origin = f" out of {n_input:,}" if n_input is not None else ""
         print(f"Selected {len(stars):,} stars{origin}")

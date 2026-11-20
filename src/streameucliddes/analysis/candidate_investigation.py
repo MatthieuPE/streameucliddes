@@ -119,6 +119,7 @@ from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_scan,
     stream_frame_search_single_dm,
 )
+from streameucliddes.catalogs.euclid_catalog import LOADED_BOX_ATTR
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, isochrone_from_feh
 from streameucliddes.catalogs.stream_candidates import (
     BEST_DM_COLUMN,
@@ -1288,7 +1289,12 @@ class CandidateInvestigation:
 
         Range of the stars around the ra of the window centre (no jump at ra =
         0/360); window outline from ``phi12_window_radec_box`` without margin.
-        A window containing a pole is not checked.
+        A window containing a pole is not checked. When the catalog says in
+        which box it was read (``attrs[euclid_catalog.LOADED_BOX_ATTR]``, set
+        by ``get_euclid_stars``), that box is the range instead of the stars,
+        on the sides it limits: a window beyond the stars but inside the box
+        reaches past the survey edge, where there is no star to load (the
+        footprint, from the stars, masks it).
         """
         (ra_min, ra_max), (dec_min, dec_max) = phi12_window_radec_box(self.stream_frame, self.window, margin_deg=0.0)
         if (ra_min, ra_max) == (0.0, 360.0):
@@ -1300,13 +1306,23 @@ class CandidateInvestigation:
 
         star_ra = relative(catalog["ra"].to_numpy())
         star_dec = catalog["dec"].to_numpy()
+        (ra_low, ra_high), (dec_low, dec_high) = (star_ra.min(), star_ra.max()), (star_dec.min(), star_dec.max())
+        what = "stars"
+        box_ra, box_dec = catalog.attrs.get(LOADED_BOX_ATTR) or (None, None)
+        if box_ra is not None:
+            full_circle = box_ra[1] - box_ra[0] >= 360.0
+            ra_low, ra_high = (-np.inf, np.inf) if full_circle else (relative(box_ra[0]), relative(box_ra[1]))
+            what = "loaded box"
+        if box_dec is not None:
+            (dec_low, dec_high), what = box_dec, "loaded box"
         tolerance = CATALOG_EDGE_TOLERANCE_DEG
-        if (relative(ra_min) < star_ra.min() - tolerance or relative(ra_max) > star_ra.max() + tolerance
-                or dec_min < star_dec.min() - tolerance or dec_max > star_dec.max() + tolerance):
+        if (relative(ra_min) < ra_low - tolerance or relative(ra_max) > ra_high + tolerance
+                or dec_min < dec_low - tolerance or dec_max > dec_high + tolerance):
+            ra_text = ("every ra" if np.isinf(ra_low) else
+                       f"ra {(ra_low + centre_ra) % 360:.1f} to {(ra_high + centre_ra) % 360:.1f}")
             raise ValueError(
                 f"The window (ra {ra_min:.1f} to {ra_max:.1f}, dec {dec_min:.1f} to {dec_max:.1f} deg) leaves the "
-                f"stars (ra {(star_ra.min() + centre_ra) % 360:.1f} to {(star_ra.max() + centre_ra) % 360:.1f}, dec "
-                f"{star_dec.min():.1f} to {star_dec.max():.1f} deg): load a larger box."
+                f"{what} ({ra_text}, dec {dec_low:.1f} to {dec_high:.1f} deg): load a larger box."
             )
 
     def scan_distance_moduli(

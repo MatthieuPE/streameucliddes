@@ -44,6 +44,7 @@ from streameucliddes.catalogs.stream_candidates import (
 )
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
+from streameucliddes.catalogs.euclid_catalog import LOADED_BOX_ATTR
 from streameucliddes.catalogs.isochrone_parameters import (
     DEFAULT_FEHS,
     isochrone_from_feh,
@@ -522,6 +523,20 @@ def test_prepare_errors(candidate_endpoints, candidate_catalog):
     east = candidate_catalog[candidate_catalog["ra"] > 75.0]
     with pytest.raises(ValueError, match="load a larger box"):
         CandidateInvestigation("test", *candidate_endpoints).prepare(east)
+
+
+# A catalog read in a box (attrs[LOADED_BOX_ATTR], get_euclid_stars): a window beyond its stars but inside the box
+# (a survey edge) is prepared; one beyond the box: ValueError naming the box
+def test_prepare_window_beyond_survey_edge(candidate_endpoints, candidate_catalog, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    (ra_min, ra_max), (dec_min, dec_max) = cand.radec_box
+    north = candidate_catalog[candidate_catalog["dec"] > 0.5 * (dec_min + dec_max)].copy()  # survey edge in the window
+    north.attrs[LOADED_BOX_ATTR] = ((ra_min - 1.0, ra_max + 1.0), (dec_min - 1.0, dec_max + 1.0))
+    cand.prepare(north)
+    assert cand.search is not None and len(cand.search.stars) > 0
+    north.attrs[LOADED_BOX_ATTR] = (None, (0.5 * (dec_min + dec_max), dec_max + 1.0))  # the box cuts the window
+    with pytest.raises(ValueError, match="leaves the loaded box"):
+        CandidateInvestigation("test", *candidate_endpoints).prepare(north)
 
 
 # The map of stream_frame_search_single_dm on the prepared stars, at the distance modulus of the sky
