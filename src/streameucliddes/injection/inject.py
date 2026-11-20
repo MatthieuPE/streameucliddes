@@ -2,7 +2,17 @@
 
 from streamobs.observed import StreamInjector
 
+from streameucliddes.catalogs.euclid_catalog import VIS_TEMPLFIT_PARTNER_BANDS
+
 from .generate import generate_stream_catalog
+
+# Warning of the match filters with VIS template fits on injected stars (see
+# add_vis_templfit_magnitudes)
+INJECTED_VIS_TEMPLFIT_WARNING = (
+    "Injected stars have one VIS magnitude, simulated by streamobs: their VIS_TO_<band> "
+    "template-fitting magnitudes are copies of it, so a match filter with "
+    "vis_photometry='templfit' sees the same VIS as with 'psf' on them (not on the data)."
+)
 
 
 def inject_stream(
@@ -38,7 +48,8 @@ def inject_stream(
     Returns
     -------
     injected_catalog : np.ndarray
-        The catalog of stars after injection.
+        The catalog of stars after injection, with VIS template-fitting magnitudes
+        that are copies of VIS (:func:`add_vis_templfit_magnitudes`).
     """
 
     if stream_catalog is None:
@@ -79,6 +90,39 @@ def inject_stream_catalog(
         **kwargs,
     )
 
+    add_vis_templfit_magnitudes(stream)
     metadata = {"gc_frame": injector._last_gc_frame, "seed": seed}
 
     return stream, metadata
+
+
+def add_vis_templfit_magnitudes(catalog):
+    """
+    Add VIS template-fitting magnitudes to injected stars, copies of their VIS, in place.
+
+    streamobs simulates one VIS magnitude per star; the data have also the VIS
+    template-fitting magnitudes ``<namespace>_VIS_TO_<band>_obs`` / ``_err``
+    (``catalogs.euclid_catalog.vis_band``), read by the match filters with
+    ``"vis_photometry": "templfit"``. They are set here to the VIS magnitude and
+    error of each Euclid namespace, for <band> in ``VIS_TEMPLFIT_PARTNER_BANDS``:
+    the difference between the two photometries (about 0.07 mag in DR1) is not
+    simulated (see ``INJECTED_VIS_TEMPLFIT_WARNING``).
+
+    Parameters
+    ----------
+    catalog : pandas.DataFrame
+        Injected stars, with ``<namespace>_VIS_obs`` / ``_err`` columns.
+
+    Returns
+    -------
+    pandas.DataFrame
+        ``catalog``, with the new columns.
+    """
+    namespaces = [c.removesuffix("_VIS_obs") for c in catalog.columns
+                  if c.startswith("euclid") and c.endswith("_VIS_obs")]
+    for namespace in namespaces:
+        for band in VIS_TEMPLFIT_PARTNER_BANDS:
+            for kind in ("obs", "err"):
+                if f"{namespace}_VIS_{kind}" in catalog.columns:
+                    catalog[f"{namespace}_VIS_TO_{band}_{kind}"] = catalog[f"{namespace}_VIS_{kind}"]
+    return catalog

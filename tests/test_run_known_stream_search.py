@@ -11,12 +11,13 @@ import pandas as pd
 import pytest
 from PIL import Image
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_along_track,
     stream_frame_search_dm_scan,
     prepare_search,
 )
-from streameucliddes.catalogs.isochrone_parameters import known_stream_isochrone_parameters
+from streameucliddes.catalogs.isochrone_parameters import isochrone_label, known_stream_isochrone_parameters
 from streameucliddes.catalogs.survey_footprint import survey_footprint_healpix_mask
 from streameucliddes.stream_frames import phi12_bin_centres, phi12_to_radec
 from streameucliddes.unit_conversions import convert_DM_to_kpc
@@ -40,10 +41,10 @@ def catalog(gc_frame):
     n = 20_000
     ra, dec = phi12_to_radec(rng.uniform(-11.0, 11.0, n), rng.uniform(-4.0, 4.0, n), gc_frame)
     vis = rng.uniform(18.0, 26.0, n)
-    return pd.DataFrame({
-        "ra": ra, "dec": dec, "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
-        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
-    })
+    return add_vis_templfit_magnitudes(pd.DataFrame({
+        "ra": ra, "dec": dec, "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
+    }))
 
 
 @pytest.fixture
@@ -180,7 +181,7 @@ def _gif_frames(path):
 def test_run_outputs(search, tmp_path):
     distance_moduli = [9.5, 16.5, 17.0]  # 9.5: the frame names still sort as the distance moduli
     isochrone = search.isochrones[0]
-    folder = tmp_path / "Mock" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+    folder = tmp_path / "Mock" / isochrone_label(isochrone)
     for subfolder in ("maps", "cmd"):  # frames of an earlier run, on another grid
         (folder / subfolder).mkdir(parents=True)
         Image.new("RGB", (20, 10)).save(folder / subfolder / "Mock_dm21.00.png")
@@ -218,7 +219,7 @@ def test_run_stream_name(catalog, mock_mws, tmp_path):
     isochrones = known_stream_isochrone_parameters("Mock", default_grid=grid)
     assert [outputs["isochrone"] for outputs in summary["isochrones"]] == isochrones == grid
     for outputs, isochrone in zip(summary["isochrones"], isochrones):
-        folder = tmp_path / "Mock-T00" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+        folder = tmp_path / "Mock-T00" / isochrone_label(isochrone)
         assert outputs["maps_path"] == folder / "Mock-T00_maps.npz" and outputs["maps_path"].exists()
 
 
@@ -229,7 +230,7 @@ def test_run_isochrone(search, tmp_path):
         search=search, distance_moduli=[17.0], isochrone=isochrone, output_dir=tmp_path, name="Mock",
     )
     assert [outputs["isochrone"] for outputs in summary["isochrones"]] == [isochrone]
-    assert (tmp_path / "Mock" / "age11_z0.0005" / "Mock_maps.npz").exists()
+    assert (tmp_path / "Mock" / isochrone_label(isochrone) / "Mock_maps.npz").exists()
 
 
 def test_run_errors(catalog, search, gc_frame, tmp_path):
@@ -313,5 +314,5 @@ def test_run_all_end_to_end(catalog, mock_mws, tmp_path):
     )
     row, = table.itertuples()
     assert (row.track_name, row.age, row.metallicity) == ("Mock-T00", 13.0, 0.0002)
-    assert row.maps_path == tmp_path / "Mock-T00" / "age13_z0.0002" / "Mock-T00_maps.npz"
+    assert row.maps_path == tmp_path / "Mock-T00" / isochrone_label({"age": 13.0, "metallicity": 0.0002}) / "Mock-T00_maps.npz"
     assert row.maps_path.exists() and row.gif_path.exists() and row.cmd_gif_path.exists()

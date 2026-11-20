@@ -12,13 +12,19 @@ search: generic
 
 # distance_moduli: {start: 15.0, stop: 22.0, step: 0.1}   # default: 15 to 22 every 0.1
 #
-# match_filter:                # default: Euclid VIS vs VIS - H
-#   name: euclid_vis_h
-#   reference_band: [euclid_q1, VIS]
-#   color_bands: [[euclid_q1, H]]
+# match_filter:                # default: Euclid DR1 VIS vs VIS - H (DEFAULT_MATCH_FILTER: template-fit VIS,
+#   name: euclid_vis_h         # error_multiplier 3, red_cap_value 0.55); a match_filter here replaces it whole
+#   reference_band: [euclid_dr1, VIS]
+#   color_bands: [[euclid_dr1, H]]
+#   vis_photometry: templfit   # or psf
+#   error_multiplier: [3.0, 3.0]
+#   red_cap_value: 0.55
 #
 # default_grid:                # one set of maps per isochrone
 #   - {age: 13.0, metallicity: 0.0002}
+#
+# isochrone_model: Dotter2016  # name of the ugali isochrone model of the match filters; default (null): DEFAULT_ISOCHRONE_MODEL.
+#                              # Z of the default grid and of the stream table converted to it (same [Fe/H])
 #
 # nside: 512
 # mask_lmc: true               # mask the LMC, the SMC, the dwarf galaxies, the globular clusters (LVDB),
@@ -26,7 +32,7 @@ search: generic
 # mask_dwarfs: true
 # mask_gc: true
 # mask_galaxies: true
-# mask_radius_scale: {lmc: 6.5, smc: 11.0, dwarfs: 4.0, gc: 4.0, galaxies: 5.0}   # in reference radii (or one value)
+# mask_radius_scale: {lmc: 6.5, smc: 11.0, dwarfs: 4.0, gc: null, galaxies: 5.0}   # in reference radii (or one value); gc null: per cluster, from its surface brightness
 # smoothing_deg: 0.3
 # polynomial_degree: 5         # fixed for now
 # map_key: residual            # map of the Parquet file: residual, density or background

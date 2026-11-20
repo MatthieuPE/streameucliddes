@@ -9,18 +9,25 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.catalog_preparation import default_error_cuts, prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
     DEFAULT_MATCH_FILTER,
+    default_hess_bins,
     hess_diagram,
+    match_filter_cmd_columns,
     match_filter_polygons,
     select_stars_in_match_filter,
 )
 from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL
 from streameucliddes.plotting import plot_cmd
 from streameucliddes.plotting.plot_style import COLORBAR_LABEL_SIZE
 from streameucliddes.plotting.plot_cmd import (
+    cmd_panel_axes,
     plot_hess,
+    plot_on_off_cmd,
+    plot_on_off_hess_per_color,
     plot_isochrone,
     plot_match_filter,
     plot_match_filter_polygon,
@@ -32,13 +39,13 @@ pytestmark = pytest.mark.plot_cmd
 
 DM = 17.0
 ISOCHRONE = {"age": 12.0, "metallicity": 0.0003}
-VIS, H, J = "euclid_q1_VIS", "euclid_q1_H", "euclid_q1_J"
+VIS, H, J = "euclid_dr1_VIS", "euclid_dr1_H", "euclid_dr1_J"
 COLOR_LIM = (-0.6, 0.9)  # VIS - H
 MAG_LIM = (19.0, 26.0)  # VIS
 VIS_H_J_MATCH_FILTER = {
     "name": "vis_h_j",
-    "reference_band": ("euclid_q1", "VIS"),
-    "color_bands": [("euclid_q1", "H"), ("euclid_q1", "J")],
+    "reference_band": ("euclid_dr1", "VIS"),
+    "color_bands": [("euclid_dr1", "H"), ("euclid_dr1", "J")],
 }
 
 
@@ -51,16 +58,18 @@ def catalog(gc_frame):
     ra, dec = phi12_to_radec(phi1, phi2, gc_frame)
     vis = rng.uniform(18.0, 27.0, n)
     errors = np.where(np.arange(n) % 10 == 0, 0.5, 0.02)
-    return pd.DataFrame({
+    return add_vis_templfit_magnitudes(pd.DataFrame({
         "ra": ra, "dec": dec,
         f"{VIS}_obs": vis, f"{H}_obs": vis - rng.uniform(-1.0, 1.5, n), f"{J}_obs": vis - rng.uniform(-1.0, 1.5, n),
         f"{VIS}_err": errors, f"{H}_err": errors, f"{J}_err": errors,
-    })
+    }))
 
 
 def _expected_counts(stars, color_column, color_lim, mag_lim):
-    """2D histogram of (VIS - colour band, VIS), with the bins of plot_CMD."""
-    vis = stars[f"{VIS}_obs"].to_numpy()
+    """2D histogram of (VIS - colour band, VIS), with the bins of plot_CMD; VIS that of the match filter for the
+    colour (match_filter_cmd_columns: its VIS photometry)."""
+    reference = {color: mag for mag, color in match_filter_cmd_columns(VIS_H_J_MATCH_FILTER)}[color_column]
+    vis = stars[reference].to_numpy()
     counts, _, _ = np.histogram2d(vis - stars[color_column].to_numpy(), vis,
                                   bins=[np.arange(*color_lim, 0.01), np.arange(*mag_lim, 0.1)])
     return counts.T
@@ -301,3 +310,100 @@ def test_plot_cmd_wrapper():
     assert ax.get_xlim() == pytest.approx((np.percentile(colour, 1), 1.0))
     plt.close(fig)
 
+
+# ===================================================
+# Test cmd_panel_axes, plot_on_off_cmd, plot_on_off_hess_per_color
+# ===================================================
+
+
+def test_cmd_panel_axes():
+    fig, axes = cmd_panel_axes(None, 3)
+    assert len(axes) == 3 and all(ax.figure is fig for ax in axes)
+    with pytest.raises(ValueError, match="2 axes for 3 panels"):
+        cmd_panel_axes(axes[:2], 3)
+    plt.close(fig)
+
+
+# The on stars and a fraction area_ratio of the off stars, one panel per colour band with the polygon and the
+# isochrone; or the given pairs, without them
+def test_plot_on_off_cmd(catalog):
+    on = np.arange(len(catalog)) % 4 == 0
+    off = ~on
+    fig, axes = plot_on_off_cmd(catalog, on, off, 0.25, DM, ISOCHRONE, VIS_H_J_MATCH_FILTER)
+    assert [ax.get_xlabel() for ax in axes] == ["VIS - H", "VIS - J"]
+    off_points, on_points = (collection.get_offsets() for collection in axes[0].collections)
+    assert len(on_points) == on.sum()
+    assert abs(len(off_points) - 0.25 * off.sum()) < 5 * np.sqrt(0.25 * off.sum())
+    assert all(any(line.get_label() == "Match filter" for line in ax.get_lines()) for ax in axes)
+    assert all(len(ax.get_lines()) == 2 for ax in axes)  # polygon and isochrone
+    plt.close(fig)
+    fig, axes = plot_on_off_cmd(catalog, on, off, 0.25, mag_cols=[(f"{H}_obs", f"{J}_obs")])
+    assert len(axes) == 1 and axes[0].get_xlabel() == "H - J" and not axes[0].get_lines()
+    plt.close(fig)
+
+
+# One row of on, off, on - off (and smoothed) per colour, with the polygon on every panel; or per given pair
+def test_plot_on_off_hess_per_color(catalog):
+    on = np.arange(len(catalog)) % 4 == 0
+    fig, axes = plot_on_off_hess_per_color(catalog, on, 1.0, [~on], [3.0], DM, ISOCHRONE, VIS_H_J_MATCH_FILTER)
+    assert [len(row) for row in axes] == [4, 4]
+    assert axes[1][0].get_xlabel() == "VIS - J"
+    assert all(any(line.get_label() == "Match filter" for line in ax.get_lines()) for row in axes for ax in row)
+    plt.close(fig)
+    fig, axes = plot_on_off_hess_per_color(catalog, on, 1.0, [~on], [3.0], mag_cols=[(f"{VIS}_obs", f"{H}_obs")],
+                                           smoothed_difference=False)
+    assert [len(row) for row in axes] == [3]
+    plt.close(fig)
+    with pytest.raises(ValueError, match="rows"):
+        plot_on_off_hess_per_color(catalog, on, 1.0, [~on], [3.0], DM, ISOCHRONE, VIS_H_J_MATCH_FILTER,
+                                   axes=[plt.subplots(1, 4)[1]])
+    plt.close("all")
+
+
+# Without given bins, the panels have the bins of every Hess diagram (default_hess_bins), with or without a match
+# filter: the same pixels as hess_diagram
+def test_plot_on_off_hess_per_color_default_bins(catalog):
+    on = np.arange(len(catalog)) % 4 == 0
+    color_bins, mag_bins = default_hess_bins()
+    expected_extent = (color_bins[0], color_bins[-1], mag_bins[0], mag_bins[-1])
+    reference = hess_diagram(catalog, (f"{VIS}_obs", f"{H}_obs"))
+    np.testing.assert_allclose(reference["color_edges"], color_bins)
+    np.testing.assert_allclose(reference["mag_edges"], mag_bins)
+    for kwargs in ({"distance_modulus": DM, "isochrone": ISOCHRONE, "match_filter": VIS_H_J_MATCH_FILTER},
+                   {"mag_cols": [(f"{VIS}_obs", f"{H}_obs")]}):
+        fig, axes = plot_on_off_hess_per_color(catalog, on, 1.0, [~on], [3.0], **kwargs)
+        for ax in (ax for row in axes for ax in row):
+            np.testing.assert_allclose(ax.get_images()[0].get_extent(), expected_extent)
+        plt.close(fig)
+
+
+# A model other than the default one leads the label; the default one is not named
+def test_plot_isochrone_label_model():
+    fig, ax = plt.subplots()
+    track = {"color": np.array([0.2, 0.4]), "mag": np.array([24.0, 21.0]), "age": 12.0, "metallicity": 0.0003,
+             "feh": None, "distance_modulus": 17.0}
+    other = next(model for model in ("Marigo2017", "Dotter2016") if model != DEFAULT_ISOCHRONE_MODEL)
+    label = plot_isochrone(ax, {**track, "isochrone_model": other}).get_label()
+    assert label == f"{other}, 12 Gyr, Z = 0.0003, dm 17.0"
+    assert (plot_isochrone(ax, {**track, "isochrone_model": DEFAULT_ISOCHRONE_MODEL}).get_label()
+            == "12 Gyr, Z = 0.0003, dm 17.0")
+    plt.close(fig)
+
+
+# per_area False: the counts drawn (the excess stars of the on region for on - off), "N" on the colour bar; True:
+# the densities; True without area: ValueError
+def test_plot_hess_per_area():
+    edges = {"color_edges": np.array([0.0, 0.5, 1.0]), "mag_edges": np.array([20.0, 21.0, 22.0]),
+             "color_label": "VIS - H", "mag_label": "VIS"}
+    diff = {**edges, "density": np.array([[1.0, -2.0], [0.5, 3.0]]), "area_deg2": 4.0, "n_stars": 10.0}
+    diff["counts"] = diff["density"] * diff["area_deg2"]
+    fig, ax = plot_hess(diff, difference=True, per_area=False)
+    np.testing.assert_array_equal(ax.images[0].get_array(), diff["counts"].T)
+    assert fig.axes[-1].get_ylabel() == "N"
+    plt.close(fig)
+    fig, ax = plot_hess(diff, difference=True)  # default: per deg²
+    np.testing.assert_array_equal(ax.images[0].get_array(), diff["density"].T)
+    plt.close(fig)
+    counts_only = {**edges, "density": np.ones((2, 2)), "counts": np.ones((2, 2)), "area_deg2": None, "n_stars": 4}
+    with pytest.raises(ValueError, match="per_area"):
+        plot_hess(counts_only, per_area=True)

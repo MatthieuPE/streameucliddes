@@ -5,6 +5,7 @@ import importlib.util
 import warnings
 from pathlib import Path
 
+import healpy as hp
 import numpy as np
 import pandas as pd
 import pyarrow as pa
@@ -21,24 +22,51 @@ pytestmark = pytest.mark.euclid_catalog
 SCRIPT = Path(__file__).resolve().parents[1] / "scripts" / "download_euclid_dr1.py"
 
 
-@pytest.fixture(scope="module")
-def download():
-    """The download script, imported as a module."""
+@functools.cache
+def _download_module():
+    """The download script, imported as a module (once)."""
     spec = importlib.util.spec_from_file_location("download_euclid_dr1", SCRIPT)
     module = importlib.util.module_from_spec(spec)
     spec.loader.exec_module(module)
     return module
 
 
+@pytest.fixture(scope="module")
+def download():
+    """The download script, imported as a module."""
+    return _download_module()
+
+
+N_MOCK_TILES = 4  # MER tiles of the small HATS catalog
+
+
 CATALOG_NAMES = ["euclid_dr1", "euclid_q1_des"]  # Euclid only, crossmatched with DES
 PASS_FRACTION = 0.8  # of the mock sources, for each default cut
+
+
+def _vis_photometry(catalog):
+    """VIS photometry readable in a catalog: the default one, PSF for Q1 (no VIS template fit, DR1 only)."""
+    templfit = any(band.startswith("VIS_TO_") for band in euclid_catalog.euclid_bands(catalog))
+    return euclid_catalog.DEFAULT_VIS_PHOTOMETRY if templfit else "psf"
+
+
+def _default_columns(catalog):
+    """Default columns of a catalog, with its readable VIS photometry."""
+    return euclid_catalog.default_columns(catalog, _vis_photometry(catalog))
+
+
+def _mock_ebv(dust_correction):
+    """E(B-V) of the mock catalogs for a dust correction: one value per correction."""
+    return 0.1 + 0.05 * list(euclid_catalog.DUST_CORRECTIONS).index(dust_correction)
 
 
 def _mock_catalog(catalog, path, rng, n=2000):
     """Write a one-partition HATS-like catalog with the default columns of ``catalog``."""
     columns = euclid_catalog.catalog_columns(catalog)
     column = functools.partial(euclid_catalog.euclid_column, catalog)
-    data = {c: rng.uniform(0.0, 1.0, n) for c in euclid_catalog.default_columns(catalog)}
+    templfit = any(b.startswith("VIS_TO_") for b in euclid_catalog.euclid_bands(catalog))
+    names = euclid_catalog.default_columns(catalog, "templfit" if templfit else "psf")
+    data = {c: rng.uniform(0.0, 1.0, n) for c in names}
     # Columns of the default cuts: about PASS_FRACTION of the values pass each cut, whatever
     # the cut values (with many cuts, enough stars pass them all)
     for cut_column, spec in euclid_catalog.default_star_cuts(catalog).items():
@@ -61,7 +89,8 @@ def _mock_catalog(catalog, path, rng, n=2000):
     for flux_col, err_col in columns["euclid_fluxes"].values():
         data[flux_col] = rng.uniform(-1.0, 100.0, n)  # micro-Jy, some non-positive
         data[err_col] = rng.uniform(0.01, 1.0, n)
-    data[columns["ebv"]] = np.full(n, 0.1)
+    for name in euclid_catalog.DUST_CORRECTIONS:  # a different E(B-V) per dust correction
+        data[euclid_catalog.ebv_column(catalog, name)] = np.full(n, _mock_ebv(name))
     for mag_col, err_col in columns["des_magnitudes"].values():
         data[mag_col] = rng.uniform(15.0, 40.0, n)  # some above the valid range
         data[mag_col][::11] = -99.0  # sentinel
@@ -87,9 +116,24 @@ def test_unknown_catalog():
         euclid_catalog.default_columns("euclid_dr2")
 
 
+# The point map of the HATS folder, NESTED, read once per folder
+def test_catalog_point_map(tmp_path):
+    folder = tmp_path / "euclid_dr1" / "euclid_dr1_mer"
+    folder.mkdir(parents=True)
+    (folder / "hats.properties").write_text("obs_collection=euclid_dr1\n")
+    nside = 8
+    counts = np.arange(hp.nside2npix(nside), dtype=float)
+    hp.write_map(folder / "point_map.fits", counts, nest=True)
+    euclid_catalog._read_point_map.cache_clear()
+    point_map = euclid_catalog.catalog_point_map("euclid_dr1", data_path=tmp_path / "euclid_dr1")
+    np.testing.assert_array_equal(point_map, counts)
+    assert not point_map.flags.writeable
+    assert euclid_catalog.catalog_point_map("euclid_dr1", data_path=tmp_path / "euclid_dr1") is point_map
+
+
 def test_column_names():
     dr1 = euclid_catalog.default_columns("euclid_dr1")
-    crossmatch = euclid_catalog.default_columns("euclid_q1_des")
+    crossmatch = _default_columns("euclid_q1_des")
     assert not any(c.endswith(("_euclid", "_des")) for c in dr1)
     assert all(c.endswith(("_euclid", "_des")) or c.startswith("_") for c in crossmatch)
     assert euclid_catalog.catalog_columns("euclid_dr1")["des_magnitudes"] == {}
@@ -98,8 +142,9 @@ def test_column_names():
 def test_open_with_cuts(catalog_dir):
     catalog, path, data = catalog_dir
     spurious = euclid_catalog.euclid_column(catalog, "SPURIOUS_FLAG")
-    read = euclid_catalog.open_euclid_catalog(catalog, data_path=path, cuts={spurious: 0}, verbose=False)
-    assert list(read.columns) == euclid_catalog.default_columns(catalog)
+    read = euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog),
+                                              data_path=path, cuts={spurious: 0}, verbose=False)
+    assert list(read.columns) == _default_columns(catalog)
     assert len(read) == (data[spurious] == 0).sum()
 
 
@@ -109,7 +154,8 @@ def test_open_sky_box(catalog_dir, ra_range):
     columns = euclid_catalog.catalog_columns(catalog)
     dec_range = (-50.0, -40.0)
     read = euclid_catalog.open_euclid_catalog(
-        catalog, data_path=path, ra_range=ra_range, dec_range=dec_range, verbose=False
+        catalog, columns=_default_columns(catalog), data_path=path, ra_range=ra_range, dec_range=dec_range,
+        verbose=False,
     )
     ra, dec = data[columns["ra"]], data[columns["dec"]]
     in_ra = (ra >= ra_range[0]) & (ra <= ra_range[1]) if ra_range[0] <= ra_range[1] else (
@@ -136,24 +182,31 @@ def test_open_unknown_column(catalog_dir):
         euclid_catalog.open_euclid_catalog(catalog, columns=["NOT_A_COLUMN"], data_path=path)
 
 
-def test_magnitudes(catalog_dir):
+@pytest.mark.parametrize("dust_correction", list(euclid_catalog.DUST_CORRECTIONS))
+def test_magnitudes(catalog_dir, dust_correction):
     catalog, path, data = catalog_dir
-    columns = euclid_catalog.catalog_columns(catalog)
+    columns = euclid_catalog.catalog_columns(catalog, dust_correction)
     survey = euclid_catalog.euclid_survey(catalog)
     read = euclid_catalog.add_magnitudes(
-        euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False), catalog
+        euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog),
+                                           data_path=path, verbose=False), catalog,
+        dust_correction=dust_correction,
     )
     flux = data[columns["euclid_fluxes"]["VIS"][0]].to_numpy()
-    expected = -2.5 * np.log10(flux * 1e-6 / 3631.0) - survey.coeff_extinc["VIS"] * 0.1
+    coefficient = euclid_catalog.DUST_CORRECTIONS[dust_correction]["coefficients"]["VIS"]
+    expected = -2.5 * np.log10(flux * 1e-6 / 3631.0) - coefficient * _mock_ebv(dust_correction)
     vis = read[f"{survey.namespace}_VIS_obs"]
     np.testing.assert_allclose(vis[flux > 0], expected[flux > 0], rtol=1e-6)
     assert vis[flux <= 0].isna().all()
     np.testing.assert_array_equal(read["ra"], data[columns["ra"]])
+    # DES: dereddened by DES with SFD98; the chosen E(B-V) replaces it, DES coefficients
+    ebv_change = _mock_ebv("SFD98") - _mock_ebv(dust_correction)
     for band, (mag_col, _) in columns["des_magnitudes"].items():
         mag = data[mag_col].to_numpy()
         valid = (mag > euclid_catalog.DES_VALID_MAG_RANGE[0]) & (mag < euclid_catalog.DES_VALID_MAG_RANGE[1])
         des = read[f"{euclid_catalog.DES_NAMESPACE}_{band}_obs"].to_numpy()
-        np.testing.assert_array_equal(des[valid], mag[valid])
+        expected_des = mag + euclid_catalog.des_survey().coeff_extinc[band] * ebv_change
+        np.testing.assert_allclose(des[valid], expected_des[valid], rtol=1e-12)
         assert np.isnan(des[~valid]).all()
     if not columns["des_magnitudes"]:
         assert not any(c.startswith(euclid_catalog.DES_NAMESPACE) for c in read.columns)
@@ -162,16 +215,23 @@ def test_magnitudes(catalog_dir):
 def test_stars(catalog_dir):
     catalog, path, data = catalog_dir
     cuts = euclid_catalog.default_star_cuts(catalog)
-    stars = euclid_catalog.get_euclid_stars(catalog, data_path=path, verbose=False)
+    stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                            data_path=path, verbose=False)
     all_rows = euclid_catalog.add_magnitudes(data.copy(), catalog)
     assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
     assert get_cut_mask(stars, cuts).all()
 
 
-def test_magnitude_columns(catalog_dir):
+@pytest.mark.parametrize("vis_photometry", euclid_catalog.VIS_PHOTOMETRIES)
+def test_magnitude_columns(catalog_dir, vis_photometry):
     catalog, _, data = catalog_dir
+    if vis_photometry == "templfit" and catalog != "euclid_dr1":
+        with pytest.raises(ValueError, match="DR1 only"):
+            euclid_catalog.default_columns(catalog, vis_photometry)
+        return
+    data = data[euclid_catalog.default_columns(catalog, vis_photometry)]
     added = set(euclid_catalog.add_magnitudes(data.copy(), catalog).columns) - set(data.columns)
-    assert added == set(euclid_catalog.magnitude_columns(catalog))
+    assert added == set(euclid_catalog.magnitude_columns(catalog, vis_photometry))
 
 
 @pytest.mark.parametrize("star_selection", euclid_catalog.STAR_SELECTIONS)
@@ -180,7 +240,8 @@ def test_stars_default_cuts_no_warning(catalog_dir, star_selection):
     cuts = euclid_catalog.default_star_cuts(catalog, star_selection)
     with warnings.catch_warnings():
         warnings.simplefilter("error")
-        euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+        euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                        cuts=cuts, data_path=path, verbose=False)
 
 
 XGBOOST_PROB = euclid_catalog.XGBOOST_STAR_PROB_COLUMN
@@ -198,6 +259,62 @@ def test_star_selections(catalog):
     assert not morphology_columns & set(classifier)
     assert ({c: s for c, s in morphology.items() if c not in morphology_columns}
             == {c: s for c, s in classifier.items() if c != XGBOOST_PROB})
+
+
+COLOR_BOX = euclid_catalog.GATTO_COLOR_BOX_COLUMN
+
+
+@pytest.mark.parametrize("catalog", CATALOG_NAMES)
+def test_gatto_star_selection(catalog):
+    """Same quality cuts as the morphology selection; Gatto cuts and the colour box."""
+    morphology = euclid_catalog.default_star_cuts(catalog)
+    gatto = euclid_catalog.default_star_cuts(catalog, "gatto_stars_dr1")
+    morphology_columns = {euclid_catalog.euclid_column(catalog, c) for c in euclid_catalog.MORPHOLOGY_STAR_CUTS}
+    for column, spec in euclid_catalog.GATTO_STAR_CUTS.items():
+        assert gatto[euclid_catalog.euclid_column(catalog, column)] == spec
+    assert gatto[COLOR_BOX] is True
+    assert COLOR_BOX not in morphology
+    gatto_columns = {euclid_catalog.euclid_column(catalog, c) for c in euclid_catalog.GATTO_STAR_CUTS} | {COLOR_BOX}
+    assert ({c: s for c, s in morphology.items() if c not in morphology_columns}
+            == {c: s for c, s in gatto.items() if c not in gatto_columns})
+
+
+def test_in_color_box():
+    """Colours on the right axes (x = VIS - H, y = Y - H); missing magnitudes are outside."""
+    catalog = CATALOG_NAMES[0]
+    namespace = euclid_catalog.euclid_survey(catalog).namespace
+    # A box wider than high, so that swapping the axes moves a point out of it
+    box = {"x_bands": ("VIS", "H"), "y_bands": ("Y", "H"), "vertices": ((0, 0), (1, 0), (1, 0.3), (0, 0.3))}
+    x = np.array([0.5, 0.2, 0.5, np.nan])  # VIS - H
+    y = np.array([0.2, 0.5, np.nan, 0.2])  # Y - H
+    h = np.full(len(x), 20.0)
+    data = pd.DataFrame({f"{namespace}_VIS_obs": h + x, f"{namespace}_Y_obs": h + y, f"{namespace}_H_obs": h})
+    np.testing.assert_array_equal(euclid_catalog.in_color_box(data, catalog, box), [True, False, False, False])
+    added = euclid_catalog.add_gatto_color_box(data.copy(), catalog)
+    np.testing.assert_array_equal(added[COLOR_BOX], euclid_catalog.in_color_box(data, catalog))
+
+
+def test_stars_gatto_selection(catalog_dir, monkeypatch):
+    """Colour box applied while reading, by batches or not, or on data already read: same stars."""
+    catalog, path, data = catalog_dir
+    cuts = euclid_catalog.default_star_cuts(catalog, "gatto_stars_dr1")
+    all_rows = euclid_catalog.add_gatto_color_box(euclid_catalog.add_magnitudes(data.copy(), catalog), catalog)
+    in_box = all_rows[COLOR_BOX].to_numpy()
+    assert 0 < in_box.sum() < len(in_box)  # the mock colours test the box
+    stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                            cuts=cuts, data_path=path, verbose=False)
+    assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
+    assert stars[COLOR_BOX].all()
+
+    read = euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog), data_path=path, verbose=False)
+    from_data = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                                data=read, cuts=cuts, verbose=False)
+    pd.testing.assert_frame_equal(stars, from_data, check_like=True)  # columns in another order
+
+    monkeypatch.setattr(euclid_catalog, "READ_BATCH_SIZE", len(data) // 20)
+    by_batches = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                                 cuts=cuts, data_path=path, verbose=False)
+    pd.testing.assert_frame_equal(by_batches, stars)
 
 
 @pytest.mark.parametrize("star_selection", euclid_catalog.STAR_SELECTIONS)
@@ -243,12 +360,14 @@ def test_stars_xgboost_classifier(catalog_dir):
     all_rows = euclid_catalog.add_xgboost_star_prob(euclid_catalog.add_magnitudes(data.copy(), catalog), catalog)
     cuts = _median_xgboost_cuts(catalog, data)
     threshold = cuts[XGBOOST_PROB][0]
-    stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                            cuts=cuts, data_path=path, verbose=False)
     assert 0 < len(stars) == get_cut_mask(all_rows, cuts).sum()
     assert (stars[XGBOOST_PROB] >= threshold).all()
 
-    read = euclid_catalog.open_euclid_catalog(catalog, data_path=path, verbose=False)
-    from_data = euclid_catalog.get_euclid_stars(catalog, data=read, cuts=cuts, verbose=False)
+    read = euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog), data_path=path, verbose=False)
+    from_data = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                                data=read, cuts=cuts, verbose=False)
     pd.testing.assert_frame_equal(stars, from_data, check_like=True)  # columns in another order
 
 
@@ -256,36 +375,43 @@ def test_stars_xgboost_by_batches(catalog_dir, monkeypatch):
     """Classifier selection: small batches give the stars of a single batch, 64-bit ids included."""
     catalog, path, data = catalog_dir
     cuts = _median_xgboost_cuts(catalog, data)
-    columns = euclid_catalog.default_columns(catalog) + [euclid_catalog.euclid_column(catalog, "GAIA_ID")]
+    columns = _default_columns(catalog) + [euclid_catalog.euclid_column(catalog, "GAIA_ID")]
     kwargs = dict(cuts=cuts, columns=columns, data_path=path, verbose=False)
-    one_batch = euclid_catalog.get_euclid_stars(catalog, **kwargs)
+    one_batch = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog), **kwargs)
     monkeypatch.setattr(euclid_catalog, "READ_BATCH_SIZE", len(data) // 20)
-    by_batches = euclid_catalog.get_euclid_stars(catalog, **kwargs)
+    by_batches = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog), **kwargs)
     assert len(by_batches) > 0
     pd.testing.assert_frame_equal(by_batches, one_batch)
 
 
-@pytest.mark.parametrize("cut", ["catalog column", "magnitude", "classifier"])
+@pytest.mark.parametrize("cut", ["catalog column", "magnitude", "classifier", "color box"])
 def test_stars_none_selected(catalog_dir, cut):
     """No star passes: an empty table with all the columns."""
     catalog, path, _ = catalog_dir
-    read_columns = euclid_catalog.default_columns(catalog)
+    read_columns = _default_columns(catalog)
     if cut == "catalog column":  # nothing read
         cuts = {euclid_catalog.euclid_column(catalog, "OBJECT_ID"): -1}
     elif cut == "magnitude":  # rows read, none selected
         cuts = {f"{euclid_catalog.euclid_survey(catalog).namespace}_VIS_obs": (100.0, None)}
-    else:  # rows read, none passing the classifier cut
+    elif cut == "classifier":  # rows read, none passing the classifier cut
         cuts = {XGBOOST_PROB: (2.0, None)}
         read_columns = read_columns + [XGBOOST_PROB]  # added while reading
-    stars = euclid_catalog.get_euclid_stars(catalog, cuts=cuts, data_path=path, verbose=False)
+    else:  # nothing read, colour box computed on the empty batch
+        cuts = {euclid_catalog.euclid_column(catalog, "OBJECT_ID"): -1, COLOR_BOX: True}
+    stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                            cuts=cuts, data_path=path, verbose=False)
     assert len(stars) == 0
-    assert list(stars.columns) == read_columns + euclid_catalog.magnitude_columns(catalog)
+    expected = read_columns + euclid_catalog.magnitude_columns(catalog, _vis_photometry(catalog))
+    if cut == "color box":  # added while reading, after the magnitudes
+        expected = expected + [COLOR_BOX]
+    assert list(stars.columns) == expected
 
 
 def test_stars_unknown_cut_column(catalog_dir):
     catalog, path, _ = catalog_dir
     with pytest.raises(KeyError, match="NOT_A_COLUMN"):
-        euclid_catalog.get_euclid_stars(catalog, cuts={"NOT_A_COLUMN": 0}, data_path=path)
+        euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                        cuts={"NOT_A_COLUMN": 0}, data_path=path)
 
 
 def test_match_columns(download):
@@ -442,3 +568,175 @@ def test_download_tile_retries_short_answer(download, tap_csv, tmp_path, monkeyp
     path = tmp_path / "tile_1.parquet"
     assert download.download_tile("https://tap", "query", dtypes, mapping, path, expected=2) == 2
     assert len(pd.read_parquet(path)) == 2
+
+
+@pytest.fixture
+def small_hats(tmp_path, rng):
+    """A HATS catalog of 3000 sources in several partitions, written by lsdb."""
+    lsdb = pytest.importorskip("lsdb")
+    n = 3000
+    frame = pd.DataFrame({
+        "OBJECT_ID": rng.permutation(n).astype(np.int64) - 1500,  # Euclid ids can be negative
+        "RIGHT_ASCENSION": rng.uniform(40.0, 70.0, n),
+        "DECLINATION": rng.uniform(-60.0, -40.0, n),
+        "FLUX_VIS_PSF": rng.uniform(0.0, 10.0, n).astype(np.float32),
+    })
+    # As in DR1: two sources with the same OBJECT_ID, a few micro-arcsec apart (same
+    # _healpix_29, row 1) or 0.04 arcsec apart (row 3)
+    for row, shift in [(1, 1e-9), (3, 1e-5)]:
+        frame.loc[row, "OBJECT_ID"] = frame.loc[row - 1, "OBJECT_ID"]
+        frame.loc[row, ["RIGHT_ASCENSION", "DECLINATION"]] = (
+            frame.loc[row - 1, ["RIGHT_ASCENSION", "DECLINATION"]] + shift)
+    catalog = lsdb.from_dataframe(frame, ra_column="RIGHT_ASCENSION", dec_column="DECLINATION",
+                                  lowest_order=2, highest_order=6, partition_size=500)
+    catalog.write_catalog(tmp_path / "cat", catalog_name="cat", as_collection=False)
+    assert len(catalog.get_healpix_pixels()) > 2
+    return tmp_path / "cat", frame
+
+
+def _tiles_with_new_columns(download, frame, folder, rng):
+    """Tile files (as from TAP) with KEY_COLUMNS and random ADDED_COLUMNS, in random order."""
+    folder.mkdir()
+    new = frame[download.KEY_COLUMNS].sample(frac=1.0, random_state=1).reset_index(drop=True)
+    for column in download.ADDED_COLUMNS:
+        new[column] = rng.uniform(-1.0, 10.0, len(new)).astype(np.float32)
+        new.loc[::13, column] = np.nan
+    files = []
+    for tile, part in enumerate(np.array_split(new, N_MOCK_TILES)):
+        files.append(folder / f"tile_{tile}.parquet")
+        part.to_parquet(files[-1], index=False)
+    return new, files
+
+
+def test_add_columns_to_catalog(download, small_hats, tmp_path, rng):
+    lsdb = pytest.importorskip("lsdb")
+    catalog_dir, frame = small_hats
+    new, files = _tiles_with_new_columns(download, frame, tmp_path / "tiles", rng)
+    columns = download.ADDED_COLUMNS
+    shard_dir = tmp_path / "shards"
+    partition_files = sorted((catalog_dir / "dataset").glob("Norder=*/Dir=*/Npix=*.parquet"))
+    old_names = pq.read_schema(partition_files[0]).names
+    download.split_by_partition(files, catalog_dir, shard_dir, columns)
+    download.split_by_partition(files, catalog_dir, shard_dir, columns)  # done tiles skipped
+    download.merge_columns(catalog_dir, shard_dir, columns, workers=1)
+    for path in partition_files:  # the new columns only (no Norder/Dir from the path)
+        assert pq.read_schema(path).names == [*old_names, *columns]
+
+    assert set(columns) <= set(download.catalog_schema(catalog_dir).names)
+    key = download.KEY_COLUMNS  # OBJECT_ID is not unique: with the position
+    result = lsdb.open_catalog(catalog_dir).compute().set_index(key)
+    assert len(result) == len(frame)
+    expected = new.set_index(key).loc[result.index]
+    schema = download.catalog_schema(catalog_dir)
+    for column in columns:
+        assert schema.field(column).type == pa.float32()
+        np.testing.assert_array_equal(result[column].to_numpy(float, na_value=np.nan),
+                                      expected[column].to_numpy(float))
+    np.testing.assert_array_equal(  # the old columns are unchanged
+        result["FLUX_VIS_PSF"].to_numpy(float),
+        frame.set_index(key).loc[result.index, "FLUX_VIS_PSF"].to_numpy(float),
+    )
+    # a second merge leaves the partition files as they are
+    files = sorted((catalog_dir / "dataset").glob("Norder=*/Dir=*/Npix=*.parquet"))
+    times = [f.stat().st_mtime_ns for f in files]
+    download.merge_columns(catalog_dir, shard_dir, columns, workers=1)
+    assert [f.stat().st_mtime_ns for f in files] == times
+
+
+# A source missing from the new rows (a tile not downloaded) stops the merge of its partition
+def test_add_columns_missing_source(download, small_hats, tmp_path, rng):
+    catalog_dir, frame = small_hats
+    _, files = _tiles_with_new_columns(download, frame, tmp_path / "tiles", rng)
+    shard_dir = tmp_path / "shards"
+    download.split_by_partition(files[1:], catalog_dir, shard_dir, download.ADDED_COLUMNS)
+    with pytest.raises(RuntimeError, match="new rows"):
+        download.merge_columns(catalog_dir, shard_dir, download.ADDED_COLUMNS, workers=1)
+
+
+def test_ebv_columns():
+    assert euclid_catalog.ebv_column("euclid_dr1", "SFD98") == "EBV_SFD98"
+    assert euclid_catalog.ebv_column("euclid_dr1", "PLANCK") == "GAL_EBV"
+    assert euclid_catalog.ebv_column("euclid_q1_des", "SFD98") == "EBV_SFD98_des"
+    assert euclid_catalog.ebv_column("euclid_q1_des", "PLANCK") == "GAL_EBV_euclid"
+    for name in euclid_catalog.DUST_CORRECTIONS:
+        coefficients = euclid_catalog.DUST_CORRECTIONS[name]["coefficients"]
+        # every band has a coefficient: its own, or VIS for the VIS template fits
+        assert {band.split("_TO_")[0] for band in euclid_catalog.EUCLID_FLUX_COLUMNS} <= set(coefficients)
+    with pytest.raises(ValueError, match="Unknown dust correction"):
+        euclid_catalog.catalog_columns("euclid_dr1", "SFD")
+
+
+# The dust correction reaches the magnitudes of get_euclid_stars, also those computed
+# batch by batch for the colour box
+@pytest.mark.parametrize("dust_correction", list(euclid_catalog.DUST_CORRECTIONS))
+def test_stars_dust_correction(catalog_dir, dust_correction):
+    catalog, path, _ = catalog_dir
+    data = euclid_catalog.open_euclid_catalog(catalog, columns=_default_columns(catalog), data_path=path, verbose=False)
+    expected = euclid_catalog.add_magnitudes(data, catalog, dust_correction=dust_correction)
+    column = f"{euclid_catalog.euclid_survey(catalog).namespace}_VIS_obs"
+    expected = expected.set_index(euclid_catalog.euclid_column(catalog, "OBJECT_ID"))[column]
+    for cuts in ({}, {euclid_catalog.GATTO_COLOR_BOX_COLUMN: True}):
+        stars = euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                                cuts=cuts, data_path=path, verbose=False,
+                                                dust_correction=dust_correction)
+        stars = stars.set_index(euclid_catalog.euclid_column(catalog, "OBJECT_ID"))[column]
+        np.testing.assert_allclose(stars, expected.loc[stars.index])
+    with pytest.raises(ValueError, match="Unknown dust correction"):
+        euclid_catalog.get_euclid_stars(catalog, vis_photometry=_vis_photometry(catalog),
+                                        data_path=path, dust_correction="SFD")
+
+
+def test_euclid_bands():
+    templfit = [f"VIS_TO_{band}" for band in euclid_catalog.VIS_TEMPLFIT_PARTNER_BANDS]
+    assert set(templfit) <= set(euclid_catalog.euclid_bands("euclid_dr1"))
+    assert not set(templfit) & set(euclid_catalog.euclid_bands("euclid_q1_des"))  # DR1 only
+    assert "VIS" in euclid_catalog.euclid_bands("euclid_q1_des")
+
+
+def test_vis_band():
+    assert euclid_catalog.vis_band("H") == euclid_catalog.vis_band("H", euclid_catalog.DEFAULT_VIS_PHOTOMETRY)
+    assert euclid_catalog.vis_band("H", "psf") == "VIS"
+    for band in euclid_catalog.VIS_TEMPLFIT_PARTNER_BANDS:
+        assert euclid_catalog.vis_band(band, "templfit") == f"VIS_TO_{band}"
+    with pytest.raises(ValueError, match="only with"):
+        euclid_catalog.vis_band("r", "templfit")
+    with pytest.raises(ValueError, match="Unknown VIS photometry"):
+        euclid_catalog.vis_band("H", "aperture")
+
+
+# The VIS template-fitting magnitudes are dereddened with the VIS coefficient
+@pytest.mark.parametrize("dust_correction", list(euclid_catalog.DUST_CORRECTIONS))
+def test_vis_templfit_magnitudes(tmp_path, rng, dust_correction):
+    data = _mock_catalog("euclid_dr1", tmp_path, rng)
+    columns = euclid_catalog.default_columns("euclid_dr1", "templfit")
+    read = euclid_catalog.add_magnitudes(
+        euclid_catalog.open_euclid_catalog("euclid_dr1", columns=columns, data_path=tmp_path, verbose=False),
+        "euclid_dr1", dust_correction=dust_correction,
+    )
+    namespace = euclid_catalog.euclid_survey("euclid_dr1").namespace
+    coefficient = euclid_catalog.DUST_CORRECTIONS[dust_correction]["coefficients"]["VIS"]
+    for band in euclid_catalog.VIS_TEMPLFIT_PARTNER_BANDS:
+        flux = data[f"FLUX_VIS_TO_{band}_TEMPLFIT"].to_numpy()
+        expected = -2.5 * np.log10(flux * 1e-6 / 3631.0) - coefficient * _mock_ebv(dust_correction)
+        mag = read[f"{namespace}_VIS_TO_{band}_obs"]
+        np.testing.assert_allclose(mag[flux > 0], expected[flux > 0], rtol=1e-6)
+        assert mag[flux <= 0].isna().all()
+        assert f"{namespace}_VIS_TO_{band}_err" in read.columns
+
+
+# get_euclid_stars reads and converts the VIS template fits only with them
+def test_stars_vis_photometry(tmp_path, rng):
+    _mock_catalog("euclid_dr1", tmp_path, rng)
+    namespace = euclid_catalog.euclid_survey("euclid_dr1").namespace
+    psf = euclid_catalog.get_euclid_stars("euclid_dr1", cuts={}, data_path=tmp_path, verbose=False,
+                                          vis_photometry="psf")
+    assert not any(c.startswith("FLUX_VIS_TO_") or "_VIS_TO_" in c for c in psf.columns)
+    templfit = euclid_catalog.get_euclid_stars("euclid_dr1", cuts={}, data_path=tmp_path, verbose=False,
+                                               vis_photometry="templfit")
+    assert {f"{namespace}_VIS_TO_{b}_obs" for b in euclid_catalog.VIS_TEMPLFIT_PARTNER_BANDS} <= set(templfit.columns)
+    np.testing.assert_array_equal(templfit[f"{namespace}_VIS_obs"], psf[f"{namespace}_VIS_obs"])
+    # a cut on a VIS template-fitting magnitude
+    cut = {f"{namespace}_VIS_TO_H_obs": (None, 24.0)}
+    stars = euclid_catalog.get_euclid_stars("euclid_dr1", cuts=cut, data_path=tmp_path, verbose=False,
+                                            vis_photometry="templfit")
+    assert len(stars) and (stars[f"{namespace}_VIS_TO_H_obs"] <= 24.0).all()

@@ -380,9 +380,12 @@ Done:
   - `catalogs/stream_candidates.py`: the list of candidates,
     `data/candidates/candidates_info.csv` (local, gitignored: user choice),
     columns `id, endpoint_1_ra, endpoint_1_dec, endpoint_2_ra,
-    endpoint_2_dec, best_dm` (ra/dec split: plain numbers); `load_candidates`,
-    `add_candidate` (next id), `candidate_endpoints`. Columns added by hand
-    are kept.
+    endpoint_2_dec, best_dm_by_eye` (ra/dec split: plain numbers), then
+    `best_dm` (the distance modulus of the largest SNR, computed by
+    `analysis.candidate_investigation.update_candidate_best_dm`, empty until
+    then; renamed from the by-eye `best_dm` on 2026-11-19); `load_candidates`,
+    `add_candidate` (next id), `candidate_endpoints`, `candidate_best_dm`.
+    Columns added by hand are kept.
   - `plot_candidates(ax)` (arc between the endpoints, endpoints, id over a
     skyproj map), `EndpointPicker` (left click adds an endpoint, right click
     removes the last; a click is a press and release at the same place, so
@@ -402,6 +405,46 @@ Done:
     `zoom_kwargs`) set the axis limits and the bins of the percentiles
     (`bins_in_phi12_range`), so that a dense object out of view does not
     saturate the scale; `MAP_PHI1_RANGE`, `MAP_PHI2_RANGE` in find_candidates.
+  - 2026-11-19, stream masks (user choices): when one candidate is
+    investigated (not in the searches), the other streams are excluded from
+    its width, regions, SNR and Hess diagrams (`mask_streams=True`): the
+    default galstreams tracks crossing the footprint (dm > 14, >= 1 deg, no
+    Ibata 2024; `galstreams_mask_tracks`) and the other listed candidates
+    (`candidate_mask_tracks`, optional column `sigma_deg`), over 1.4 times
+    their width, when unknown 0.75 deg for the known streams and 0.3 deg for
+    the candidates (`build_masks.streams_healpix_mask`);
+    only those within 1.5 of `distance_modulus` (`streams_near_distance_modulus`)
+    and not wider than 1 deg (`streams_not_wider_than`: Cetus-Palca-T21,
+    Cetus-New-Y21, NGC1261-I21, NGC1851-I21 have galstreams widths of 2.3 to
+    4.4 deg and would mask whole candidates; a broad stream lying along a
+    candidate leaves a few per cent of its peak density in on - off, nothing
+    when it crosses it). A stream covering more than half of the track
+    between the endpoints is not masked (`overlapping_streams`: the
+    candidate itself, e.g. one of the list given by its endpoints). The
+    maps keep every star; `plot_candidate_map` hatches the mask
+    (`draw_stream_mask`). A new `distance_modulus` or mask input applies the
+    mask again at once. A step asking for a result cleared by an input
+    change names the change.
+  - 2026-11-19, width fit: linear background by default
+    (`DEFAULT_BACKGROUND_DEGREE = 1`, as Shipp et al. 2018, whose width fit
+    has a linear foreground); the phi2 profile sums the counts and unmasked
+    areas between the endpoints only. SNR kept as Shipp et al. 2018, S = (on
+    - off) / sqrt(off) (Li & Ma 1983 would add the noise of the off regions,
+    sqrt(N_on + alpha^2 N_off): not adopted).
+  - 2026-11-19, stream mask tracks: `galstreams_mask_tracks` and
+    `candidate_mask_tracks` are in `analysis/build_masks.py` (user choice:
+    the masks there, not in the catalog modules), with
+    `CANDIDATE_MASK_HALF_WIDTH_DEG`.
+  - 2026-11-19, systematics, step 1: photometric errors of the stars of the
+    on region per bin of VIS (`cmd_match_filter.photometric_errors_by_magnitude`,
+    median by default, `statistic="mean"` as an option: user choice;
+    `CandidateInvestigation.compute_photometric_errors`, `in_match_filter`
+    option; `plot_candidate_investigation.plot_photometric_errors`). Saved
+    with the Hess diagrams by `candidate_investigation.hess_error_table`
+    (names and place: user choices): bin centres, on - off density, on and
+    off counts, and beside them, on their own magnitude bins,
+    `error_mag_centre` and the errors; a cell of the example notebook
+    writes it as CSV.
 
 ## 4. New functions, by module
 

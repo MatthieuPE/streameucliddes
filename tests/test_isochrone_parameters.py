@@ -4,10 +4,33 @@ import numpy as np
 import pytest
 
 from streameucliddes.catalogs.isochrone_parameters import (
+    FEH_LABEL_DECIMALS,
+    isochrone_label,
+    DEFAULT_AGES_GYR,
+    DEFAULT_FEHS,
+    Z_SCALE_ISOCHRONE_MODEL,
     default_isochrone_grid,
+    isochrone_from_feh,
     known_stream_isochrone_parameters,
     load_stream_population_table,
+    with_isochrone_model,
 )
+from streameucliddes.unit_conversions import (
+    convert_FeH_to_z,
+    convert_metallicity,
+    convert_z_to_FeH,
+    get_isochrone_model,
+)
+
+
+def default_feh_z(feh):
+    """Z of the default isochrone model for an [Fe/H]."""
+    return pytest.approx(convert_FeH_to_z(feh, get_isochrone_model()))
+
+
+def default_model_z(z):
+    """Z of the default isochrone model for a Z on the scale of Z_SCALE_ISOCHRONE_MODEL (the same [Fe/H])."""
+    return pytest.approx(convert_metallicity(z, Z_SCALE_ISOCHRONE_MODEL, get_isochrone_model()))
 
 pytestmark = pytest.mark.isochrone_parameters
 
@@ -79,9 +102,14 @@ def test_invalid_tables(tmp_path, header, rows, message):
 # ===================================================
 
 
-# Default: the DES search isochrone of Shipp et al. 2018, 13 Gyr and Z = 0.0002
+# Default: the DES search isochrone of Shipp et al. 2018, 13 Gyr and [Fe/H] = -1.9 (the Z of the default model); the
+# same [Fe/H] in every model
 def test_default_isochrone_grid():
-    assert default_isochrone_grid() == [{"age": 13.0, "metallicity": 0.0002}]
+    assert DEFAULT_FEHS == (-1.9,)
+    assert default_isochrone_grid() == [{"age": 13.0, "metallicity": default_feh_z(DEFAULT_FEHS[0])}]
+    for model in ("Marigo2017", "Dotter2016"):
+        (isochrone,) = default_isochrone_grid(isochrone_model=model)
+        assert convert_z_to_FeH(isochrone["metallicity"], model) == pytest.approx(DEFAULT_FEHS[0])
 
 
 # One isochrone per (age, Z) pair, every Z for the first age, then for the next one
@@ -92,7 +120,7 @@ def test_default_isochrone_grid_pairs():
         {"age": 12.0, "metallicity": 0.0001}, {"age": 12.0, "metallicity": 0.0004},
     ]
     assert all(type(value) is float for isochrone in grid for value in isochrone.values())
-    assert default_isochrone_grid(ages_gyr=[12.0]) == [{"age": 12.0, "metallicity": 0.0002}]
+    assert default_isochrone_grid(ages_gyr=[12.0]) == [{"age": 12.0, "metallicity": default_feh_z(DEFAULT_FEHS[0])}]
 
 
 # ===================================================
@@ -120,8 +148,9 @@ GRID = [
 @pytest.mark.parametrize(
     "stream_name, expected",
     [
-        ("Both", [{"age": 12.5, "metallicity": 0.0001}]),
-        ("NoAge", [{"age": 11.0, "metallicity": 0.0001}, {"age": 12.0, "metallicity": 0.0001}]),
+        ("Both", [{"age": 12.5, "metallicity": default_model_z(0.0001)}]),
+        ("NoAge", [{"age": 11.0, "metallicity": default_model_z(0.0001)},
+                   {"age": 12.0, "metallicity": default_model_z(0.0001)}]),
         ("NoZ", [{"age": 12.5, "metallicity": 0.0001}, {"age": 12.5, "metallicity": 0.0004}]),
         ("Unknown", GRID),
     ],
@@ -134,7 +163,80 @@ def test_known_stream_isochrone_parameters(population_table, stream_name, expect
 def test_known_stream_isochrone_parameters_defaults():
     table = load_stream_population_table()
     ravi = known_stream_isochrone_parameters("Ravi")  # Shipp et al. 2018 age and Z
-    assert ravi == [{"age": 13.5, "metallicity": table.loc["Ravi", "z"]}]
+    assert ravi == [{"age": 13.5, "metallicity": default_model_z(table.loc["Ravi", "z"])}]
     atlas = known_stream_isochrone_parameters("AAU-ATLAS")  # spectroscopic Z, default age
-    assert atlas == [{"age": 13.0, "metallicity": table.loc["AAU-ATLAS", "z"]}]
+    assert atlas == [{"age": 13.0, "metallicity": default_model_z(table.loc["AAU-ATLAS", "z"])}]
     assert known_stream_isochrone_parameters("Unknown") == default_isochrone_grid()
+
+
+# ===================================================
+# Test isochrone_from_feh
+# ===================================================
+
+
+# Z from [Fe/H], else the given Z, else the default; the default age when unknown (None or NaN)
+def test_isochrone_from_feh():
+    assert isochrone_from_feh(11.0, feh=-2.0) == {"age": 11.0, "metallicity": pytest.approx(convert_FeH_to_z(-2.0))}
+    assert isochrone_from_feh(metallicity=0.0004) == {"age": DEFAULT_AGES_GYR[0], "metallicity": 0.0004}
+    default = {"age": DEFAULT_AGES_GYR[0], "metallicity": default_feh_z(DEFAULT_FEHS[0])}
+    assert isochrone_from_feh() == default
+    assert isochrone_from_feh(np.nan, feh=np.nan, metallicity=np.nan) == default
+    with pytest.raises(ValueError, match="not both"):
+        isochrone_from_feh(feh=-2.0, metallicity=0.0004)
+
+
+# ===================================================
+# Test the isochrones of an isochrone model
+# ===================================================
+
+
+# Set on the isochrones without their own isochrone model; copies
+def test_with_isochrone_model():
+    given = [{"age": 13.0, "metallicity": 0.0002},
+             {"age": 12.0, "metallicity": 0.0001, "isochrone_model": "Bressan2012"}]
+    assert with_isochrone_model(given, "Dotter2016") == [{**given[0], "isochrone_model": "Dotter2016"}, given[1]]
+    assert with_isochrone_model(given, None) == given and with_isochrone_model(given, None)[0] is not given[0]
+
+
+# With an isochrone model: [Fe/H] on its scale, the default Z converted (same [Fe/H]), given Z kept,
+# "isochrone_model" added; without: no "isochrone_model" key, as before
+def test_isochrones_of_a_model():
+    assert isochrone_from_feh(12.0, feh=-2.0, isochrone_model="Dotter2016") == {
+        "age": 12.0, "metallicity": pytest.approx(convert_FeH_to_z(-2.0, "Dotter2016")),
+        "isochrone_model": "Dotter2016"}
+    assert isochrone_from_feh(metallicity=0.0003, isochrone_model="Dotter2016")["metallicity"] == 0.0003
+    default_z = convert_FeH_to_z(DEFAULT_FEHS[0], "Dotter2016")
+    assert isochrone_from_feh(isochrone_model="Dotter2016")["metallicity"] == pytest.approx(default_z)
+    assert default_isochrone_grid(isochrone_model="Dotter2016") == [
+        {"age": DEFAULT_AGES_GYR[0], "metallicity": pytest.approx(default_z), "isochrone_model": "Dotter2016"}]
+    assert default_isochrone_grid([12.0], [0.0003], isochrone_model="Dotter2016") == [
+        {"age": 12.0, "metallicity": 0.0003, "isochrone_model": "Dotter2016"}]
+    assert "isochrone_model" not in default_isochrone_grid()[0]
+    assert "isochrone_model" not in isochrone_from_feh(feh=-2.0)
+
+
+# A known stream: the Z of the table (on the scale of Z_SCALE_ISOCHRONE_MODEL), or of the default grid when unknown,
+# converted to the isochrone model; the ages unchanged
+@pytest.mark.parametrize("stream", ["Both", "NoZ"])
+def test_known_stream_isochrones_of_a_model(population_table, stream):
+    marigo = known_stream_isochrone_parameters(stream, population_table, isochrone_model=Z_SCALE_ISOCHRONE_MODEL)
+    dotter = known_stream_isochrone_parameters(stream, population_table, isochrone_model="Dotter2016")
+    assert [isochrone["age"] for isochrone in dotter] == [isochrone["age"] for isochrone in marigo]
+    for m, d in zip(marigo, dotter):
+        assert d["isochrone_model"] == "Dotter2016"
+        assert d["metallicity"] == pytest.approx(
+            convert_metallicity(m["metallicity"], Z_SCALE_ISOCHRONE_MODEL, "Dotter2016"))
+
+
+# The name of an isochrone in the output folders: its model, age and [Fe/H] (FEH_LABEL_DECIMALS decimals); the same
+# population in two models (the same [Fe/H], Z converted): the same [Fe/H], another model; the default model when none
+def test_isochrone_label():
+    marigo = {"age": 13.0, "metallicity": 0.0002, "isochrone_model": "Marigo2017"}
+    feh = convert_z_to_FeH(0.0002, "Marigo2017")
+    assert isochrone_label(marigo) == f"Marigo2017_age13_feh{feh:.{FEH_LABEL_DECIMALS}f}"
+    dotter = {**marigo, "metallicity": convert_metallicity(0.0002, "Marigo2017", "Dotter2016"),
+              "isochrone_model": "Dotter2016"}
+    assert isochrone_label(dotter) == f"Dotter2016_age13_feh{feh:.{FEH_LABEL_DECIMALS}f}"
+    no_model = {"age": 12.5, "metallicity": 0.0004}
+    model = get_isochrone_model()
+    assert isochrone_label(no_model) == f"{model}_age12.5_feh{convert_z_to_FeH(0.0004, model):.{FEH_LABEL_DECIMALS}f}"

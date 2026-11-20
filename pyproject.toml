@@ -52,6 +52,7 @@ markers = [
     "injection: injection/ (stream generation and injection)",
     "plot_injected_stream_snr: plotting/plot_injected_stream_snr.py (SNR figures)",
     "package: __init__.py (version)",
+    "unit_conversions: unit_conversions.py (magnitudes, distances, [Fe/H] and Z per isochrone model)",
     "stream_frames: stream_frames.py (rotation matrices, phi1/phi2)",
     "isochrone_parameters: catalogs/isochrone_parameters.py (age and metallicity of the isochrones, literature table)",
     "survey_footprint: catalogs/survey_footprint.py (footprint masks)",
@@ -74,4 +75,9 @@ markers = [
     "candidate_investigation: analysis/candidate_investigation.py (regions, width and investigation of one stream candidate)",
     "stream_candidates: catalogs/stream_candidates.py (CSV list of the stream candidates)",
     "plot_candidate_investigation: plotting/plot_candidate_investigation.py (figures of a candidate investigation: tracks, regions, profiles; the list of candidates on the sky, clicked endpoints)",
+    "gc_dwarf_optimization: analysis/gc_dwarf_optimization.py (cuts and match filters tuned on known dwarf galaxies and globular clusters)",
+    "on_off_regions: analysis/on_off_regions.py (on and off regions around an object or along a track: stars, areas, SNR, maps, Hess diagrams)",
+    "plot_on_off_regions: plotting/plot_on_off_regions.py (map, CMDs, Hess diagrams and SNR of on and off regions)",
+    "stream_optimization: analysis/stream_optimization.py (cuts and match filters tuned on a known stream)",
+    "literature_tracks: catalogs/literature_tracks.py (published stream tracks not in galstreams: Li et al. 2021 Aliqa Uma)",
 ]

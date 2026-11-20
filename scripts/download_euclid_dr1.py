@@ -39,6 +39,9 @@ Examples::
     python scripts/download_euclid_dr1.py --source tap --max-tiles 20 --output /tmp/trial
     python scripts/download_euclid_dr1.py --source tap
 
+    # add the VIS template-fitting fluxes (ADDED_COLUMNS) to the downloaded catalog
+    python scripts/download_euclid_dr1.py --source tap --add-columns
+
 Requirements: lsdb, hats-import, dask[distributed], pyvo (tap), dustmaps, and the
 two SFD98 maps in :data:`SFD_DIR`. ``dustmaps.sfd.fetch()`` gets them from Harvard
 Dataverse, which answered 403 on 2026-11-12; the same files are at
@@ -54,6 +57,7 @@ from pathlib import Path
 
 import numpy as np
 import pandas as pd
+import pyarrow as pa
 import pyarrow.parquet as pq
 
 HERE = Path(__file__).resolve().parent
@@ -99,6 +103,13 @@ EUCLID_COLUMNS += [f"FLUX_{b}_2FWHM_APER" for b in _BANDS_APER]
 EUCLID_COLUMNS += [f"FLUXERR_{b}_2FWHM_APER" for b in _BANDS_APER]
 EUCLID_COLUMNS += [f"FLUX_{b}_TEMPLFIT" for b in ("Y", "J", "H")]
 EUCLID_COLUMNS += [f"FLUXERR_{b}_TEMPLFIT" for b in ("Y", "J", "H")]
+# VIS template-fitting fluxes. DR1 has no FLUX_VIS_TEMPLFIT: TPHOT measures VIS on the
+# VIS image PSF-matched to each other band, so that VIS - Y (J, H) colours use
+# FLUX_VIS_TO_Y_TEMPLFIT and FLUX_Y_TEMPLFIT (checked in TAP_SCHEMA on 2026-11-18).
+# Added on 2026-11-18 to the catalog downloaded on 2026-11-12 with --add-columns.
+VIS_TEMPLFIT_COLUMNS = [f"FLUX_VIS_TO_{b}_TEMPLFIT" for b in ("Y", "J", "H")]
+VIS_TEMPLFIT_COLUMNS += [f"FLUXERR_VIS_TO_{b}_TEMPLFIT" for b in ("Y", "J", "H")]
+EUCLID_COLUMNS += VIS_TEMPLFIT_COLUMNS
 # DECam external photometry: in Q1 and in dr1.mer_catalogue_wide_survey
 # (2026-11-12). Kept optional, so that a source without them still works.
 OPTIONAL_COLUMNS = [f"FLUX_{b}_TEMPLFIT" for b in _DECAM]
@@ -298,7 +309,7 @@ def dec_strip_edges(service, table, mapping, tile, n_strips):
     return list(edges[1:-1])
 
 
-def download_tile(url, queries, dtypes, mapping, path, expected=None, retries=3):
+def download_tile(url, queries, dtypes, mapping, path, expected=None, retries=3, add_ebv=True):
     """Run sync TAP queries (CSV) of one tile and write the result, with EBV_SFD98, to ``path``.
 
     The file is written under a temporary name, then renamed: an existing ``path``
@@ -320,6 +331,9 @@ def download_tile(url, queries, dtypes, mapping, path, expected=None, retries=3)
         Number of rows the tile must have (no cut): a different number raises.
     retries : int
         Number of attempts.
+    add_ebv : bool
+        Add the :data:`EBV_COLUMN` column (False when only columns are added to an
+        existing catalog, see :func:`add_columns`).
 
     Returns
     -------
@@ -353,7 +367,8 @@ def download_tile(url, queries, dtypes, mapping, path, expected=None, retries=3)
                 raise
             time.sleep(30 * attempt)
 
-    add_sfd_ebv(frame)
+    if add_ebv:
+        add_sfd_ebv(frame)
     tmp = path.with_suffix(".tmp")
     frame.to_parquet(tmp, index=False)
     tmp.rename(path)
@@ -381,9 +396,11 @@ def tile_list(service, table, path):
 
 
 def query_tap(args, output):
-    """Download the catalog tile by tile from TAP, then import it as HATS."""
-    from concurrent.futures import ProcessPoolExecutor, as_completed
+    """Download the catalog tile by tile from TAP, then import it as HATS.
 
+    With ``--add-columns``, add :data:`ADDED_COLUMNS` to the existing catalog instead
+    (:func:`add_columns`).
+    """
     import pyvo
 
     service = pyvo.dal.TAPService(TAP_URLS.get(args.tap, args.tap))
@@ -412,8 +429,45 @@ def query_tap(args, output):
     raw_dir = output.parent / f"{output.name}_tap_tiles"
     raw_dir.mkdir(parents=True, exist_ok=True)
     tiles = tile_list(service, args.table, raw_dir / "tiles.csv")
+    if args.add_columns:
+        add_columns(service, args, datatypes, tiles, raw_dir, output / CATALOG_NAME)
+        return
+    files = download_tiles(service, args, mapping, dtypes, tiles, raw_dir)
+    import_hats([f for f in files.values() if pq.ParquetFile(f).metadata.num_rows],
+                output, args)
+
+
+def download_tiles(service, args, mapping, dtypes, tiles, raw_dir, add_ebv=True):
+    """Download the tiles of ``tiles`` to ``raw_dir/tile_<index>.parquet``, several at once.
+
+    Done tiles (existing files) are skipped. Raises ``SystemExit`` if a tile failed:
+    running again retries it.
+
+    Parameters
+    ----------
+    service : pyvo.dal.TAPService
+    args : argparse.Namespace
+        Command-line options (``table``, ``tap``, ``where``, ``max_tiles``,
+        ``parallel_tiles``, ``max_rows_per_query``).
+    mapping, dtypes : dict
+        From :func:`match_columns` and :func:`column_dtypes`.
+    tiles : pd.DataFrame
+        :data:`TILE_COLUMN` and ``n`` (number of sources), from :func:`tile_list`.
+    raw_dir : Path
+        Folder of the tile files.
+    add_ebv : bool
+        Passed to :func:`download_tile`.
+
+    Returns
+    -------
+    dict
+        ``{tile: file}`` of every tile of ``tiles`` (after ``max_tiles``).
+    """
+    from concurrent.futures import ProcessPoolExecutor, as_completed
+
     if args.max_tiles:
         tiles = tiles.iloc[: args.max_tiles]
+    raw_dir.mkdir(parents=True, exist_ok=True)
     files = {t: raw_dir / f"tile_{t}.parquet" for t in tiles[TILE_COLUMN]}
     todo = tiles[[not files[t].exists() for t in tiles[TILE_COLUMN]]]
     print(f"{len(tiles):,} tiles ({tiles['n'].sum():,} sources), "
@@ -436,7 +490,7 @@ def query_tap(args, output):
         futures = {
             pool.submit(
                 download_tile, url, queries[tile], dtypes, mapping, files[tile],
-                None if args.where else n,
+                None if args.where else n, add_ebv=add_ebv,
             ): (tile, n)
             for tile, n in zip(todo[TILE_COLUMN], todo["n"])
         }
@@ -455,8 +509,7 @@ def query_tap(args, output):
 
     if failed:
         raise SystemExit(f"{len(failed)} tile(s) failed: {failed}. Run again to retry them.")
-    import_hats([f for f in files.values() if pq.ParquetFile(f).metadata.num_rows],
-                output, args)
+    return files
 
 
 def import_hats(files, output, args):
@@ -478,6 +531,197 @@ def import_hats(files, output, args):
     with _dask_client(args) as client:
         pipeline_with_client(import_args, client)
     print(f"wrote {output / CATALOG_NAME}")
+
+
+# ------------------------------------------------------------- add columns ----
+
+
+# Columns added to the catalog downloaded on 2026-11-12, for every source. They are
+# downloaded tile by tile with OBJECT_ID and the position, which gives the HATS
+# partition of each source (the same CSV values, parsed the same way as on
+# 2026-11-12, so the same _healpix_29), then joined on OBJECT_ID partition by
+# partition. A fresh download has them already (they are in EUCLID_COLUMNS).
+ADDED_COLUMNS = VIS_TEMPLFIT_COLUMNS
+# Columns downloaded with the new ones; also the join key of the new rows and the
+# catalog (see add_columns_to_partition)
+KEY_COLUMNS = ["OBJECT_ID", RA_COLUMN, DEC_COLUMN]
+
+
+def catalog_schema(catalog_dir):
+    """Arrow schema of a HATS catalog, from ``dataset/_common_metadata``."""
+    return pq.read_schema(Path(catalog_dir) / "dataset" / "_common_metadata")
+
+
+def partition_ranges(catalog_dir):
+    """Partitions of a HATS catalog and their ``_healpix_29`` ranges.
+
+    Returns
+    -------
+    pixels : list of HealpixPixel
+        Partitions, sorted by ``_healpix_29``.
+    ranges : np.ndarray
+        ``(n, 2)`` ``[start, end)`` of each partition at order 29.
+    """
+    import hats
+
+    tree = hats.read_hats(catalog_dir).pixel_tree
+    return tree.get_healpix_pixels(), tree.to_depth29_ranges()
+
+
+def split_by_partition(files, catalog_dir, shard_dir, columns):
+    """Write the rows of the tile files in one folder per HATS partition of the catalog.
+
+    Each tile file ``tile_<i>.parquet`` gives ``<shard_dir>/<order>_<pixel>/tile_<i>.parquet``
+    with :data:`KEY_COLUMNS`, ``_healpix_29`` and ``columns``. A tile already split
+    (all its shard files written, flagged by ``<shard_dir>/done/tile_<i>``) is skipped.
+
+    Raises
+    ------
+    RuntimeError
+        If a source is in no partition of the catalog.
+    """
+    from hats.pixel_math.spatial_index import SPATIAL_INDEX_COLUMN, compute_spatial_index
+
+    pixels, ranges = partition_ranges(catalog_dir)
+    done_dir = Path(shard_dir) / "done"
+    done_dir.mkdir(parents=True, exist_ok=True)
+    files = [f for f in files if not (done_dir / Path(f).stem).exists()]
+    t0 = time.time()
+    for k, path in enumerate(files, 1):
+        frame = pd.read_parquet(path)
+        index = compute_spatial_index(frame[RA_COLUMN].to_numpy(), frame[DEC_COLUMN].to_numpy())
+        where = np.searchsorted(ranges[:, 0], index, side="right") - 1
+        inside = (where >= 0) & (index < ranges[np.maximum(where, 0), 1])
+        if not inside.all():
+            raise RuntimeError(f"{path.name}: {np.sum(~inside)} source(s) in no partition")
+        frame = frame[[*KEY_COLUMNS, *columns]]
+        frame.insert(1, SPATIAL_INDEX_COLUMN, index)
+        for w in np.unique(where):
+            pixel = pixels[w]
+            folder = Path(shard_dir) / f"{pixel.order}_{pixel.pixel}"
+            folder.mkdir(exist_ok=True)
+            frame[where == w].to_parquet(folder / Path(path).name, index=False)
+        (done_dir / Path(path).stem).touch()
+        if k % 200 == 0 or k == len(files):
+            print(f"split {k}/{len(files)} tiles ({time.time() - t0:,.0f} s)", flush=True)
+
+
+def add_columns_to_partition(partition_file, shard_files, columns):
+    """Add ``columns`` of the shard files to one HATS partition file.
+
+    Rows are joined on :data:`KEY_COLUMNS`, (``OBJECT_ID``, RA, Dec): the positions
+    are the same float64 values on both sides (the same ESA CSV, parsed the same
+    way). The key is unique in DR1, while OBJECT_ID is not (3 repeats in all the
+    partitions, checked on 2026-11-18): e.g. -714456772190573290 is two NIR-only
+    sources of adjacent tiles, a few micro-arcsec apart, and -769285311390246657 a
+    VIS and a NIR-only source of the same tile. SEGMENTATION_MAP_ID is not unique
+    either (347 repeats), and its first digits are not always the tile of the source
+    (1,551 sources of tile 102036133 have 102036134). The file is rewritten under a
+    temporary name, then renamed. A file that has the columns already is left as it
+    is.
+
+    Returns
+    -------
+    int
+        Number of rows of the partition, 0 if it had the columns already.
+
+    Raises
+    ------
+    RuntimeError
+        If the shards do not have exactly the sources of the partition, each once,
+        at the same ``_healpix_29``.
+    """
+    from hats.pixel_math.spatial_index import SPATIAL_INDEX_COLUMN
+
+    partition_file = Path(partition_file)
+    if set(columns) <= set(pq.read_schema(partition_file).names):
+        return 0
+    if not shard_files:
+        raise RuntimeError(f"{partition_file}: no new rows")
+    # ParquetFile, not pq.read_table: read_table takes Norder=/Dir= of the path for
+    # partition columns and adds them to the table
+    table = pq.ParquetFile(partition_file).read()
+    new = pd.concat([pd.read_parquet(f) for f in shard_files], ignore_index=True)
+    new = new.set_index(KEY_COLUMNS)
+    sources = pd.MultiIndex.from_arrays([table[c].to_numpy() for c in KEY_COLUMNS],
+                                        names=KEY_COLUMNS)
+    repeated = new.index.duplicated().sum() + sources.duplicated().sum()
+    found = sources.isin(new.index)
+    if repeated or len(new) != len(sources) or not found.all():
+        raise RuntimeError(f"{partition_file}: {len(new):,} new rows for {len(sources):,} "
+                           f"sources, {repeated} repeated {tuple(KEY_COLUMNS)}, "
+                           f"{(~found).sum()} sources without new row")
+    new = new.reindex(sources)
+    if not np.array_equal(new[SPATIAL_INDEX_COLUMN].to_numpy(),
+                          table[SPATIAL_INDEX_COLUMN].to_numpy()):
+        raise RuntimeError(f"{partition_file}: positions differ from the new rows")
+    for column in columns:
+        table = table.append_column(column, pa.array(new[column].to_numpy(), type=pa.float32()))
+    tmp = partition_file.with_suffix(".tmp")
+    pq.write_table(table, tmp, compression="zstd")
+    tmp.rename(partition_file)
+    return len(sources)
+
+
+def merge_columns(catalog_dir, shard_dir, columns, workers=4):
+    """Add ``columns`` to every partition of the catalog, then rewrite its metadata files.
+
+    Resumable: the partitions that have the columns already are skipped. ``workers``
+    partitions at once (1: in this process).
+    """
+    from concurrent.futures import ProcessPoolExecutor
+    from itertools import repeat
+
+    from hats.io import paths
+    from hats.io.parquet_metadata import write_parquet_metadata
+
+    pixels, _ = partition_ranges(catalog_dir)
+    partition_files, shards = [], []
+    for pixel in pixels:
+        folder = Path(shard_dir) / f"{pixel.order}_{pixel.pixel}"
+        partition_files.append(paths.pixel_catalog_file(catalog_dir, pixel).path)
+        shards.append(sorted(folder.glob("tile_*.parquet")) if folder.exists() else [])
+    pool = ProcessPoolExecutor(workers) if workers > 1 else None
+    t0, rows = time.time(), 0
+    try:
+        counts = (pool.map if pool else map)(
+            add_columns_to_partition, partition_files, shards, repeat(columns))
+        for k, count in enumerate(counts, 1):
+            rows += count
+            if k % 100 == 0 or k == len(pixels):
+                print(f"merged {k}/{len(pixels)} partitions, {rows:,} rows "
+                      f"({time.time() - t0:,.0f} s)", flush=True)
+    finally:
+        if pool:
+            pool.shutdown()
+    total = write_parquet_metadata(catalog_dir)
+    print(f"{catalog_dir}: metadata rewritten, {total:,} rows")
+
+
+def add_columns(service, args, datatypes, tiles, raw_dir, catalog_dir, columns=ADDED_COLUMNS):
+    """Download ``columns`` for every source and add them to the HATS catalog ``catalog_dir``.
+
+    Three resumable steps: download (``<raw_dir>/added_columns``), split by partition
+    (``<raw_dir>/added_columns_partitions``), merge into the partition files. With
+    ``--max-tiles`` only the download runs (trial). The two folders can be deleted
+    afterwards.
+    """
+    if args.where:
+        raise SystemExit("--add-columns fills every source: --where is not allowed")
+    if set(columns) <= set(catalog_schema(catalog_dir).names):
+        print(f"{catalog_dir} has the columns already: {list(columns)}")
+        return
+    mapping = match_columns(list(datatypes), KEY_COLUMNS + list(columns), args.prefix)
+    dtypes = column_dtypes(datatypes, mapping)
+    print(f"adding {list(columns)} to {catalog_dir}")
+    files = download_tiles(service, args, mapping, dtypes, tiles,
+                           raw_dir / "added_columns", add_ebv=False)
+    if args.max_tiles:
+        print("trial (--max-tiles): the catalog is not changed")
+        return
+    shard_dir = raw_dir / "added_columns_partitions"
+    split_by_partition(files.values(), catalog_dir, shard_dir, columns)
+    merge_columns(catalog_dir, shard_dir, columns, args.workers)
 
 
 # --------------------------------------------------------------------- main ----
@@ -532,6 +776,9 @@ def parse_args(argv=None):
     ap.add_argument("--workers", type=int, default=4, help="dask workers of the HATS step")
     ap.add_argument("--memory-limit", default="3GB", help="memory per dask worker")
     ap.add_argument("--overwrite", action="store_true")
+    ap.add_argument("--add-columns", action="store_true",
+                    help="add ADDED_COLUMNS (VIS template-fitting fluxes) to the existing "
+                         "catalog in --output, for every source (tap)")
     ap.add_argument("--validate-only", action="store_true",
                     help="check the column names, then exit")
     return ap.parse_args(argv)

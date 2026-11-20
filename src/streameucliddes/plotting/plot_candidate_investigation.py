@@ -2,7 +2,8 @@
 
 Two kinds of functions:
 
-- regions and profiles (``analysis.candidate_investigation``):
+- regions, profiles and photometric errors (``analysis.candidate_investigation``,
+  ``plot_photometric_errors``):
   ``draw_stream_regions`` draws on existing axes and returns what it added;
   the ``plot_*`` functions make or take axes and return ``(fig, ax)``. The
   tracks are drawn by ``plot_stream_frame_search.draw_stream_track`` and
@@ -25,9 +26,11 @@ from typing import TYPE_CHECKING
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patheffects import withStroke
+from scipy.ndimage import gaussian_filter
 
 from streameucliddes.analysis.candidate_investigation import region_windows
 from streameucliddes.analysis.fit_stream import stream_width_model
+from streameucliddes.catalogs.survey_footprint import in_healpix_mask
 from streameucliddes.catalogs.stream_candidates import (
     DEFAULT_CANDIDATES_PATH,
     candidate_endpoints,
@@ -36,6 +39,7 @@ from streameucliddes.catalogs.stream_candidates import (
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
 from streameucliddes.plotting.plot_cmd import (
     DEFAULT_DIFFERENCE_SMOOTHING_BINS,
+    HESS_DIFFERENCE_PERCENTILE,
     plot_hess,
     plot_isochrone,
     plot_match_filter_polygon,
@@ -89,6 +93,13 @@ RESIDUAL_CMAP = "RdBu_r"
 ON_REGION_COLOR = CATEGORICAL_COLORS[1]
 OFF_REGION_COLOR = CATEGORICAL_COLORS[2]
 PROFILE_COLOR = CATEGORICAL_COLORS[3]
+ERRORS_FIGSIZE = (6.5, 4.5)
+# plot_photometric_errors: the reference band, the colour band
+ERROR_COLORS = (CATEGORICAL_COLORS[0], CATEGORICAL_COLORS[1])
+# The streams masked (cand.stream_healpix_mask) on the maps: hatched, outlined, the map still seen below
+STREAM_MASK_COLOR = "0.15"
+STREAM_MASK_HATCH = "////"
+STREAM_MASK_LABEL = "masked streams"
 FIT_COLOR = CATEGORICAL_COLORS[4]
 # The list of candidates on the sky
 CANDIDATE_COLOR = CATEGORICAL_COLORS[1]  # listed candidates (the known streams: CATEGORICAL_COLORS[0])
@@ -141,6 +152,51 @@ def draw_stream_regions(
         lines += draw_stream_track(ax, *phi12_window_outline(window), label="off" if index == 0 else None,
                                    color=off_color, ls="-", alpha=0.9)
     return lines
+
+
+def draw_stream_mask(
+    ax: Axes,
+    cand: CandidateInvestigation,
+    phi1_centres: ArrayLike,
+    phi2_centres: ArrayLike,
+) -> list[Artist]:
+    """The streams masked for a candidate (``cand.stream_healpix_mask``), hatched and outlined on a phi1/phi2 map.
+
+    The bins of the map whose centre is on the mask: the stars left out of
+    the width, the regions, the SNR and the Hess diagrams (the map itself
+    keeps them). Nothing is drawn without ``mask_streams``, before
+    ``prepare`` or when the mask misses the bins.
+
+    Parameters
+    ----------
+    ax : matplotlib.axes.Axes
+        Axes of a phi1/phi2 map of the candidate.
+    cand : CandidateInvestigation
+        With ``stream_healpix_mask`` (``prepare``).
+    phi1_centres, phi2_centres : array_like
+        Bin centres of the map (deg).
+
+    Returns
+    -------
+    artists : list of matplotlib.artist.Artist
+        The hatched area, its outline and the legend entry (``STREAM_MASK_LABEL``); empty when nothing is drawn.
+    """
+    if not cand.mask_streams or cand.stream_healpix_mask is None:
+        return []
+    phi1_centres, phi2_centres = np.asarray(phi1_centres, dtype=float), np.asarray(phi2_centres, dtype=float)
+    grid_1, grid_2 = np.meshgrid(phi1_centres, phi2_centres, indexing="ij")
+    on_mask = in_healpix_mask(*phi12_to_radec(grid_1.ravel(), grid_2.ravel(), cand.stream_frame),
+                              cand.stream_healpix_mask, nest=False).reshape(grid_1.shape).astype(float)
+    if not on_mask.any():
+        return []
+    with plt.rc_context({"hatch.color": STREAM_MASK_COLOR, "hatch.linewidth": 0.6}):
+        fill = ax.contourf(phi1_centres, phi2_centres, on_mask.T, levels=[0.5, 1.5], colors="none",
+                           hatches=[STREAM_MASK_HATCH])
+    outline = ax.contour(phi1_centres, phi2_centres, on_mask.T, levels=[0.5], colors=STREAM_MASK_COLOR,
+                         linewidths=0.8)
+    (entry,) = ax.fill([], [], facecolor="none", edgecolor=STREAM_MASK_COLOR, hatch=STREAM_MASK_HATCH,
+                       label=STREAM_MASK_LABEL)
+    return [fill, outline, entry]
 
 
 def plot_phi2_profile(
@@ -300,6 +356,49 @@ def plot_phi1_profile(
     ax.legend(loc="upper right", fontsize="small", framealpha=0.8)
     return fig, ax
 
+def plot_photometric_errors(
+    errors: Mapping[str, Any],
+    *,
+    ax: Axes | None = None,
+    title: str | None = None,
+) -> tuple[Figure, Axes]:
+    """Photometric error of each band against its own magnitude (median or mean), on the same axes.
+
+    Draws ``analysis.cmd_match_filter.photometric_errors_by_magnitude`` (e.g.
+    ``cand.photometric_errors``): one line per band (VIS against VIS, H
+    against H), one point per bin with stars.
+
+    Parameters
+    ----------
+    errors : mapping
+        From ``photometric_errors_by_magnitude``.
+    ax : matplotlib.axes.Axes, optional
+        Default: a new figure.
+    title : str, optional
+        Default: the number of stars (of the reference band).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    ax : matplotlib.axes.Axes
+    """
+    if ax is None:
+        fig, ax = plt.subplots(figsize=ERRORS_FIGSIZE, layout="constrained")
+    else:
+        fig = ax.figure
+    centres = np.asarray(errors["mag_centres"], dtype=float)
+    for band, color in zip(errors["bands"], ERROR_COLORS):
+        values = np.asarray(errors["error"][band], dtype=float)
+        shown = np.isfinite(values)
+        ax.plot(centres[shown], values[shown], marker="o", ms=3, color=color, label=f"{band} (against {band})")
+    ax.set_xlabel("magnitude [mag]")
+    ax.set_ylabel(f"{errors['statistic']} error [mag]")
+    ax.legend(loc="upper left", fontsize="small")
+    n_stars = int(np.sum(errors["n_stars"][errors["bands"][0]]))
+    ax.set_title(f"{n_stars:,} stars" if title is None else title)
+    return fig, ax
+
+
 # ===================================================
 # Figures of a CandidateInvestigation
 # ===================================================
@@ -380,15 +479,18 @@ def plot_candidate_map(
     *,
     ax: Axes | None = None,
     show_regions: bool = True,
+    show_stream_mask: bool = True,
     phi1_range: tuple[float, float] | None = None,
     phi2_range: tuple[float, float] | None = None,
+    vmin: float | None = None,
+    vmax: float | None = None,
 ) -> tuple[Figure, Axes]:
     """Matched-filter map in the frame, with the track and the regions.
 
     ``plot_stream_frame_search_single_dm``, ``draw_stream_track`` of
-    ``cand.track_phi12()`` (the arc between the endpoints before the regions)
-    and ``draw_stream_regions``. The title gives the distance modulus of the
-    map drawn.
+    ``cand.track_phi12()`` (the arc between the endpoints before the regions),
+    ``draw_stream_regions`` and ``draw_stream_mask`` (the other streams
+    masked, hatched). The title gives the distance modulus of the map drawn.
 
     Parameters
     ----------
@@ -401,6 +503,8 @@ def plot_candidate_map(
         Default: a new figure.
     show_regions : bool, optional
         Draw the regions, when defined.
+    show_stream_mask : bool, optional
+        Hatch the streams masked (``draw_stream_mask``).
     phi1_range, phi2_range : tuple of float, optional
         Part of the map shown (deg), e.g. to leave out a dense object: the
         axis limits and the colour scale (``plot_stream_frame_search_single_dm``).
@@ -416,8 +520,11 @@ def plot_candidate_map(
     ValueError
         No map: neither ``maps`` nor a ``zoom_map`` at this distance modulus.
     """
-    fig, ax = plot_stream_frame_search_single_dm(_candidate_map(cand, distance_modulus), ax=ax,
-                                                 phi1_range=phi1_range, phi2_range=phi2_range)
+    result = _candidate_map(cand, distance_modulus)
+    fig, ax = plot_stream_frame_search_single_dm(result, ax=ax, phi1_range=phi1_range, phi2_range=phi2_range,
+                                                 vmin=vmin, vmax=vmax)
+    if show_stream_mask:
+        draw_stream_mask(ax, cand, result["phi1_centres"], result["phi2_centres"])
     draw_stream_track(ax, *cand.track_phi12(), label="track" if cand.regions is not None else "endpoints arc")
     if show_regions and cand.regions is not None:
         draw_stream_regions(ax, cand.regions)
@@ -511,6 +618,72 @@ def plot_candidate_hess(
     if ax.get_legend_handles_labels()[0]:
         ax.legend(loc="upper left", fontsize="small", framealpha=0.8)
     return fig, ax
+
+
+def plot_candidate_null_test(
+    cand: CandidateInvestigation,
+    *,
+    isochrone: bool = True,
+    match_filter: bool = True,
+    smooth: bool = True,
+) -> tuple[Figure, list[Axes]]:
+    """Null test: the map with the shifted regions, and the on - off Hess diagrams of the candidate and of the null test.
+
+    Left: ``plot_candidate_map`` with the regions of ``cand.null_test``
+    (``compute_null_test``). Middle and right: the difference Hess diagrams
+    of the candidate (``compute_hess``) and of the null test, on the same
+    colour scale (the ``HESS_DIFFERENCE_PERCENTILE`` of the candidate's), each
+    with its SNR; without the stream, the null test should show no isochrone.
+
+    Parameters
+    ----------
+    cand : CandidateInvestigation
+        With ``compute_hess`` and ``compute_null_test`` done.
+    isochrone, match_filter, smooth : bool, optional
+        See ``plot_candidate_hess``.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : list of matplotlib.axes.Axes
+        The map, the candidate's Hess diagram, the null test's.
+
+    Raises
+    ------
+    ValueError
+        The Hess diagrams or the null test not computed.
+    """
+    if cand.diff_hess is None:
+        raise ValueError("No Hess diagrams: call cand.compute_hess() first.")
+    null_test = cand.null_test
+    if null_test is None:
+        raise ValueError("No null test: call cand.compute_null_test() first.")
+    smoothing_bins = DEFAULT_DIFFERENCE_SMOOTHING_BINS if smooth else 0.0
+    density = np.asarray(cand.diff_hess["density"], dtype=float)
+    density = gaussian_filter(density, smoothing_bins) if smoothing_bins > 0 else density
+    values = np.abs(density[np.isfinite(density)])
+    vlim = float(np.percentile(values, HESS_DIFFERENCE_PERCENTILE)) if values.size else 1.0
+    vlim = vlim if vlim > 0 else 1.0
+
+    fig, axes = plt.subplots(1, 3, figsize=(19.0, 5.5), layout="constrained",
+                             gridspec_kw={"width_ratios": (1.4, 1.0, 1.0)})
+    plot_candidate_map(cand, ax=axes[0], show_regions=False)
+    draw_stream_regions(axes[0], null_test["regions"])
+    axes[0].legend(loc="upper right", fontsize="small", framealpha=0.8)
+    compact = ", off region next to it" if null_test.get("geometry") == "compact" else ""
+    axes[0].set_title(f"Null test: regions shifted {null_test['direction']} by {null_test['shift_deg']:.2f} deg{compact}")
+    snr = cand.summary()["snr"]
+    for ax, diff_hess, label in ((axes[1], cand.diff_hess, f"candidate, SNR {snr:.1f}"),
+                                 (axes[2], null_test["diff_hess"], f"null test, SNR {null_test['snr']:.1f}")):
+        plot_hess(diff_hess, ax=ax, difference=True, smoothing_bins=smoothing_bins, vlim=vlim,
+                  title=f"{escape_underscores(cand.name)}: on $-$ off, {label}")
+        if isochrone and cand.isochrone_track is not None:
+            plot_isochrone(ax, cand.isochrone_track)
+        if match_filter:
+            plot_match_filter_polygon(ax, cand.distance_modulus, cand.isochrone, cand.search.match_filter)
+        if ax.get_legend_handles_labels()[0]:
+            ax.legend(loc="upper left", fontsize="small", framealpha=0.8)
+    return fig, list(axes)
 
 
 def plot_candidate_overview(cand: CandidateInvestigation) -> tuple[Figure, list[Axes]]:
@@ -690,7 +863,7 @@ class EndpointPicker:
     >>> fig, ax = plot_generic_search_residual_map(result)  # doctest: +SKIP
     >>> picker = EndpointPicker(ax)  # doctest: +SKIP
     >>> # two clicks on the map, then:
-    >>> add_candidate(*picker.endpoints, best_dm=17.0)  # doctest: +SKIP
+    >>> add_candidate(*picker.endpoints, best_dm_by_eye=17.0)  # doctest: +SKIP
     """
 
     def __init__(self, ax: Any) -> None:

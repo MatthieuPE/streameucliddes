@@ -10,6 +10,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.cmd_match_filter import match_filter_polygons
 from streameucliddes.analysis.generic_stream_search import (
     generic_search_cmd_stars,
@@ -32,11 +33,11 @@ def search():
     rng = np.random.default_rng(8)
     n = 100_000
     vis = rng.uniform(18.0, 26.0, n)
-    catalog = pd.DataFrame({
+    catalog = add_vis_templfit_magnitudes(pd.DataFrame({
         "ra": rng.uniform(-15.0, 15.0, n) % 360.0, "dec": rng.uniform(-30.0, -10.0, n),
-        "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
-        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
-    })
+        "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
+    }))
     return prepare_generic_search(catalog, nside=NSIDE)
 
 
@@ -142,6 +143,10 @@ def test_plot_residual_map(result):
     names = {text.get_text() for text in ax.texts}
     assert "Inside" in names and not names & {"Outside", "Edge"}
     assert ax.gridlines.get_alpha() == 0.8
+    plt.close(fig)
+
+    fig, ax = plot_generic_search_residual_map(result, vmin=-3.0, vmax=3.0)
+    np.testing.assert_allclose(_clim(ax), (-3.0, 3.0))  # a fixed colour scale
     plt.close(fig)
 
 

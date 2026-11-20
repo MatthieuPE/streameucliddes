@@ -7,6 +7,7 @@ import pandas as pd
 import pyarrow.parquet as pq
 import pytest
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.analysis.generic_stream_search import generic_search_dm_scan, prepare_generic_search
 from PIL import Image
 
@@ -15,6 +16,7 @@ from streameucliddes.catalogs.galstreams_catalog import (
     load_galstreams,
     select_galstreams_in_footprint,
 )
+from streameucliddes.catalogs.isochrone_parameters import isochrone_label
 from streameucliddes.workflows import run_generic_search as run_generic_search_module
 from streameucliddes.workflows.run_generic_search import run_generic_search, save_generic_search_healpix_maps
 
@@ -29,11 +31,11 @@ def catalog():
     rng = np.random.default_rng(7)
     n = 100_000
     vis = rng.uniform(18.0, 26.0, n)
-    return pd.DataFrame({
+    return add_vis_templfit_magnitudes(pd.DataFrame({
         "ra": rng.uniform(-15.0, 15.0, n) % 360.0, "dec": rng.uniform(-30.0, -10.0, n),
-        "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
-        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
-    })
+        "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
+    }))
 
 
 @pytest.fixture(scope="module")
@@ -113,7 +115,7 @@ def _gif_frames(path):
 # same for the corrected maps with the known tracks; and the maps file, equal to the scan
 def test_run_outputs(search, tmp_path):
     isochrone = search.isochrones[0]
-    folder = tmp_path / "test_run" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+    folder = tmp_path / "test_run" / isochrone_label(isochrone)
     (folder / "frames").mkdir(parents=True)
     Image.new("RGB", (20, 10)).save(folder / "frames" / "test_run_dm21.00.png")  # an earlier run
     summary = run_generic_search(search=search, smoothing_deg=2.0, output_dir=tmp_path, name="test_run")
@@ -150,7 +152,7 @@ def test_run_from_catalog(catalog, tmp_path):
     )
     assert [outputs["isochrone"] for outputs in summary["isochrones"]] == grid
     for outputs, isochrone in zip(summary["isochrones"], grid):
-        folder = tmp_path / "generic" / f"age{isochrone['age']:g}_z{isochrone['metallicity']:g}"
+        folder = tmp_path / "generic" / isochrone_label(isochrone)
         assert outputs["maps_path"] == folder / "generic_density.parquet" and outputs["maps_path"].exists()
         assert _gif_frames(outputs["gif_path"]) == 1
 

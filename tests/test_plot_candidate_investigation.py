@@ -7,9 +7,11 @@ import numpy as np
 import pytest
 import skyproj
 from matplotlib.backend_bases import MouseEvent
+from scipy.ndimage import gaussian_filter
 
-from streameucliddes.analysis.candidate_investigation import CandidateInvestigation
+from streameucliddes.analysis.candidate_investigation import CandidateInvestigation, hess_error_table
 from streameucliddes.analysis.candidate_investigation import region_windows
+from streameucliddes.analysis.cmd_match_filter import match_filter_cmd_columns
 from streameucliddes.catalogs.stream_candidates import add_candidate
 from streameucliddes.plotting.plot_candidate_investigation import (
     EndpointPicker,
@@ -18,13 +20,16 @@ from streameucliddes.plotting.plot_candidate_investigation import (
     plot_candidate_frame_check,
     plot_candidate_hess,
     plot_candidate_map,
+    plot_candidate_null_test,
     plot_candidate_overview,
     plot_candidates,
     plot_phi1_profile,
     plot_phi2_profile,
+    plot_photometric_errors,
     plot_width_fit_map,
     sky_axes_to_radec,
 )
+from streameucliddes.plotting.plot_cmd import DEFAULT_DIFFERENCE_SMOOTHING_BINS, plot_on_off_difference_hess
 from streameucliddes.stream_frames import radec_to_phi12, stream_frame_from_endpoints
 
 pytestmark = pytest.mark.plot_candidate_investigation
@@ -110,6 +115,38 @@ def test_plot_candidate_map(candidate_with_maps):
     plt.close(fig)
 
 
+
+# The streams masked: hatched with a legend entry (not without show_stream_mask, nor when none is masked)
+def test_plot_candidate_map_stream_mask(candidate_endpoints, candidate_catalog, no_object_masks, tmp_path,
+                                        monkeypatch):
+    from streameucliddes.analysis import candidate_investigation
+
+    frame = stream_frame_from_endpoints((73.5, -48.0), (73.5, -35.0))
+    crossing = {"name": "Cross-T00", "stream_name": "Cross", "ra": np.array([73.5, 73.5]),
+                "dec": np.array([-48.0, -35.0]), "stream_frame": frame, "width_deg": 0.2, "dm_min": 17.0,
+                "dm_max": 17.0}
+    monkeypatch.setattr(candidate_investigation, "galstreams_mask_tracks", lambda *args, **kwargs: [crossing])
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0,
+                                  candidates_path=tmp_path / "none.csv",
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    cand.prepare(candidate_catalog).compute_zoom_map()
+    assert cand.masked_streams == ["Cross-T00"]
+
+    def labels(ax):
+        return [text.get_text() for text in ax.get_legend().get_texts()]
+
+    fig, ax = plot_candidate_map(cand)
+    assert "masked streams" in labels(ax)
+    plt.close(fig)
+    fig, ax = plot_candidate_map(cand, show_stream_mask=False)
+    assert "masked streams" not in labels(ax)
+    plt.close(fig)
+    cand.mask_streams = False
+    fig, ax = plot_candidate_map(cand)
+    assert "masked streams" not in labels(ax)
+    plt.close(fig)
+
+
 # Each of on, off, difference; the difference with symmetric limits; an unknown diagram or no Hess: ValueError
 def test_plot_candidate_hess(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
     cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
@@ -142,6 +179,50 @@ def test_plot_candidate_hess(candidate_endpoints, candidate_stream_catalog, cand
     with pytest.raises(ValueError, match="which"):
         plot_candidate_hess(cand, "both")
 
+
+# The table saved (hess_error_table) holds the raw diagrams, not the smoothed ones of the figures: after the smoothed
+# plots, the densities are still the counts of the on region per deg² (np.histogram2d) and the difference is on - off,
+# not its smoothed version
+def test_saved_hess_not_smoothed(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    cand.prepare(candidate_stream_catalog).fit_width().define_regions().compute_hess()
+    on_before = cand.on_hess["density"].copy()
+    for fig in (plot_candidate_hess(cand)[0],
+                plot_on_off_difference_hess(cand.on_hess, cand.off_hess, cand.diff_hess, smoothing_bins=2.0)[0]):
+        plt.close(fig)
+    np.testing.assert_array_equal(cand.on_hess["density"], on_before)
+    table = hess_error_table(cand.on_hess, cand.off_hess)
+
+    mag_column, color_column = match_filter_cmd_columns(cand.search.match_filter)[0]
+    stars = cand.search.stars[np.asarray(cand.band_regions["on"], dtype=bool)]
+    counts, _, _ = np.histogram2d(stars[mag_column] - stars[color_column], stars[mag_column],
+                                  bins=[cand.on_hess["color_edges"], cand.on_hess["mag_edges"]])
+    np.testing.assert_allclose(table["on_density"], (counts / cand.areas["on"]).ravel())
+    raw_difference = (cand.on_hess["density"] - cand.off_hess["density"]).ravel()
+    np.testing.assert_allclose(table["difference_density"], raw_difference)
+    smoothed = gaussian_filter(cand.diff_hess["density"], DEFAULT_DIFFERENCE_SMOOTHING_BINS).ravel()
+    assert not np.allclose(table["difference_density"], smoothed)
+
+
+# The map with the shifted regions, the candidate's and the null test's difference Hess diagrams on the same scale,
+# with their SNR; without the Hess diagrams or the null test: ValueError
+def test_plot_candidate_null_test(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": 0.2, **no_object_masks})
+    cand.prepare(candidate_stream_catalog).compute_zoom_map()
+    cand.define_regions(phi2_centre=candidate_stream["phi2_centre"], sigma=candidate_stream["sigma"])
+    with pytest.raises(ValueError, match="compute_hess"):
+        plot_candidate_null_test(cand)
+    cand.compute_hess()
+    with pytest.raises(ValueError, match="compute_null_test"):
+        plot_candidate_null_test(cand)
+    cand.compute_null_test().compute_isochrone()
+    fig, (map_ax, candidate_ax, null_ax) = plot_candidate_null_test(cand)
+    assert cand.null_test["direction"] in map_ax.get_title()
+    assert "candidate, SNR" in candidate_ax.get_title() and "null test, SNR" in null_ax.get_title()
+    assert candidate_ax.images[0].get_clim() == null_ax.images[0].get_clim()  # the same colour scale
+    plt.close(fig)
 
 # Four panels: the map with the regions, the phi2 and phi1 profiles, the difference Hess with the isochrone;
 # before the steps: ValueError naming the missing one
@@ -325,4 +406,18 @@ def test_endpoint_picker_on_a_new_map(sky_ax):
     _click(sky.ax, 70.0, -44.5, button=1)
     assert np.ravel(second.endpoints) == pytest.approx([60.0, -40.0, 70.0, -44.5], abs=0.05)
     assert np.ravel(first.endpoints) == pytest.approx([45.5, -45.0, 44.0, -51.0], abs=0.05)
+    plt.close(fig)
+
+
+# One line per band (each against its own magnitude) over the bins with stars; the title counts the stars of the
+# reference band
+def test_plot_photometric_errors():
+    errors = {"mag_centres": np.array([20.5, 21.5, 22.5]), "bands": ("VIS", "H"), "statistic": "median",
+              "error": {"VIS": np.array([0.02, 0.06, np.nan]), "H": np.array([0.02, 0.1, 0.3])},
+              "n_stars": {"VIS": np.array([3, 2, 0]), "H": np.array([2, 2, 1])}}
+    fig, ax = plot_photometric_errors(errors)
+    assert ax.get_ylabel() == "median error [mag]"
+    assert [line.get_label() for line in ax.lines] == ["VIS (against VIS)", "H (against H)"]
+    assert [line.get_xdata().size for line in ax.lines] == [2, 3]
+    assert ax.get_title() == "5 stars"
     plt.close(fig)

@@ -45,6 +45,7 @@ def plot_stream_frame_search_single_dm(
     track_phi12: tuple[ArrayLike, ArrayLike] | None = None,
     other_tracks: Sequence[tuple[str, ArrayLike, ArrayLike]] = (),
     ax: Axes | None = None,
+    vmin: float | None = None,
     vmax: float | None = None,
     phi1_range: tuple[float, float] | None = None,
     phi2_range: tuple[float, float] | None = None,
@@ -115,7 +116,8 @@ def plot_stream_frame_search_single_dm(
         fig = ax.figure
 
     values = density[bins_in_phi12_range(phi1_centres, phi2_centres, view[:2], view[2:])].compressed()
-    vmin = float(np.percentile(values, DENSITY_PERCENTILES[0])) if values.size else 0.0
+    if vmin is None:
+        vmin = float(np.percentile(values, DENSITY_PERCENTILES[0])) if values.size else 0.0
     if vmax is None:
         vmax = float(np.percentile(values, DENSITY_PERCENTILES[1])) if values.size else 1.0
     colormap = plt.get_cmap(cmap).copy()
@@ -262,7 +264,7 @@ def _single_dm_title(result: Mapping[str, Any]) -> str:
     """Track, distance modulus (or offset along the track) and isochrone of a map."""
     parts = [result["track_name"]] if result.get("track_name") else []
     if "distance_modulus" in result:
-        parts.append(f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.1f} kpc)")
+        parts.append(f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.2f} kpc)")
     else:
         parts.append(f"dm along the track {result['dm_offset']:+.1f}")
     isochrone = result["isochrone"]

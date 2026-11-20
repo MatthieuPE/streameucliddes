@@ -1,14 +1,18 @@
 """Tests of catalogs/stream_candidates.py: the CSV list of the stream candidates, in a temporary file."""
 
+import numpy as np
 import pandas as pd
 import pytest
 
 from streameucliddes.catalogs.stream_candidates import (
+    BEST_DM_COLUMN,
     CANDIDATE_COLUMNS,
     add_candidate,
+    candidate_best_dm,
     candidate_endpoints,
     get_candidate,
     load_candidates,
+    write_candidates,
 )
 
 pytestmark = pytest.mark.stream_candidates
@@ -21,7 +25,7 @@ def test_load_candidates_without_file(tmp_path, create):
     if create:
         path.touch()
     candidates = load_candidates(path)
-    assert candidates.empty and tuple(candidates.columns) == CANDIDATE_COLUMNS
+    assert candidates.empty and tuple(candidates.columns) == (*CANDIDATE_COLUMNS, BEST_DM_COLUMN)
 
 
 # Ids 1, 2, ... in the order added; ra in [0, 360); read back as written; endpoints of a row
@@ -46,7 +50,7 @@ def test_add_candidate_keeps_extra_columns(tmp_path):
     table["comment"] = ["faint"]
     table.to_csv(path, index=False)
     candidates = add_candidate((10.0, 0.0), (12.0, 1.0), 16.0, path=path)
-    assert tuple(candidates.columns) == (*CANDIDATE_COLUMNS, "comment")
+    assert tuple(candidates.columns) == (*CANDIDATE_COLUMNS, BEST_DM_COLUMN, "comment")
     assert candidates["comment"].iloc[0] == "faint" and pd.isna(candidates["comment"].iloc[1])
 
 
@@ -60,9 +64,35 @@ def test_add_candidate_errors(tmp_path):
         add_candidate((10.0, -95.0), (12.0, 1.0), 16.0, path=path)
     with pytest.raises(ValueError, match="same position"):
         add_candidate((10.0, 1.0), (370.0, 1.0), 16.0, path=path)
-    pd.read_csv(path).drop(columns="best_dm").to_csv(path, index=False)
-    with pytest.raises(ValueError, match="best_dm"):
+    pd.read_csv(path).drop(columns="endpoint_2_dec").to_csv(path, index=False)
+    with pytest.raises(ValueError, match="endpoint_2_dec"):
         load_candidates(path)
+
+
+# The former format (best_dm by eye, no best_dm_by_eye): ValueError asking to rename the column; a file without
+# best_dm: read with an empty one
+def test_load_candidates_columns_of_best_dm(tmp_path):
+    path = tmp_path / "candidates.csv"
+    add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
+    table = pd.read_csv(path)
+    table.drop(columns=BEST_DM_COLUMN).to_csv(path, index=False)
+    assert load_candidates(path)[BEST_DM_COLUMN].isna().all()
+    table.drop(columns=BEST_DM_COLUMN).rename(columns={"best_dm_by_eye": "best_dm"}).to_csv(path, index=False)
+    with pytest.raises(ValueError, match="rename"):
+        load_candidates(path)
+
+
+# The distance modulus of a candidate: best_dm once computed, else the one by eye; write_candidates keeps a value set
+def test_candidate_best_dm(tmp_path):
+    path = tmp_path / "candidates.csv"
+    add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
+    candidates = add_candidate((77.0, -40.5), (70.0, -44.5), 17.5, path=path)
+    assert candidates[BEST_DM_COLUMN].isna().all()
+    assert [candidate_best_dm(row) for _, row in candidates.iterrows()] == [17.0, 17.5]
+    candidates.loc[1, BEST_DM_COLUMN] = 17.7
+    write_candidates(candidates, path)
+    assert [candidate_best_dm(row) for _, row in load_candidates(path).iterrows()] == [17.0, 17.7]
+    assert np.isnan(load_candidates(path)[BEST_DM_COLUMN].iloc[0])
 
 
 # The row of an id; an id not in the file: ValueError listing the ids
@@ -71,7 +101,7 @@ def test_get_candidate(tmp_path):
     add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
     add_candidate((77.0, -40.5), (70.0, -44.5), 17.5, path=path)
     candidate = get_candidate(2, path)
-    assert candidate["id"] == 2 and candidate["best_dm"] == 17.5
+    assert candidate["id"] == 2 and candidate["best_dm_by_eye"] == 17.5
     assert candidate_endpoints(candidate) == ((77.0, -40.5), (70.0, -44.5))
     with pytest.raises(ValueError, match=r"\[1, 2\]"):
         get_candidate(3, path)

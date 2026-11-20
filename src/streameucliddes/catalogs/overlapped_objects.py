@@ -18,22 +18,40 @@ Each object comes as one row: ``key`` and ``name``, ``ra``, ``dec`` (deg),
 ``radius_arcmin`` (semi-major axis of the reference ellipse, arcmin: the
 half-light ellipse for the LVDB, ``rhalf``; the 26 mag/arcsec^2 isophote
 for the SGA, ``D26 / 2``), ``ellipticity`` (1 - b/a) and ``position_angle``
-(of the major axis, deg, north to east) of that ellipse, and
-``distance_kpc``; NaN when unknown.
+(of the major axis, deg, north to east) of that ellipse, ``distance_kpc``,
+``distance_modulus``, ``feh`` ([Fe/H], the LVDB ``metallicity``, its best
+value), ``age_gyr`` (the LVDB ``age``, Gyr: known for most globular clusters,
+few dwarf galaxies) and ``apparent_magnitude_v`` (V); NaN when unknown (the
+SGA has none of the last five). The LVDB ``rhalf`` is the semi-major axis of the
+half-light ellipse (LVDB documentation, "Usage & Description of tables").
+
+``get_objects`` gathers several types, with a ``type`` column;
+``find_object`` picks one object by name, ``objects_near_distance_modulus``
+those near a distance modulus.
 
 The masks built from them are in ``analysis.build_masks``.
 """
 
 from __future__ import annotations
 
+import difflib
 import logging
 import shutil
 import urllib.request
 from pathlib import Path
+from typing import TYPE_CHECKING
 
+import healpy as hp
 import numpy as np
 import pandas as pd
 from astropy.io import fits
+
+from streameucliddes.catalogs.euclid_catalog import catalog_point_map
+from streameucliddes.unit_conversions import convert_DM_to_kpc, convert_kpc_to_DM
+
+if TYPE_CHECKING:
+    from collections.abc import Sequence
+    from typing import Any
 
 LOGGER = logging.getLogger(__name__)
 
@@ -62,7 +80,12 @@ SGA_BRIGHT_FILE = "SGA-2020_mag_leda_below_16.5.csv"
 # ratio b/a, HyperLEDA magnitude
 SGA_COLUMNS = ["SGA_ID", "GALAXY", "RA", "DEC", "D26", "PA", "BA", "MAG_LEDA"]
 
-OBJECT_COLUMNS = ["key", "name", "ra", "dec", "radius_arcmin", "ellipticity", "position_angle", "distance_kpc"]
+OBJECT_COLUMNS = [
+    "key", "name", "ra", "dec", "radius_arcmin", "ellipticity", "position_angle", "distance_kpc",
+    "distance_modulus", "feh", "age_gyr", "apparent_magnitude_v",
+]
+# Types of objects (get_objects), as the keys of the masks of analysis.build_masks
+OBJECT_TYPES = ("lmc", "smc", "dwarfs", "gc", "galaxies")
 
 
 # ===================================================
@@ -88,7 +111,7 @@ def load_lvdb_table(table: str) -> pd.DataFrame:
     """
     path = LVDB_DIR / LVDB_VERSION / f"{table}.csv"
     if not path.exists():
-        _download(LVDB_URL.format(version=LVDB_VERSION, table=table), path)
+        download_file(LVDB_URL.format(version=LVDB_VERSION, table=table), path)
     return pd.read_csv(path, low_memory=False)
 
 
@@ -147,8 +170,16 @@ def get_globular_clusters() -> pd.DataFrame:
 
 
 def _lvdb_objects(table: pd.DataFrame) -> pd.DataFrame:
-    """The confirmed objects of an LVDB table, with the columns ``OBJECT_COLUMNS``."""
+    """The confirmed objects of an LVDB table, with the columns ``OBJECT_COLUMNS``.
+
+    The distance modulus from the distance when the LVDB gives none.
+    """
     confirmed = table[table["confirmed_real"] == 1]
+    distance_kpc = confirmed["distance"].to_numpy(dtype=float)
+    distance_modulus = _float_column(confirmed, "distance_modulus")
+    from_distance = ~np.isfinite(distance_modulus) & (distance_kpc > 0)
+    if from_distance.any():
+        distance_modulus[from_distance] = convert_kpc_to_DM(distance_kpc[from_distance]).value
     return pd.DataFrame({
         "key": confirmed["key"].to_numpy(),
         "name": confirmed["name"].to_numpy(),
@@ -157,8 +188,19 @@ def _lvdb_objects(table: pd.DataFrame) -> pd.DataFrame:
         "radius_arcmin": confirmed["rhalf"].to_numpy(dtype=float),
         "ellipticity": confirmed["ellipticity"].to_numpy(dtype=float),
         "position_angle": confirmed["position_angle"].to_numpy(dtype=float),
-        "distance_kpc": confirmed["distance"].to_numpy(dtype=float),
+        "distance_kpc": distance_kpc,
+        "distance_modulus": distance_modulus,
+        "feh": _float_column(confirmed, "metallicity"),
+        "age_gyr": _float_column(confirmed, "age"),
+        "apparent_magnitude_v": _float_column(confirmed, "apparent_magnitude_v"),
     })
+
+
+def _float_column(table: pd.DataFrame, column: str) -> np.ndarray:
+    """A column as floats (a new array); NaN when the table does not have it."""
+    if column not in table:
+        return np.full(len(table), np.nan)
+    return pd.to_numeric(table[column], errors="coerce").to_numpy(dtype=float, copy=True)
 
 
 # ===================================================
@@ -190,7 +232,7 @@ def load_sga_bright_galaxies(fits_path: str | Path | None = None) -> pd.DataFram
             extract_sga_bright_galaxies(fits_path, path)
         else:
             full_path = SGA_DIR / Path(SGA_URL).name
-            _download(SGA_URL, full_path)
+            download_file(SGA_URL, full_path)
             try:
                 extract_sga_bright_galaxies(full_path, path)
             finally:
@@ -249,11 +291,216 @@ def get_galaxies() -> pd.DataFrame:
         "radius_arcmin": sga["D26"].to_numpy(dtype=float) / 2.0,
         "ellipticity": 1.0 - sga["BA"].to_numpy(dtype=float),
         "position_angle": sga["PA"].to_numpy(dtype=float),
-        "distance_kpc": np.full(len(sga), np.nan),
+        **dict.fromkeys(("distance_kpc", "distance_modulus", "feh", "age_gyr", "apparent_magnitude_v"),
+                        np.full(len(sga), np.nan)),
     })
 
 
-def _download(url: str, path: Path) -> None:
+# ===================================================
+# All the types; one object; objects near a distance modulus
+# ===================================================
+
+
+def get_objects(object_types: Sequence[str] = OBJECT_TYPES) -> pd.DataFrame:
+    """Objects of several types, in one table.
+
+    Parameters
+    ----------
+    object_types : sequence of str, optional
+        Among ``OBJECT_TYPES``: ``"lmc"``, ``"smc"``, ``"dwarfs"`` (but the
+        Magellanic Clouds), ``"gc"`` (globular clusters), ``"galaxies"``
+        (Siena Galaxy Atlas).
+
+    Returns
+    -------
+    objects : pandas.DataFrame
+        Columns ``type``, then ``OBJECT_COLUMNS``.
+
+    Raises
+    ------
+    ValueError
+        A type not in ``OBJECT_TYPES``.
+    """
+    unknown = set(object_types) - set(OBJECT_TYPES)
+    if unknown:
+        raise ValueError(f"object types {sorted(unknown)} not in {OBJECT_TYPES}.")
+    getters = {"lmc": get_lmc, "smc": get_smc, "dwarfs": get_dwarf_galaxies, "gc": get_globular_clusters,
+               "galaxies": get_galaxies}
+    tables = [getters[object_type]().assign(type=object_type) for object_type in object_types]
+    tables = [table for table in tables if not table.empty] or tables[:1]
+    if not tables:
+        return pd.DataFrame(columns=["type", *OBJECT_COLUMNS])
+    return pd.concat(tables, ignore_index=True)[["type", *OBJECT_COLUMNS]]
+
+
+def find_object(name: str, object_types: Sequence[str] = ("lmc", "smc", "dwarfs", "gc")) -> pd.Series:
+    """One object, by its key or name; case, spaces, underscores and hyphens ignored.
+
+    ``"NGC 1851"``, ``"ngc_1851"`` and ``"ngc1851"`` are the same.
+
+    Parameters
+    ----------
+    name : str
+        Key or name.
+    object_types : sequence of str, optional
+        Types searched (``get_objects``); by default the LVDB ones.
+
+    Returns
+    -------
+    object : pandas.Series
+        Its row of ``get_objects``.
+
+    Raises
+    ------
+    KeyError
+        No such object; the message lists close names.
+    ValueError
+        Several objects of different keys have this name.
+    """
+    objects = get_objects(object_types)
+    wanted = simplified_name(name)
+    match = objects[(objects["key"].map(simplified_name) == wanted) | (objects["name"].map(simplified_name) == wanted)]
+    match = match.drop_duplicates("key")
+    if match.empty:
+        names = {str(label).lower(): str(label) for label in [*objects["key"], *objects["name"]]}
+        close = [names[label] for label in difflib.get_close_matches(name.lower(), list(names), n=5)]
+        raise KeyError(f"No object {name!r}. Close keys and names: {close}")
+    if len(match) > 1:
+        raise ValueError(f"Several objects named {name!r}: keys {match['key'].tolist()}")
+    return match.iloc[0]
+
+
+def simplified_name(name: Any) -> str:
+    """Name without case, spaces, underscores and hyphens: "NGC 1851", "ngc_1851" -> "ngc1851"."""
+    return str(name).lower().replace(" ", "").replace("_", "").replace("-", "")
+
+
+def objects_near_distance_modulus(
+    distance_modulus: float,
+    max_offset: float,
+    *,
+    object_types: Sequence[str] = ("dwarfs", "gc"),
+    catalog: str | None = None,
+    data_path: Any = None,
+) -> pd.DataFrame:
+    """Objects whose distance modulus is within ``max_offset`` of ``distance_modulus``.
+
+    Parameters
+    ----------
+    distance_modulus : float
+        Distance modulus of interest (mag).
+    max_offset : float
+        Largest ``|object distance modulus - distance_modulus|`` (mag).
+    object_types : sequence of str, optional
+        See ``get_objects``.
+    catalog : str, optional
+        Key of ``catalogs.euclid_catalog.CATALOGS``: adds
+        ``n_sources_at_centre``, the sources of the catalog in the HEALPix
+        pixel of the centre of each object (``catalog_point_map``, nside
+        1024 for DR1, about 3.4 arcmin), and ``in_catalog`` (at least one).
+    data_path : str or Path, optional
+        Folder of the HATS catalog, when it is not the default one.
+
+    Returns
+    -------
+    objects : pandas.DataFrame
+        The columns of ``get_objects``, plus ``dm_offset`` (object minus
+        ``distance_modulus``), sorted by ``|dm_offset|``.
+    """
+    objects = get_objects(object_types)
+    objects["dm_offset"] = objects["distance_modulus"] - distance_modulus
+    objects = objects[objects["dm_offset"].abs() <= max_offset]
+    objects = objects.iloc[np.argsort(objects["dm_offset"].abs().to_numpy(), kind="stable")].reset_index(drop=True)
+    if catalog is not None:
+        objects = add_in_catalog(objects, catalog, data_path)
+    return objects
+
+
+def add_in_catalog(objects: pd.DataFrame, catalog: str, data_path: Any = None) -> pd.DataFrame:
+    """Objects with the sources of a catalog at their centre: ``n_sources_at_centre`` and ``in_catalog``.
+
+    ``n_sources_at_centre``: the sources of the catalog in the HEALPix pixel
+    of the centre of each object (``catalog_point_map``, nside 1024 for DR1,
+    about 3.4 arcmin); ``in_catalog``: at least one. No star is read.
+
+    Parameters
+    ----------
+    objects : pandas.DataFrame
+        With ``ra`` and ``dec`` (deg), e.g. from ``get_objects``.
+    catalog : str
+        Key of ``catalogs.euclid_catalog.CATALOGS``.
+    data_path : str or Path, optional
+        Folder of the HATS catalog, when it is not the default one.
+
+    Returns
+    -------
+    objects : pandas.DataFrame
+        A copy, with the two columns.
+    """
+    counts = catalog_point_map(catalog, data_path)
+    pixels = hp.ang2pix(hp.npix2nside(counts.size), objects["ra"].to_numpy(dtype=float),
+                        objects["dec"].to_numpy(dtype=float), nest=True, lonlat=True)
+    n_sources = counts[pixels].astype(int)
+    return objects.assign(n_sources_at_centre=n_sources, in_catalog=n_sources > 0)
+
+
+def make_object(
+    name: str,
+    ra: float,
+    dec: float,
+    radius_arcmin: float,
+    *,
+    object_type: str = "dwarfs",
+    key: str | None = None,
+    ellipticity: float = np.nan,
+    position_angle: float = np.nan,
+    distance_modulus: float = np.nan,
+    feh: float = np.nan,
+    age_gyr: float = np.nan,
+    apparent_magnitude_v: float = np.nan,
+) -> pd.Series:
+    """An object given by hand (e.g. a new discovery not in the LVDB yet), as a row of ``get_objects``.
+
+    Parameters
+    ----------
+    name : str
+        Its name.
+    ra, dec : float
+        Centre (deg).
+    radius_arcmin : float
+        Semi-major axis of its half-light ellipse (arcmin).
+    object_type : str, optional
+        Its type, one of ``OBJECT_TYPES``: ``"dwarfs"``, ``"gc"``...
+    key : str, optional
+        Its key. Default: ``"custom_"`` and its simplified name (``simplified_name``).
+    ellipticity, position_angle, distance_modulus, feh, age_gyr, apparent_magnitude_v : float, optional
+        As the columns of ``OBJECT_COLUMNS`` (position angle in deg, north to
+        east; age in Gyr; V magnitude). NaN: unknown. ``distance_kpc`` is
+        computed from ``distance_modulus``.
+
+    Returns
+    -------
+    object : pandas.Series
+        ``type`` and ``OBJECT_COLUMNS``, as ``find_object`` returns.
+
+    Raises
+    ------
+    ValueError
+        ``object_type`` not in ``OBJECT_TYPES``.
+    """
+    if object_type not in OBJECT_TYPES:
+        raise ValueError(f"object type {object_type!r} not in {OBJECT_TYPES}.")
+    distance_kpc = convert_DM_to_kpc(distance_modulus).value if np.isfinite(distance_modulus) else np.nan
+    values = {
+        "key": f"custom_{simplified_name(name)}" if key is None else key, "name": name, "ra": float(ra), "dec": float(dec),
+        "radius_arcmin": float(radius_arcmin), "ellipticity": float(ellipticity), "position_angle": float(position_angle),
+        "distance_kpc": float(distance_kpc), "distance_modulus": float(distance_modulus), "feh": float(feh),
+        "age_gyr": float(age_gyr), "apparent_magnitude_v": float(apparent_magnitude_v),
+    }
+    return pd.Series({"type": object_type, **{column: values[column] for column in OBJECT_COLUMNS}})
+
+
+def download_file(url: str, path: Path) -> None:
     """Download url to path: a complete file, or none."""
     LOGGER.info("Downloading %s to %s.", url, path)
     path.parent.mkdir(parents=True, exist_ok=True)

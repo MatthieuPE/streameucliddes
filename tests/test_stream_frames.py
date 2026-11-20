@@ -13,6 +13,7 @@ from streameucliddes.stream_frames import (
     phi12_window_around,
     phi12_window_outline,
     phi12_window_radec_box,
+    frame_centred_on_point,
     radec_to_phi12,
     stream_frame_from_endpoints,
 )
@@ -261,3 +262,25 @@ def test_frame_from_endpoints(rng, gc_frame):
 def test_frame_from_endpoints_rejects_degenerate(endpoint_2):
     with pytest.raises(ValueError, match="no single great circle"):
         stream_frame_from_endpoints((42.0, -20.0), endpoint_2)
+
+
+# ===================================================
+# Test frame_centred_on_point
+# ===================================================
+
+
+# The point at (0, 0); by default the coordinates of astropy's SkyOffsetFrame (phi1 east, phi2 north); phi1 along
+# a given position angle
+@pytest.mark.parametrize("centre", [(78.5, -40.0), (10.0, 85.0), (0.2, -60.0)])
+def test_frame_centred_on_point(rng, centre):
+    frame = frame_centred_on_point(*centre)
+    np.testing.assert_allclose(radec_to_phi12(*centre, frame), (0.0, 0.0), atol=1e-9)
+    point = coord.SkyCoord(centre[0] * u.deg, centre[1] * u.deg)
+    sky = point.directional_offset_by(rng.uniform(0, 360, 50) * u.deg, rng.uniform(0, 3, 50) * u.deg)
+    offset = sky.transform_to(point.skyoffset_frame())
+    phi1, phi2 = radec_to_phi12(sky.ra.deg, sky.dec.deg, frame)
+    np.testing.assert_allclose(phi1, offset.lon.wrap_at(180 * u.deg).deg, atol=1e-6)
+    np.testing.assert_allclose(phi2, offset.lat.deg, atol=1e-6)
+    along = point.directional_offset_by(30.0 * u.deg, 1.0 * u.deg)
+    tilted = frame_centred_on_point(*centre, phi1_position_angle=30.0)
+    np.testing.assert_allclose(radec_to_phi12(along.ra.deg, along.dec.deg, tilted), (1.0, 0.0), atol=1e-9)

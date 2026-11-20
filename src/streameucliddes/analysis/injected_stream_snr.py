@@ -1,16 +1,19 @@
 """SNR of mock streams injected in the Euclid x DES stars."""
 
 import copy
+import warnings
+
 import numpy as np
 import astropy.coordinates as coord
 import astropy.units as u
 import gala.coordinates as gc
 import logging
 
-from streameucliddes.analysis.catalog_preparation import default_error_cuts, prepare_match_filter_catalog
-from streameucliddes.analysis.cmd_match_filter import DEFAULT_MATCH_FILTER, select_stars_in_match_filter
+from streameucliddes.analysis.catalog_preparation import catalog_match_filter_mask, default_error_cuts
+from streameucliddes.analysis.cmd_match_filter import get_match_filter
+from streameucliddes.analysis.on_off_regions import compute_snr
 from streameucliddes.catalogs.catalog_cuts import cut_flow
-from streameucliddes.catalogs.euclid_catalog import get_euclid_stars
+from streameucliddes.catalogs.euclid_catalog import DEFAULT_VIS_PHOTOMETRY, get_euclid_stars
 from streameucliddes.injection import inject
 
 # Euclid x DES stars used as background by get_stream_snr: read on first use (see
@@ -41,7 +44,10 @@ STREAM_CONFIG = {
     }
 }
 
-DEFAULT_MATCH_FILTERS = [DEFAULT_MATCH_FILTER]
+# The injection simulates Euclid Q1 (inject.inject_stream_catalog) in the Q1 x DES stars: the default match filter
+# (its width and red cap) on the Q1 bands, with the PSF VIS (Q1 has no VIS template-fitting magnitude)
+DEFAULT_MATCH_FILTERS = [{**get_match_filter(), "reference_band": ("euclid_q1", "VIS"),
+                          "color_bands": [("euclid_q1", "H")], "vis_photometry": "psf"}]
 # Default phi2 window: +- 1.4 stream_width, maximizes the SNR of a gaussian signal on
 # a uniform background
 PHI2_WIDTH_FACTOR = 1.4
@@ -123,8 +129,13 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
     stars_background = _get_background(gc_frame, reload_data=reload_data)
 
     distance_modulus = stream_config["distance_modulus"]["center"]["value"]
-    isochrone = {"age": stream_config["isochrone"]["age"], "metallicity": stream_config["isochrone"]["z"]}
+    # the match filter of the isochrone model of the injected stream
+    isochrone = {"age": stream_config["isochrone"]["age"], "metallicity": stream_config["isochrone"]["z"],
+                 "isochrone_model": stream_config["isochrone"]["name"]}
     phi2_max = PHI2_WIDTH_FACTOR * stream_config["stream_width"]
+
+    if any(mf.get("vis_photometry", DEFAULT_VIS_PHOTOMETRY) == "templfit" for mf in match_filter_list):
+        warnings.warn(inject.INJECTED_VIS_TEMPLFIT_WARNING, stacklevel=2)
 
     snr_results = {}
     for match_filter in match_filter_list:
@@ -142,7 +153,7 @@ def get_stream_snr(seed=None, reload_data=False, match_filter_list=None, **kwarg
         if logging.getLogger().isEnabledFor(logging.DEBUG):
             logging.debug(f"Background cut flow:\n{cut_flow(stars_background, mf_cuts)}")
 
-        snr_results[match_filter["name"]] = _compute_SNR(n_stream, n_background)
+        snr_results[match_filter["name"]] = compute_snr(n_stream, n_background)
 
     return snr_results, stream_config
 
@@ -157,7 +168,7 @@ def _get_background(gc_frame, reload_data=False):
     """
     global STARS_BACKGROUND, _BACKGROUND_FRAME
     if STARS_BACKGROUND is None or reload_data:
-        STARS_BACKGROUND = get_euclid_stars("euclid_q1_des")
+        STARS_BACKGROUND = get_euclid_stars("euclid_q1_des", vis_photometry="psf")  # Q1: no VIS template fit
         _BACKGROUND_FRAME = None
 
     if _BACKGROUND_FRAME is None or not gc_frame.is_equivalent_frame(_BACKGROUND_FRAME):
@@ -177,16 +188,7 @@ def _count_selected(catalog, cuts, distance_modulus, isochrone, match_filter):
     Number of stars of ``catalog`` passing ``cuts`` and inside the match filter, with
     the preparation and selection of the searches.
     """
-    stars = prepare_match_filter_catalog(catalog, match_filter, cuts=cuts)
-    return int(select_stars_in_match_filter(stars, distance_modulus, isochrone, match_filter).sum())
-
-def _compute_SNR(n_stream, n_background):
-    """SNR of ``n_stream`` stream stars over ``n_background`` background stars."""
-    if n_stream == 0:
-        return 0.0  # No stream star selected, even without background
-    if n_background == 0:
-        return np.inf  # Avoid division by zero
-    return n_stream / np.sqrt(n_background)
+    return int(catalog_match_filter_mask(catalog, distance_modulus, isochrone, match_filter, cuts=cuts).sum())
 
 
 def scan_snr_grid(axes=("surface_brightness", "distance_modulus"), axis_values=None, seed=None, **kwargs):

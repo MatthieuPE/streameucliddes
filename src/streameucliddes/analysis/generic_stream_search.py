@@ -42,12 +42,12 @@ from streameucliddes.analysis.catalog_preparation import (
     star_healpix_pixels,
 )
 from streameucliddes.analysis.cmd_match_filter import (
-    DEFAULT_MATCH_FILTER,
+    get_match_filter,
     match_filter_columns,
     select_stars_in_match_filter,
 )
 from streameucliddes.analysis.stream_frame_search import DEFAULT_DISTANCE_MODULI
-from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid, with_isochrone_model
 from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
     survey_footprint_healpix_mask,
@@ -122,6 +122,7 @@ def prepare_generic_search(
     match_filter: Mapping[str, Any] | None = None,
     isochrone: Mapping[str, float] | None = None,
     default_grid: Iterable[Mapping[str, float]] | None = None,
+    isochrone_model: str | None = None,
     distance_moduli: Iterable[float] | None = None,
     cuts: Mapping[str, Any] | None = None,
     nside: int = DEFAULT_NSIDE,
@@ -161,12 +162,17 @@ def prepare_generic_search(
         the match filter, e.g. ``catalogs.euclid_catalog.get_euclid_stars()``.
     match_filter : mapping, optional
         See ``analysis.cmd_match_filter``. Default:
-        ``cmd_match_filter.DEFAULT_MATCH_FILTER``.
+        ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     isochrone : mapping, optional
         The one isochrone of the search, ``{"age": age (Gyr), "metallicity": Z}``.
     default_grid : iterable of mapping, optional
         The isochrones otherwise. Default:
         ``catalogs.isochrone_parameters.default_isochrone_grid()``.
+    isochrone_model : str, optional
+        Name of the ugali isochrone model of the isochrones, e.g.
+        ``"Dotter2016"``: those of the default grid (its Z converted to it),
+        and those given without their own ``"isochrone_model"``. None:
+        ``unit_conversions.get_isochrone_model()`` (``DEFAULT_ISOCHRONE_MODEL``).
     distance_moduli : iterable of float, optional
         Grid of the scan. Default: ``stream_frame_search.DEFAULT_DISTANCE_MODULI``
         (15 to 22, every 0.1).
@@ -215,7 +221,7 @@ def prepare_generic_search(
         ``footprint_mask`` without ``nest``, an empty footprint, or a
         footprint all masked by the objects.
     """
-    match_filter = dict(DEFAULT_MATCH_FILTER if match_filter is None else match_filter)
+    match_filter = dict(get_match_filter(match_filter))
     object_mask = overlapped_objects_healpix_mask(
         nside, nest=False, mask_lmc=mask_lmc, mask_smc=mask_smc, mask_dwarfs=mask_dwarfs, mask_gc=mask_gc,
         mask_galaxies=mask_galaxies, radius_scale=mask_radius_scale,
@@ -248,9 +254,11 @@ def prepare_generic_search(
         )
 
     if isochrone is not None:
-        isochrones = [dict(isochrone)]
+        isochrones = with_isochrone_model([isochrone], isochrone_model)
+    elif default_grid is not None:
+        isochrones = with_isochrone_model(default_grid, isochrone_model)
     else:
-        isochrones = default_isochrone_grid() if default_grid is None else [dict(item) for item in default_grid]
+        isochrones = default_isochrone_grid(isochrone_model=isochrone_model)
     distance_moduli = DEFAULT_DISTANCE_MODULI if distance_moduli is None else distance_moduli
     return PreparedGenericSearch(
         catalog=catalog, keep=keep, pixels=pixels, nside=nside, footprint_mask=footprint_mask,

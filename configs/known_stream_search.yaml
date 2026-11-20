@@ -20,12 +20,15 @@ search: known_stream
 # default_grid:                # isochrones for the age and Z not known
 #   - {age: 13.0, metallicity: 0.0002}
 #
+# isochrone_model: Dotter2016  # name of the ugali isochrone model of the match filters; default Marigo2017 (null).
+#                              # Z of the default grid and of the stream table converted to it (same [Fe/H])
+#
 # mask_lmc: true               # mask the LMC, the SMC, the dwarf galaxies, the globular clusters (LVDB),
 # mask_smc: true               # the bright galaxies (SGA); false: not masked
 # mask_dwarfs: true
 # mask_gc: true
 # mask_galaxies: true
-# mask_radius_scale: {lmc: 6.5, smc: 11.0, dwarfs: 4.0, gc: 4.0, galaxies: 5.0}   # in reference radii (or one value)
+# mask_radius_scale: {lmc: 6.5, smc: 11.0, dwarfs: 4.0, gc: null, galaxies: 5.0}   # in reference radii (or one value); gc null: per cluster, from its surface brightness
 #
 # track_names: [AAU-ATLAS-L21] # default: one track per stream crossing the footprint
 # add_ibata2024: true          # also the Ibata et al. 2024 tracks (no distances)

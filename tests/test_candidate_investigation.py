@@ -6,26 +6,46 @@ import numpy as np
 import pandas as pd
 import pytest
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
+from streameucliddes.analysis import candidate_investigation as candidate_investigation_module
 from streameucliddes.analysis import stream_frame_search as stream_frame_search_module
-from streameucliddes.analysis.build_masks import object_mask_nside
+from streameucliddes.analysis.build_masks import (
+    CANDIDATE_MASK_HALF_WIDTH_DEG,
+    STREAM_MASK_N_SIGMA,
+    object_mask_nside,
+    streams_healpix_mask,
+)
 from streameucliddes.analysis.candidate_investigation import (
     DEFAULT_FOOTPRINT_NSIDE,
     CANDIDATE_FIGURES_DIR,
     CandidateInvestigation,
+    hess_error_table,
     on_off_phi1_profile,
     phi12_density_map,
     phi12_density_profile,
-    region_area_deg2,
+    region_areas,
     region_windows,
+    stream_band_regions,
     stream_regions,
+    update_candidate_best_dm,
 )
-from streameucliddes.analysis.cmd_match_filter import isochrone_cmd_track
-from streameucliddes.catalogs.stream_candidates import add_candidate
+from streameucliddes.analysis.cmd_match_filter import (
+    difference_hess,
+    hess_diagram,
+    isochrone_cmd_track,
+    match_filter_cmd_columns,
+    photometric_errors_by_magnitude,
+)
+from streameucliddes.catalogs.stream_candidates import add_candidate, load_candidates
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
-from streameucliddes.catalogs.isochrone_parameters import DEFAULT_METALLICITIES
+from streameucliddes.catalogs.isochrone_parameters import (
+    DEFAULT_FEHS,
+    isochrone_from_feh,
+)
 from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
+    in_healpix_mask,
     star_count_nside,
     survey_footprint_healpix_mask,
     trim_footprint_edge,
@@ -37,7 +57,7 @@ from streameucliddes.stream_frames import (
     radec_to_phi12,
     stream_frame_from_endpoints,
 )
-from streameucliddes.unit_conversions import convert_FeH_to_z
+from streameucliddes.unit_conversions import convert_FeH_to_z, convert_metallicity, get_isochrone_model
 
 pytestmark = pytest.mark.candidate_investigation
 
@@ -89,18 +109,33 @@ def test_region_windows_offsets():
         assert window == pytest.approx((reference[0], reference[1], reference[2] + offset, reference[3] + offset))
 
 
-# No mask: on and off areas of the strip formula; half of the phi1 range masked: half the areas
-def test_region_area_matches_analytic(candidate_endpoints):
-    frame = stream_frame_from_endpoints(*candidate_endpoints)
-    regions = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0)}
+def _window_areas(regions, frame, excluded_healpix_mask=None):
+    """Areas of the windows of region_windows outside a mask (unmasked_area_deg2), as region_areas."""
     windows = region_windows(regions)
-    areas = region_area_deg2(regions, frame, None)
-    window_area = lambda window: unmasked_area_deg2(frame, window[:2], window[2:], None)[0, 0]  # noqa: E731
-    assert areas["on"] == pytest.approx(window_area(windows["on"]))
-    assert areas["off_below"] == pytest.approx(window_area(windows["off"][0]))
-    assert areas["off_above"] == pytest.approx(window_area(windows["off"][1]))
-    assert areas["off"] == areas["off_below"] + areas["off_above"]
-    half = region_area_deg2(regions, frame, _mask_phi1_below(frame, 512, -0.5))
+    on, below, above = (unmasked_area_deg2(frame, window[:2], window[2:], excluded_healpix_mask)[0, 0]
+                        for window in (windows["on"], *windows["off"]))
+    return {"on": on, "off_below": below, "off_above": above, "off": below + above}
+
+
+# The bands of a straight track are the windows of region_windows: their stars, and the areas of the strip
+# formula; half of the phi1 range masked: half the areas
+def test_stream_band_regions(candidate_endpoints):
+    frame = stream_frame_from_endpoints(*candidate_endpoints)
+    regions = {"phi1_range": (-3.0, 2.0), "phi2_centre": 0.2, "sigma": 0.3, "on_n_sigma": 1.5, "off_n_sigma": (2.5, 4.0),
+               "on_phi2_offset_deg": 0.1, "off_phi2_offsets_deg": (-0.2, 0.3)}
+    rng = np.random.default_rng(4)
+    ra, dec = phi12_to_radec(rng.uniform(-4.0, 3.0, 20_000), rng.uniform(-2.0, 2.5, 20_000), frame)
+    stars = pd.DataFrame({"ra": ra, "dec": dec})
+    band_regions = stream_band_regions(stars, regions, frame, None)
+    assert band_regions["regions"] == regions
+    windows = region_windows(regions)
+    phi1, phi2 = radec_to_phi12(ra, dec, frame)
+    for name, window in (("on", windows["on"]), ("off_below", windows["off"][0]), ("off_above", windows["off"][1])):
+        np.testing.assert_array_equal(band_regions[name], in_phi12_window(phi1, phi2, window))
+    areas = region_areas(band_regions)
+    for name, area in _window_areas(regions, frame).items():
+        assert areas[name] == pytest.approx(area, rel=1e-3)
+    half = region_areas(stream_band_regions(stars, regions, frame, _mask_phi1_below(frame, 512, -0.5)))
     assert half["on"] == pytest.approx(areas["on"] / 2, rel=0.03) and half["off"] == pytest.approx(areas["off"] / 2, rel=0.03)
 
 
@@ -230,7 +265,8 @@ def test_isochrone_from_metallicity_or_feh(candidate_endpoints):
         "age": 12.0, "metallicity": 0.001}
     assert CandidateInvestigation("test", *candidate_endpoints, feh=-1.5).isochrone["metallicity"] == pytest.approx(
         convert_FeH_to_z(-1.5))
-    assert CandidateInvestigation("test", *candidate_endpoints).isochrone["metallicity"] == DEFAULT_METALLICITIES[0]
+    assert CandidateInvestigation("test", *candidate_endpoints).isochrone["metallicity"] == pytest.approx(
+        convert_FeH_to_z(DEFAULT_FEHS[0], get_isochrone_model()))
     with pytest.raises(ValueError, match="not both"):
         CandidateInvestigation("test", *candidate_endpoints, metallicity=0.001, feh=-1.5)
     cand = CandidateInvestigation("test", *candidate_endpoints, feh=-1.5)
@@ -301,6 +337,120 @@ def test_prepare_excluded_mask_with_objects(candidate_endpoints, candidate_catal
     assert hp.npix2nside(cand.excluded_healpix_mask.size) == nside
     expected = convert_footprint_healpix_mask(cand.footprint_mask, nside, nest=False, nest_out=False)
     np.testing.assert_array_equal(cand.excluded_healpix_mask, expected | cand.search.object_healpix_mask)
+
+
+# Stream masks: a galstreams track crossing the candidate and another listed candidate, 3 deg north, excluded over
+# their half-widths (STREAM_MASK_N_SIGMA times the width; that of the candidates without width), not the candidate
+# itself;
+# their stars not counted; kept by set_endpoints; mask_streams off and on: applied at once, the tracks not built
+# again
+def test_prepare_masks_other_streams(tmp_path, candidate_endpoints, candidate_catalog, monkeypatch):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, 17.0, path=path)  # id 1: the candidate
+    add_candidate((77.0, -37.0), (70.0, -40.0), 17.0, path=path)  # id 2
+    crossing_frame = stream_frame_from_endpoints((73.5, -48.0), (73.5, -35.0))
+    crossing = {"name": "Cross-T00", "stream_name": "Cross", "ra": np.array([73.5, 73.5]),
+                "dec": np.array([-48.0, -35.0]), "stream_frame": crossing_frame, "width_deg": 0.2, "dm_min": 17.0,
+                "dm_max": 17.0}
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", lambda *args, **kwargs: [crossing])
+    inputs = {"path": path, "prepare_kwargs": {"bin_size_deg": BIN}}
+    cand = CandidateInvestigation.from_candidate_id(1, **inputs).prepare(candidate_catalog)
+    unmasked = CandidateInvestigation.from_candidate_id(1, mask_streams=False, **inputs).prepare(candidate_catalog)
+    assert cand.summary()["masked_streams"] == ["Cross-T00", "candidate_2"]
+    assert unmasked.summary()["masked_streams"] is None and unmasked.stream_healpix_mask is None
+    nside = hp.npix2nside(cand.excluded_healpix_mask.size)
+    assert nside == object_mask_nside(BIN)
+    np.testing.assert_array_equal(cand.stream_healpix_mask, streams_healpix_mask(cand.stream_mask_tracks, nside,
+                                                                                 nest=False))
+    np.testing.assert_array_equal(cand.excluded_healpix_mask,
+                                  unmasked.excluded_healpix_mask | cand.stream_healpix_mask)
+
+    def masked(phi1, phi2, frame):
+        return in_healpix_mask(*phi12_to_radec(phi1, phi2, frame), cand.stream_healpix_mask, nest=False)
+
+    pixel = np.degrees(hp.nside2resol(nside))  # the band edge is known to a pixel
+    other_frame = stream_frame_from_endpoints((77.0, -37.0), (70.0, -40.0))
+    # across each band, away from the other one (candidate 2 at phi1 = 2 deg: ra 71, east of the crossing track)
+    for half_width, frame, phi1 in ((STREAM_MASK_N_SIGMA * 0.2, crossing_frame, 0.0),
+                                    (CANDIDATE_MASK_HALF_WIDTH_DEG, other_frame, 2.0)):
+        inside, outside = half_width - pixel, half_width + pixel
+        assert masked([phi1, phi1], [inside, -inside], frame).all()
+        assert not masked([phi1, phi1], [outside, -outside], frame).any()
+    phi1 = np.linspace(*cand._endpoints_phi1_range(), 200)
+    own = masked(phi1, np.zeros(phi1.size), cand.stream_frame)  # the candidate: only where the crossing track is
+    assert 0 < own.mean() < 0.2
+    stars = cand.search.stars
+    on_streams = in_healpix_mask(stars["ra"], stars["dec"], cand.stream_healpix_mask, nest=False)
+    assert on_streams.sum() > 100
+    np.testing.assert_array_equal(cand.stars_not_excluded, unmasked.stars_not_excluded & ~on_streams)
+
+    def not_again(*args, **kwargs):
+        raise AssertionError("the stream tracks are built again")
+
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", not_again)
+    stream_mask = cand.stream_healpix_mask
+    cand.set_endpoints((76.0, -41.0), (69.0, -44.0))
+    assert cand.stream_healpix_mask is stream_mask and cand.search is not None
+    cand.mask_streams = False
+    np.testing.assert_array_equal(cand.excluded_healpix_mask, cand.footprint_and_objects_mask)
+    assert cand.stars_not_excluded.sum() > (~on_streams).sum() - 1000 and cand.summary()["masked_streams"] is None
+    cand.mask_streams = True
+    np.testing.assert_array_equal(cand.excluded_healpix_mask, cand.footprint_and_objects_mask | stream_mask)
+    assert cand.masked_streams == ["Cross-T00", "candidate_2"]
+
+
+# Only the streams within stream_mask_max_dm_difference of distance_modulus are masked: a new distance modulus
+# masks the crossing track (dm 19) and clears the width; a cleared result names the change in the error
+def test_stream_mask_follows_distance_modulus(tmp_path, candidate_endpoints, candidate_stream_catalog,
+                                              candidate_stream, monkeypatch):
+    frame = stream_frame_from_endpoints((73.5, -48.0), (73.5, -35.0))
+    crossing = {"name": "Cross-T00", "stream_name": "Cross", "ra": np.array([73.5, 73.5]),
+                "dec": np.array([-48.0, -35.0]), "stream_frame": frame, "width_deg": 0.2, "dm_min": 19.0,
+                "dm_max": 19.0}
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", lambda *args, **kwargs: [crossing])
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0, distance_moduli=[17.0],
+                                  stream_mask_max_dm_difference=1.5, candidates_path=tmp_path / "none.csv",
+                                  prepare_kwargs={"bin_size_deg": BIN})
+    cand.prepare(candidate_stream_catalog).fit_width().define_regions()
+    assert cand.masked_streams == [] and not cand.stream_healpix_mask.any()
+    np.testing.assert_array_equal(cand.excluded_healpix_mask, cand.footprint_and_objects_mask)
+    cand.distance_modulus = 18.0
+    assert cand.masked_streams == ["Cross-T00"] and cand.width_fit is None and cand.search is not None
+    np.testing.assert_array_equal(cand.excluded_healpix_mask,
+                                  cand.footprint_and_objects_mask | cand.stream_healpix_mask)
+    stars = cand.search.stars
+    np.testing.assert_array_equal(cand.stars_not_excluded, ~in_healpix_mask(stars["ra"], stars["dec"],
+                                                                            cand.excluded_healpix_mask, nest=False))
+    with pytest.raises(ValueError, match=r"cleared because cand.distance_modulus was changed \(17.0 -> 18.0\)"):
+        cand.compute_hess()
+    with pytest.raises(ValueError, match="width_fit \\(cleared because cand.distance_modulus"):
+        cand.define_regions()
+    cand.stream_mask_max_width_deg = 0.1  # the crossing track (0.2 deg) is too wide: not masked
+    assert cand.masked_streams == []
+    cand.stream_mask_max_width_deg = 0.3
+    assert cand.masked_streams == ["Cross-T00"]
+    cand.stream_mask_max_dm_difference = 0.5
+    assert cand.masked_streams == []
+    cand.fit_width().define_regions().compute_hess()
+    assert cand.diff_hess is not None
+
+
+# A candidate given by hand that is also in the list (its own band covers its track): not masked, warned, in
+# overlapping_streams; left out by unmasked_streams: no warning
+def test_prepare_leaves_out_streams_covering_the_candidate(tmp_path, candidate_endpoints, candidate_catalog, caplog):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, 17.0, path=path)
+    inputs = {"candidates_path": path, "prepare_kwargs": {"bin_size_deg": BIN}}
+    with caplog.at_level("WARNING", logger=candidate_investigation_module.__name__):
+        cand = CandidateInvestigation("by hand", *candidate_endpoints, **inputs).prepare(candidate_catalog)
+    assert "not masked" in caplog.text and "candidate_1" in caplog.text
+    assert cand.masked_streams == [] and cand.overlapping_streams == ["candidate_1"]
+    np.testing.assert_array_equal(cand.excluded_healpix_mask, cand.footprint_and_objects_mask)
+    caplog.clear()
+    with caplog.at_level("WARNING", logger=candidate_investigation_module.__name__):
+        cand = CandidateInvestigation("by hand", *candidate_endpoints, unmasked_streams=["candidate_1"], **inputs)
+        cand.prepare(candidate_catalog)
+    assert not caplog.text and cand.summary()["masked_streams"] == [] and cand.overlapping_streams == []
 
 
 # No catalog given nor kept, or a window beyond the stars: ValueError
@@ -393,7 +543,9 @@ def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate
     fit, regions = cand.width_fit, cand.regions
     assert regions == stream_regions(cand._endpoints_phi1_range(), fit["phi2_centre"], fit["sigma"], on_n_sigma=1.5,
                                      off_n_sigma=(2.5, 4.0))
-    assert cand.areas == region_area_deg2(regions, cand.stream_frame, cand.excluded_healpix_mask)
+    assert cand.band_regions["regions"] == regions and cand.areas == region_areas(cand.band_regions)
+    for name, area in _window_areas(regions, cand.stream_frame, cand.excluded_healpix_mask).items():
+        assert cand.areas[name] == pytest.approx(area, rel=5e-3)
     assert cand.phi1_profile["edges"][[0, -1]] == pytest.approx(cand.window[:2]) and cand.on_hess is None
     inside = np.abs(cand.phi1_profile["centres"]) < 2.5
     assert np.all(cand.phi1_profile["difference"][inside] > 0)
@@ -420,12 +572,12 @@ def test_compute_hess_areas_outside_footprint_hole(candidate_endpoints, candidat
     hole = (phi1 < 0.0) & (phi2 < -0.5 * (cand.on_n_sigma + cand.off_n_sigma[0]) * sigma)  # between on and off
     cand.prepare(candidate_catalog, footprint_mask=hole, nest=False)
     cand.define_regions(phi2_centre=0.0, sigma=sigma).compute_hess()
-    full = region_area_deg2(cand.regions, cand.stream_frame, None)
+    full = _window_areas(cand.regions, cand.stream_frame)
     below = region_windows(cand.regions)["off"][0]
     full_below = unmasked_area_deg2(cand.stream_frame, below[:2], below[2:], None)[0, 0]
     phi1_min, phi1_max = cand.regions["phi1_range"]
     hole_fraction = (0.0 - phi1_min) / (phi1_max - phi1_min)
-    assert cand.areas["on"] == pytest.approx(full["on"])
+    assert cand.areas["on"] == pytest.approx(full["on"], rel=1e-3)
     assert cand.areas["off"] == pytest.approx(full["off"] - hole_fraction * full_below, rel=0.02)
     n_on, n_off = cand.on_hess["n_stars"], cand.off_hess["n_stars"]
     error = np.sqrt(n_on / cand.areas["on"] ** 2 + n_off / cand.areas["off"] ** 2)
@@ -447,9 +599,9 @@ def test_off_density_cancels_gradient_with_hole(candidate_endpoints, no_object_m
     keep = rng.uniform(0.0, 1.0 + gradient * phi2_half, 2 * n) < 1.0 + gradient * phi2
     ra, dec = phi12_to_radec(phi1[keep], phi2[keep], frame)
     vis = rng.uniform(18.0, 26.0, ra.size)
-    catalog = pd.DataFrame({"ra": ra, "dec": dec, "euclid_q1_VIS_obs": vis,
-                            "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, ra.size),
-                            "euclid_q1_VIS_err": np.full(ra.size, 0.02), "euclid_q1_H_err": np.full(ra.size, 0.02)})
+    catalog = add_vis_templfit_magnitudes(pd.DataFrame({"ra": ra, "dec": dec, "euclid_dr1_VIS_obs": vis,
+                            "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, ra.size),
+                            "euclid_dr1_VIS_err": np.full(ra.size, 0.02), "euclid_dr1_H_err": np.full(ra.size, 0.02)}))
     cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0,
                                   prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
     nside, sigma = 256, 0.4
@@ -486,6 +638,109 @@ def test_compute_hess(candidate_endpoints, candidate_stream_catalog, candidate_s
     assert cand.on_hess["area_deg2"] == cand.areas["on"] and cand.off_hess["area_deg2"] == cand.areas["off"]
     np.testing.assert_allclose(cand.diff_hess["density"], cand.on_hess["density"] - cand.off_hess["density"])
     assert cand.diff_hess["density"].sum() > 5 * np.sqrt((cand.diff_hess["error"] ** 2).sum())
+
+
+# Null test: the on region and the off region on its side shifted off the stream by (on_n_sigma + off_n_sigma[0])
+# sigma, the stream in none of the three regions: no excess, while the candidate's regions have one; regions and Hess
+# diagrams of the candidate unchanged; a given direction; a shift leaving the window, an unknown direction:
+# ValueError; cleared by new regions
+def test_compute_null_test(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    cand.prepare(candidate_stream_catalog)
+    with pytest.raises(ValueError, match="define_regions"):
+        cand.compute_null_test()
+    centre, sigma = candidate_stream["phi2_centre"], candidate_stream["sigma"]
+    bins = {"color_bins": np.linspace(-1.0, 1.5, 11), "mag_bins": np.linspace(18.0, 26.0, 9)}
+    cand.define_regions(phi2_centre=centre, sigma=sigma).compute_hess(**bins)
+    regions, diff_hess = cand.regions, cand.diff_hess
+    assert cand.compute_null_test(**bins) is cand
+    null_test = cand.null_test
+    assert cand.regions is regions and cand.diff_hess is diff_hess
+    assert null_test["direction"] in ("above", "below") and null_test["geometry"] == "standard"
+    assert null_test["shift_deg"] == pytest.approx((cand.on_n_sigma + cand.off_n_sigma[0]) * sigma)
+    stream_edge = cand.off_n_sigma[0] * sigma  # the stream taken as absent beyond it, as for the off regions
+    windows = region_windows(null_test["regions"])
+    for window in (windows["on"], *windows["off"]):
+        assert window[2] >= centre + stream_edge - 1e-9 or window[3] <= centre - stream_edge + 1e-9
+    assert cand.summary()["snr"] > 5.0 and abs(null_test["snr"]) < 3.0
+    assert null_test["diff_hess"]["area_deg2"] == null_test["areas"]["on"]
+
+    below = cand.compute_null_test(direction="below", **bins).null_test
+    assert below["direction"] == "below" and region_windows(below["regions"])["on"][3] <= centre - stream_edge + 1e-9
+    with pytest.raises(ValueError, match="leave the window"):
+        cand.compute_null_test(shift_n_sigma=100.0)
+    with pytest.raises(ValueError, match="direction"):
+        cand.compute_null_test(direction="left")
+    cand.define_regions(phi2_centre=centre, sigma=sigma)
+    assert cand.null_test is None
+
+
+# A wide stream in a narrow window: the shifted regions with their gap leave the window on both sides; the off region
+# next to the shifted on region fits ("compact"), the stream still in none of the regions
+def test_compute_null_test_compact(candidate_endpoints, candidate_catalog, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0,
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    cand.prepare(candidate_catalog)
+    half_width = cand.window[3]
+    on_n, (off_0, off_1) = cand.on_n_sigma, cand.off_n_sigma
+    # extent of the shifted side: (on + off_0 + off_1) sigma with the gap, (2 on + off_1) sigma without: in between
+    sigma = half_width / (0.5 * ((on_n + off_0 + off_1) + (2 * on_n + off_1)))
+    cand.define_regions(phi2_centre=0.0, sigma=sigma).compute_null_test()
+    null_test = cand.null_test
+    assert null_test["geometry"] == "compact"
+    windows = region_windows(null_test["regions"])
+    shifted_off = windows["off"][1] if null_test["direction"] == "above" else windows["off"][0]
+    if null_test["direction"] == "above":
+        assert shifted_off[2] == pytest.approx(windows["on"][3])  # next to the shifted on region
+    else:
+        assert shifted_off[3] == pytest.approx(windows["on"][2])
+    for window in (windows["on"], *windows["off"]):
+        assert window[2] >= off_0 * sigma - 1e-6 or window[3] <= -off_0 * sigma + 1e-6
+    with pytest.raises(ValueError, match="also with the off region next to"):
+        cand.compute_null_test(shift_n_sigma=2 * (on_n + off_0))
+
+
+# "auto": the side with the larger unmasked on region, here above (the footprint has a hole below the stream)
+def test_compute_null_test_auto_side(candidate_endpoints, candidate_catalog, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0,
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    nside = 256
+    ra, dec = hp.pix2ang(nside, np.arange(hp.nside2npix(nside)), lonlat=True)
+    phi1, phi2 = radec_to_phi12(ra, dec, cand.stream_frame)
+    sigma = 0.3
+    hole = (phi1 < 0.0) & (phi2 < -cand.off_n_sigma[0] * sigma)  # half of the regions below the stream
+    cand.prepare(candidate_catalog, footprint_mask=hole, nest=False)
+    cand.define_regions(phi2_centre=0.0, sigma=sigma).compute_null_test()
+    assert cand.null_test["direction"] == "above"
+    below = cand.compute_null_test(direction="below").null_test
+    assert below["areas"]["on"] < cand.compute_null_test(direction="above").null_test["areas"]["on"]
+
+
+# best_dm of the listed candidates: the distance modulus of the largest SNR (the regions at best_dm_by_eye), written
+# to the file; a candidate with best_dm skipped unless replace_force; only the ids given
+def test_update_candidate_best_dm(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks,
+                                  tmp_path, monkeypatch):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, candidate_stream["distance_modulus"] - 0.2, path=path)  # by eye, a bit off
+    add_candidate(*candidate_endpoints, candidate_stream["distance_modulus"], path=path)
+    distance_moduli = np.round(np.arange(16.4, 17.61, 0.2), 2)
+    kwargs = {"distance_moduli": distance_moduli, "path": path,
+              "prepare_kwargs": {"bin_size_deg": BIN, **no_object_masks}, "mask_streams": False}
+    candidates = update_candidate_best_dm(candidate_stream_catalog, [1], **kwargs)
+    assert candidates.loc[0, "best_dm"] == pytest.approx(candidate_stream["distance_modulus"])
+    assert np.isnan(candidates.loc[1, "best_dm"])  # not asked
+    pd.testing.assert_frame_equal(load_candidates(path), candidates)  # written
+
+    def no_scan(self, distance_moduli=None):
+        raise AssertionError("SNR computed again")
+
+    monkeypatch.setattr(CandidateInvestigation, "snr_against_distance_modulus", no_scan)
+    update_candidate_best_dm(candidate_stream_catalog, [1], **kwargs)  # already done: skipped
+    with pytest.raises(AssertionError, match="computed again"):
+        update_candidate_best_dm(candidate_stream_catalog, [1], replace_force=True, **kwargs)
+    with pytest.raises(ValueError, match="ids"):
+        update_candidate_best_dm(candidate_stream_catalog, [3], **kwargs)
 
 
 # compute_isochrone: the track of the object's age, Z or [Fe/H] and distance modulus, in its match filter; the
@@ -630,12 +885,33 @@ def test_run_all_steps(candidate_endpoints, candidate_stream_catalog, candidate_
         cand.run_all_steps(candidate_stream_catalog, step_kwargs={"prepare": {}})
 
 
+# The SNR of fixed regions over distance moduli: that of summary at the distance modulus of the object, the stream at
+# its distance modulus the highest; the object unchanged (distance_modulus, regions)
+def test_snr_against_distance_modulus(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    cand.prepare(candidate_stream_catalog)
+    with pytest.raises(ValueError, match="define_regions"):
+        cand.snr_against_distance_modulus([17.0])
+    cand.define_regions(phi2_centre=candidate_stream["phi2_centre"], sigma=candidate_stream["sigma"])
+    regions = cand.regions
+    distance_moduli = [16.0, 16.5, 17.0, 17.5, 18.0]
+    table = cand.snr_against_distance_modulus(distance_moduli)
+    assert list(table.columns) == ["distance_modulus", "n_on", "n_off", "n_excess", "n_excess_error", "snr"]
+    assert table["distance_modulus"].tolist() == distance_moduli
+    at_stream = table.set_index("distance_modulus").loc[candidate_stream["distance_modulus"]]
+    assert at_stream["snr"] == pytest.approx(cand.summary()["snr"])
+    assert table["snr"].idxmax() == distance_moduli.index(candidate_stream["distance_modulus"])
+    assert cand.distance_modulus == candidate_stream["distance_modulus"] and cand.regions is regions
+    assert len(cand.snr_against_distance_modulus()) == len(cand.search.distance_moduli)  # default: the search grid
+
+
 # summary: the same keys at every step, None for the steps not done; after define_regions, the counts of the stars
 # in the match filter outside the excluded mask, in the on region and in the off regions, and the excess
 def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
     keys = {"name", "endpoint_1", "endpoint_2", "window", "age", "metallicity", "feh", "distance_modulus",
-            "distance_kpc", "phi2_centre", "sigma", "phi1_range", "area_on_deg2", "area_off_deg2", "n_on", "n_off",
-            "n_excess", "n_excess_error"}
+            "distance_kpc", "masked_streams", "overlapping_streams", "phi2_centre", "sigma", "phi1_range", "area_on_deg2", "area_off_deg2", "n_on", "n_off",
+            "n_excess", "n_excess_error", "snr"}
     cand = CandidateInvestigation("test", *candidate_endpoints, age=12.0, feh=-2.0,
                                   prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
     summary = cand.summary()
@@ -664,6 +940,13 @@ def test_summary(candidate_endpoints, candidate_stream_catalog, candidate_stream
     assert (summary["n_on"], summary["n_off"]) == (n_on, n_below + n_above)
     assert summary["n_excess"] == pytest.approx(n_on - areas["on"] * off_density)
     assert summary["n_excess_error"] == pytest.approx(np.sqrt(n_on + areas["on"] ** 2 * off_variance))
+    assert summary["snr"] == pytest.approx(summary["n_excess"] / np.sqrt(areas["on"] * off_density))
+
+    # Regions edited by hand: their stars and areas built again
+    cand.regions = stream_regions(cand.regions["phi1_range"], 0.2, 0.5, on_n_sigma=1.5, off_n_sigma=(2.5, 4.0))
+    summary = cand.summary()
+    assert cand.band_regions["regions"] == cand.regions and summary["area_on_deg2"] == pytest.approx(
+        _window_areas(cand.regions, cand.stream_frame, cand.excluded_healpix_mask)["on"], rel=5e-3)
 
 
 # From the id of a listed candidate: its endpoints, best_dm as distance modulus, a default name and its figure
@@ -685,3 +968,78 @@ def test_from_candidate_id(tmp_path, candidate_endpoints):
     assert not (tmp_path / "figures").exists()  # not created
     with pytest.raises(ValueError, match="No candidate with id 5"):
         CandidateInvestigation.from_candidate_id(5, path=path)
+
+
+# The isochrone model: in the isochrone and the track; changing it clears the maps
+def test_isochrone_model(candidate_endpoints):
+    cand = CandidateInvestigation("test", *candidate_endpoints, feh=-1.5, isochrone_model="Dotter2016")
+    assert cand.isochrone == isochrone_from_feh(feh=-1.5, isochrone_model="Dotter2016")
+    assert cand.compute_isochrone(distance_modulus=17.0).isochrone_track["isochrone_model"] == "Dotter2016"
+    cand.sky_map = {"stub": True}
+    cand.isochrone_model = None
+    assert cand.sky_map is None and "isochrone_model" not in cand.isochrone
+
+
+# The photometric errors of the stars of the on region (outside the masks), all or in the match filter; cleared with
+# the regions; define_regions needed
+def test_compute_photometric_errors(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    with pytest.raises(ValueError, match="define_regions"):
+        cand.compute_photometric_errors()
+    cand.prepare(candidate_stream_catalog).fit_width().define_regions()
+    assert cand.compute_photometric_errors(mag_bins=np.arange(18.0, 26.5, 0.5)) is cand
+    mag_cols = match_filter_cmd_columns(cand.search.match_filter)[0]
+    on = np.asarray(cand.band_regions["on"], dtype=bool)
+    expected = photometric_errors_by_magnitude(cand.search.stars, mag_cols, mask=on, mag_bins=np.arange(18.0, 26.5, 0.5))
+    for band in expected["bands"]:
+        np.testing.assert_array_equal(cand.photometric_errors["n_stars"][band], expected["n_stars"][band])
+        np.testing.assert_array_equal(cand.photometric_errors["error"][band], expected["error"][band])
+    reference = expected["bands"][0]  # VIS 18 to 26: every star of the on region in the bins
+    assert cand.photometric_errors["in_match_filter"] is False
+    assert cand.photometric_errors["n_stars"][reference].sum() == on.sum()
+    cand.compute_photometric_errors(in_match_filter=True, statistic="mean")
+    assert cand.photometric_errors["statistic"] == "mean"
+    n_in_filter = (on & cand.stars_in_match_filter()).sum()
+    assert cand.photometric_errors["in_match_filter"]
+    assert cand.photometric_errors["n_stars"][reference].sum() == n_in_filter
+    assert 0 < n_in_filter < on.sum()
+    cand.on_n_sigma = 1.0
+    assert cand.photometric_errors is None
+
+
+# One row per bin, colour by colour then magnitude by magnitude: the on - off, on and off densities, the areas on
+# every row (density times area: the stars of the region); the
+# errors of each band against its own magnitude beside, one row per magnitude bin of their own (other bins than the
+# diagrams), for the median and the mean;
+# NaN below the shorter block
+def test_hess_error_table(stars_with_errors):
+    stars = stars_with_errors
+    mag_cols = ("euclid_dr1_VIS_obs", "euclid_dr1_H_obs")
+    bins = {"color_bins": [0.0, 0.4, 0.8], "mag_bins": [20.0, 21.0, 22.0, 23.0]}
+    on = hess_diagram(stars, mag_cols, area_deg2=2.0, **bins)
+    off = hess_diagram(stars, mag_cols, mask=np.arange(7) < 2, area_deg2=1.0, **bins)
+    table = hess_error_table(on, off)
+    assert list(table.columns) == ["color_centre", "mag_centre", "difference_density", "on_density", "off_density",
+                                   "area_on_deg2", "area_off_deg2"]
+    assert len(table) == 6
+    np.testing.assert_allclose(table["color_centre"], [0.2, 0.2, 0.2, 0.6, 0.6, 0.6])
+    np.testing.assert_allclose(table["mag_centre"], [20.5, 21.5, 22.5] * 2)
+    np.testing.assert_allclose(table["difference_density"], difference_hess(on, off)["density"].ravel())
+    np.testing.assert_allclose(table["on_density"], on["density"].ravel())
+    np.testing.assert_allclose(table["off_density"], off["density"].ravel())
+    assert (table["area_on_deg2"] == 2.0).all() and (table["area_off_deg2"] == 1.0).all()
+    np.testing.assert_allclose(table["on_density"] * table["area_on_deg2"], on["counts"].ravel())
+    for statistic in ("median", "mean"):
+        errors = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=[20.0, 22.0, 23.0], statistic=statistic)
+        table = hess_error_table(on, off, errors)
+        assert list(table.columns)[7:] == ["error_mag_centre_VIS", f"{statistic}_error_VIS",
+                                           "error_mag_centre_H", f"{statistic}_error_H"]
+        assert len(table) == 6 and table["on_density"].notna().all()
+        for band in ("VIS", "H"):
+            np.testing.assert_allclose(table[f"error_mag_centre_{band}"][:2], [21.0, 22.5])
+            assert table[f"error_mag_centre_{band}"][2:].isna().all()
+            np.testing.assert_allclose(table[f"{statistic}_error_{band}"][:2], errors["error"][band])
+    many_bins = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=np.arange(20.0, 23.01, 0.25))  # 12 bins
+    table = hess_error_table(on, off, many_bins)
+    assert len(table) == 12 and table["mag_centre"][6:].isna().all() and table["error_mag_centre_H"].notna().all()

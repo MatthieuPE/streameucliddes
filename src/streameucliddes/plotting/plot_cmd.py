@@ -12,16 +12,24 @@ from scipy.ndimage import gaussian_filter
 
 from streameucliddes.analysis.catalog_preparation import check_columns, prepare_match_filter_catalog
 from streameucliddes.analysis.cmd_match_filter import (
-    DEFAULT_MATCH_FILTER,
+    DEFAULT_CMD_MARGIN_MAG,
+    DEFAULT_COLOR_RANGE,
+    DEFAULT_MAG_RANGE,
+    _band_name,
+    get_match_filter,
     hess_diagram,
+    isochrone_cmd_track,
+    match_filter_cmd_columns,
+    match_filter_cmd_limits,
     match_filter_columns,
     match_filter_polygons,
+    on_off_hess,
     select_stars_in_match_filter,
 )
-from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
+from streameucliddes.catalogs.isochrone_parameters import get_isochrone
 from streameucliddes.plotting import plot_style  # noqa: F401  (sets the figure style)
 from streameucliddes.plotting.plot_style import COLORBAR_LABEL_SIZE, CATEGORICAL_COLORS, format_distance_modulus
-from streameucliddes.unit_conversions import convert_DM_to_kpc
+from streameucliddes.unit_conversions import DEFAULT_ISOCHRONE_MODEL, convert_DM_to_kpc, get_isochrone_model
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -34,7 +42,10 @@ if TYPE_CHECKING:
 
 MATCH_FILTER_COLOR = CATEGORICAL_COLORS[0]
 # Default limits of a match-filter plot: the extent of the polygon plus this margin (mag)
-MATCH_FILTER_MARGIN_MAG = 0.5
+MATCH_FILTER_MARGIN_MAG = DEFAULT_CMD_MARGIN_MAG
+CMD_PANEL_SIZE = 4.5  # inches: one CMD panel per colour band
+CMD_PERCENTILES = (0.5, 99.5)  # CMD limits without a match filter: these percentiles of the on stars
+ON_COLOR, OFF_COLOR = "k", CATEGORICAL_COLORS[3]  # on and off stars of plot_on_off_cmd
 HESS_CMAP = "gray_r"  # on and off Hess diagrams
 HESS_DIFFERENCE_CMAP = "RdBu_r"  # on - off: diverging, symmetric limits (celestial_currents hess.py)
 HESS_DIFFERENCE_PERCENTILE = 98.0  # default limit of the difference: this percentile of |density|
@@ -48,7 +59,7 @@ def plot_CMD(
     fig: Figure | None = None,
     ax: Axes | None = None,
     mag_cols: Sequence[str] = ("mag_g", "mag_r"),
-    ylim: tuple[float, float] = (15, 28),
+    ylim: tuple[float, float] = (15, 26),
     xlim: tuple[float | None, float | None] | None = (0.1, 1.2),
     xlabel: str | None = r"$g-r$",
     ylabel: str | None = r"$g$",
@@ -138,11 +149,11 @@ def plot_match_filter(
     distance_modulus : float
         Distance modulus of the filter.
     isochrone : mapping, optional
-        ``{"age": age (Gyr), "metallicity": Z}``. Default: the first
-        isochrone of ``catalogs.isochrone_parameters.default_isochrone_grid``.
+        ``{"age": age (Gyr), "metallicity": Z}``. Default:
+        ``catalogs.isochrone_parameters.get_isochrone()``.
     match_filter : mapping, optional
         See ``analysis.cmd_match_filter``. Default:
-        ``analysis.cmd_match_filter.DEFAULT_MATCH_FILTER``.
+        ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     catalog : pandas.DataFrame, optional
         Stars, prepared here
         (``analysis.catalog_preparation.prepare_match_filter_catalog``:
@@ -187,8 +198,8 @@ def plot_match_filter(
         Both ``catalog`` and ``stars``; ``cuts`` or ``prepare_kwargs``
         without ``catalog``; not one axes per colour band.
     """
-    isochrone = default_isochrone_grid()[0] if isochrone is None else isochrone
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    isochrone = get_isochrone(isochrone)
+    match_filter = get_match_filter(match_filter)
     if catalog is not None and stars is not None:
         raise ValueError("give catalog or stars, not both")
     if catalog is not None:
@@ -196,29 +207,19 @@ def plot_match_filter(
     elif cuts is not None or prepare_kwargs:
         given = (["cuts"] if cuts is not None else []) + list(prepare_kwargs)
         raise ValueError(f"{given} prepare a catalog: stars are used as they are")
-    reference_column, *color_columns = match_filter_columns(match_filter)
+    pairs = match_filter_cmd_columns(match_filter)
     if stars is not None:
-        check_columns(stars, [reference_column, *color_columns])
+        check_columns(stars, match_filter_columns(match_filter))
 
-    polygons = match_filter_polygons(distance_modulus, isochrone, match_filter)
-    if axes is None:
-        fig, axes = plt.subplots(1, len(polygons), figsize=(4.5 * len(polygons), 4.5), squeeze=False)
-        axes = list(axes.ravel())
-    else:
-        axes = list(np.atleast_1d(axes))
-        if len(axes) != len(polygons):
-            raise ValueError(f"{len(axes)} axes for {len(polygons)} colour bands")
-        fig = axes[0].figure
+    limits = match_filter_cmd_limits(distance_modulus, isochrone, match_filter, margin_mag=MATCH_FILTER_MARGIN_MAG)
+    fig, axes = cmd_panel_axes(axes, len(pairs), what="colour bands")
 
-    reference_band = match_filter["reference_band"][1]
-    for color_index, (ax, polygon, color_column, (_, color_band)) in enumerate(zip(
-        axes, polygons, color_columns, match_filter["color_bands"]
-    )):
-        colors, mags = polygon[:, 0], polygon[:, 1]
-        panel_color_lim = color_lim or (colors.min() - MATCH_FILTER_MARGIN_MAG,
-                                        colors.max() + MATCH_FILTER_MARGIN_MAG)
-        panel_mag_lim = mag_lim or (mags.min() - MATCH_FILTER_MARGIN_MAG, mags.max() + MATCH_FILTER_MARGIN_MAG)
-        xlabel, ylabel = f"{reference_band} - {color_band}", reference_band
+    for color_index, (ax, (reference_column, color_column), (polygon_color_lim, polygon_mag_lim)) in enumerate(
+        zip(axes, pairs, limits)
+    ):
+        panel_color_lim = color_lim or polygon_color_lim
+        panel_mag_lim = mag_lim or polygon_mag_lim
+        xlabel, ylabel = f"{_band_name(reference_column)} - {_band_name(color_column)}", _band_name(reference_column)
         if stars is not None:
             plot_CMD(
                 stars, fig=fig, ax=ax, mag_cols=[reference_column, color_column],
@@ -234,7 +235,8 @@ def plot_match_filter(
 
     if title is None:
         title = (f"dm {format_distance_modulus(distance_modulus)} ({convert_DM_to_kpc(distance_modulus).value:.1f} kpc), "
-                 f"{isochrone['age']:g} Gyr, Z = {isochrone['metallicity']:.2g}")
+                 f"{_isochrone_model_prefix(get_isochrone_model(isochrone))}{isochrone['age']:g} Gyr, "
+                 f"Z = {isochrone['metallicity']:.2g}")
         if stars is not None:
             n_selected = select_stars_in_match_filter(stars, distance_modulus, isochrone, match_filter).sum()
             title += f"\n{n_selected} stars in the filter"
@@ -243,6 +245,214 @@ def plot_match_filter(
     else:
         fig.suptitle(title)
     return fig, axes
+
+
+def cmd_panel_axes(
+    axes: Axes | Sequence[Axes] | None, n_panels: int, *, what: str = "panels"
+) -> tuple[Figure, list[Axes]]:
+    """One axes per CMD panel: those given, or a new figure of ``n_panels`` side by side.
+
+    Raises
+    ------
+    ValueError
+        Not ``n_panels`` axes given (the message names them ``what``).
+    """
+    if axes is None:
+        fig, axes = plt.subplots(1, n_panels, figsize=(CMD_PANEL_SIZE * n_panels, CMD_PANEL_SIZE), squeeze=False)
+        return fig, list(axes.ravel())
+    axes = list(np.atleast_1d(axes))
+    if len(axes) != n_panels:
+        raise ValueError(f"{len(axes)} axes for {n_panels} {what}")
+    return axes[0].figure, axes
+
+
+def draw_match_filter(
+    ax: Axes,
+    distance_modulus: float,
+    isochrone: Mapping[str, float],
+    match_filter: Mapping[str, Any] | None = None,
+    *,
+    color_index: int = 0,
+) -> None:
+    """Polygon of a match filter (``plot_match_filter_polygon``) and its isochrone track (``plot_isochrone``)."""
+    plot_match_filter_polygon(ax, distance_modulus, isochrone, match_filter, color_index=color_index)
+    plot_isochrone(ax, isochrone_cmd_track(distance_modulus, isochrone["age"], metallicity=isochrone["metallicity"],
+                                           match_filter=match_filter, color_index=color_index,
+                                           isochrone_model=get_isochrone_model(isochrone)))
+
+
+def _isochrone_model_prefix(isochrone_model: str | None) -> str:
+    """Name of the isochrone model for a label, only when not the default one: "Dotter2016, "."""
+    isochrone_model = get_isochrone_model(isochrone_model)
+    return "" if isochrone_model == DEFAULT_ISOCHRONE_MODEL else f"{isochrone_model}, "
+
+
+def _cmd_pairs(
+    match_filter: Mapping[str, Any] | None, mag_cols: Sequence[Sequence[str]] | None, distance_modulus: float | None
+) -> tuple[list[tuple[str, str]], bool]:
+    """Magnitude columns of each panel, and whether the match filter is drawn on them."""
+    if mag_cols is not None:
+        return [tuple(pair) for pair in mag_cols], False
+    return match_filter_cmd_columns(match_filter), distance_modulus is not None
+
+
+def plot_on_off_cmd(
+    stars: pd.DataFrame,
+    on_mask: ArrayLike,
+    off_mask: ArrayLike,
+    area_ratio: float,
+    distance_modulus: float | None = None,
+    isochrone: Mapping[str, float] | None = None,
+    match_filter: Mapping[str, Any] | None = None,
+    *,
+    mag_cols: Sequence[Sequence[str]] | None = None,
+    axes: Axes | Sequence[Axes] | None = None,
+    color_lim: tuple[float, float] | None = None,
+    mag_lim: tuple[float, float] | None = None,
+    marker_size: float = 3.0,
+    seed: int = 0,
+) -> tuple[Figure, list[Axes]]:
+    """CMDs of the stars of an on region, and of off stars over the same area.
+
+    The off stars drawn are a random fraction ``area_ratio`` (on area / off
+    area) of those of the off region: as many as the field holds on the on
+    region, so that the two compare by eye. One panel per colour: those of
+    the match filter (polygon and isochrone, ``draw_match_filter``, when
+    ``distance_modulus`` is given), or the pairs ``mag_cols``.
+
+    Parameters
+    ----------
+    stars : pandas.DataFrame
+        Stars. Not copied.
+    on_mask, off_mask : array_like of bool
+        Stars of the on and off regions (and of any selection).
+    area_ratio : float
+        On area / off area (at most 1 to draw all the off stars).
+    distance_modulus : float, optional
+        Of the match filter drawn.
+    isochrone : mapping, optional
+        ``{"age", "metallicity"}``. Default: ``get_isochrone()``.
+    match_filter : mapping, optional
+        Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
+    mag_cols : sequence of pairs of str, optional
+        Instead of the match filter: one panel per (magnitude, other
+        magnitude) pair, colour their difference. No polygon then.
+    axes : Axes or sequence of Axes, optional
+        One per panel. Default: a new figure.
+    color_lim, mag_lim : tuple of float, optional
+        Ranges (``mag_lim`` as (bright, faint)). Default: the polygon plus a
+        margin (``match_filter_cmd_limits``), or the ``CMD_PERCENTILES`` of
+        the on stars.
+    marker_size : float, optional
+    seed : int, optional
+        Of the random choice of the off stars.
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : list of matplotlib.axes.Axes
+    """
+    isochrone = get_isochrone(isochrone)
+    pairs, draw_filter = _cmd_pairs(match_filter, mag_cols, distance_modulus)
+    fig, axes = cmd_panel_axes(axes, len(pairs))
+    on = np.asarray(on_mask, dtype=bool)
+    off = np.flatnonzero(np.asarray(off_mask, dtype=bool))
+    off = off[np.random.default_rng(seed).random(off.size) < area_ratio]
+    limits = match_filter_cmd_limits(distance_modulus, isochrone, match_filter) if draw_filter else None
+
+    for color_index, (ax, (mag_col, other_col)) in enumerate(zip(axes, pairs)):
+        mag, other = stars[mag_col].to_numpy(dtype=float), stars[other_col].to_numpy(dtype=float)
+        ax.scatter(mag[off] - other[off], mag[off], s=marker_size, color=OFF_COLOR, lw=0, alpha=0.7,
+                   label=f"off, scaled to the on area ({off.size})")
+        ax.scatter(mag[on] - other[on], mag[on], s=marker_size, color=ON_COLOR, lw=0, label=f"on ({int(on.sum())})")
+        if draw_filter:
+            draw_match_filter(ax, distance_modulus, isochrone, match_filter, color_index=color_index)
+            panel_color_lim, panel_mag_lim = limits[color_index]
+        elif on.any():
+            panel_color_lim = tuple(np.nanpercentile(mag[on] - other[on], CMD_PERCENTILES))
+            panel_mag_lim = tuple(np.nanpercentile(mag[on], CMD_PERCENTILES))
+        else:
+            panel_color_lim, panel_mag_lim = DEFAULT_COLOR_RANGE, DEFAULT_MAG_RANGE
+        panel_color_lim, panel_mag_lim = color_lim or panel_color_lim, mag_lim or panel_mag_lim
+        ax.set(xlim=panel_color_lim, ylim=(max(panel_mag_lim), min(panel_mag_lim)),
+               xlabel=f"{_band_name(mag_col)} - {_band_name(other_col)}", ylabel=_band_name(mag_col))
+        ax.legend(loc="upper left", fontsize="small", framealpha=0.8, markerscale=3)
+    return fig, axes
+
+
+def plot_on_off_hess_per_color(
+    stars: pd.DataFrame,
+    on_mask: ArrayLike,
+    on_area_deg2: float,
+    off_masks: Sequence[ArrayLike],
+    off_areas_deg2: Sequence[float],
+    distance_modulus: float | None = None,
+    isochrone: Mapping[str, float] | None = None,
+    match_filter: Mapping[str, Any] | None = None,
+    *,
+    mag_cols: Sequence[Sequence[str]] | None = None,
+    color_bins: ArrayLike | None = None,
+    mag_bins: ArrayLike | None = None,
+    smoothed_difference: bool = True,
+    axes: Sequence[Sequence[Axes]] | None = None,
+    **kwargs: Any,
+) -> tuple[Figure, list[list[Axes]]]:
+    """On, off and on - off Hess diagrams, one row per colour.
+
+    ``analysis.cmd_match_filter.on_off_hess`` (one or two off regions) drawn
+    by ``plot_on_off_difference_hess``. The colours are those of the match
+    filter (polygon and isochrone on every panel when ``distance_modulus``
+    is given, ``draw_match_filter``), or the pairs ``mag_cols``.
+
+    Parameters
+    ----------
+    stars : pandas.DataFrame
+        Stars. Not copied.
+    on_mask, on_area_deg2, off_masks, off_areas_deg2 :
+        See ``analysis.cmd_match_filter.on_off_hess``.
+    distance_modulus, isochrone, match_filter, mag_cols :
+        See ``plot_on_off_cmd``.
+    color_bins, mag_bins : array_like, optional
+        Bin edges, the same for every row. Default:
+        ``analysis.cmd_match_filter.default_hess_bins()``, those of every Hess
+        diagram, with or without a match filter.
+    smoothed_difference : bool, optional
+        Add the smoothed on - off panel.
+    axes : sequence of rows of Axes, optional
+        One row of 4 (3 without ``smoothed_difference``) per colour.
+    **kwargs
+        Of ``plot_on_off_difference_hess`` (``smoothing_bins``, ``norm``...).
+
+    Returns
+    -------
+    fig : matplotlib.figure.Figure
+    axes : list of lists of matplotlib.axes.Axes
+        One row per colour.
+
+    Raises
+    ------
+    ValueError
+        Not one row of axes per colour.
+    """
+    isochrone = get_isochrone(isochrone)
+    pairs, draw_filter = _cmd_pairs(match_filter, mag_cols, distance_modulus)
+    n_columns = 4 if smoothed_difference else 3
+    if axes is None:
+        fig, axes = plt.subplots(len(pairs), n_columns, squeeze=False, layout="constrained",
+                                 figsize=(n_columns * HESS_FIGSIZE[0], len(pairs) * HESS_FIGSIZE[1]))
+    axes = [list(row) for row in axes]
+    if len(axes) != len(pairs):
+        raise ValueError(f"{len(axes)} rows of axes for {len(pairs)} colours.")
+    for color_index, (row, pair) in enumerate(zip(axes, pairs)):
+        on_hess, off_hess, difference = on_off_hess(stars, pair, on_mask, on_area_deg2, off_masks, off_areas_deg2,
+                                                    color_bins=color_bins, mag_bins=mag_bins)
+        plot_on_off_difference_hess(on_hess, off_hess, difference, axes=row, smoothed_difference=smoothed_difference,
+                                    **kwargs)
+        if draw_filter:
+            for ax in row:
+                draw_match_filter(ax, distance_modulus, isochrone, match_filter, color_index=color_index)
+            row[0].legend(loc="upper left", fontsize="small", framealpha=0.8)
+    return axes[0][0].figure, axes
 
 
 def plot_hess(
@@ -256,6 +466,7 @@ def plot_hess(
     smoothing_bins: float = 0.0,
     colorbar: bool = True,
     title: str | None = None,
+    per_area: bool | None = None,
 ) -> tuple[Figure, Axes]:
     """Draw a colour-magnitude 2D histogram: counts, a Hess diagram, or on - off.
 
@@ -290,6 +501,13 @@ def plot_hess(
         Add a colour bar: ``HESS_COLORBAR_LABEL`` per deg², "N" for counts.
     title : str, optional
         Default: the number of stars and the area.
+    per_area : bool, optional
+        Draw ``hess["density"]`` (per deg², True) or ``hess["counts"]``
+        (stars per bin, False). Default: per deg² when the diagram has an
+        area. On - off (``difference_hess``): the counts are the excess stars
+        of the on region, ``density * area_deg2`` (the on area). Off diagram
+        of two off regions (``mean_off_hess``): the counts are those of the
+        two regions together, not the background of the on region.
 
     Returns
     -------
@@ -299,7 +517,8 @@ def plot_hess(
     Raises
     ------
     ValueError
-        ``norm`` neither None nor "log".
+        ``norm`` neither None nor "log"; ``per_area`` True for a diagram
+        without area.
 
     Notes
     -----
@@ -308,10 +527,13 @@ def plot_hess(
     if norm not in (None, "log"):
         raise ValueError(f"Invalid norm: {norm}. Use None or 'log'.")
     fig, ax = (ax.figure, ax) if ax is not None else plt.subplots(figsize=HESS_FIGSIZE)
-    density = np.asarray(hess["density"], dtype=float)
+    has_area = hess.get("area_deg2") is not None
+    per_area = has_area if per_area is None else bool(per_area)
+    if per_area and not has_area:
+        raise ValueError("per_area=True needs a diagram with an area_deg2 (densities per deg²).")
+    density = np.asarray(hess["density"] if per_area else hess["counts"], dtype=float)  # drawn: per deg² or stars
     if smoothing_bins > 0:
         density = gaussian_filter(density, smoothing_bins)
-    per_area = hess.get("area_deg2") is not None
     if difference:
         if vlim is None:
             values = np.abs(density[np.isfinite(density)])
@@ -431,14 +653,16 @@ def plot_isochrone(
     lw : float, optional
         Line width.
     label : str, optional
-        Default: age, Z ([Fe/H] when given) and distance modulus.
+        Default: the model (when not the default one), age, Z ([Fe/H] when
+        given) and distance modulus.
 
     Returns
     -------
     line : matplotlib.lines.Line2D
     """
     if label is None:
-        label = f"{isochrone_track['age']:g} Gyr, Z = {isochrone_track['metallicity']:.2g}"
+        label = (f"{_isochrone_model_prefix(isochrone_track.get('isochrone_model'))}{isochrone_track['age']:g} Gyr, "
+                 f"Z = {isochrone_track['metallicity']:.2g}")
         if isochrone_track.get("feh") is not None:
             label += f" ([Fe/H] = {isochrone_track['feh']:+.2f})"
         label += f", dm {format_distance_modulus(isochrone_track['distance_modulus'])}"
@@ -468,7 +692,7 @@ def plot_match_filter_polygon(
     isochrone : mapping, optional
         ``{"age", "metallicity"}`` (see ``match_filter_polygons``).
     match_filter : mapping, optional
-        Default: ``DEFAULT_MATCH_FILTER``.
+        Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     color_index : int, optional
         Colour band: ``match_filter["color_bands"][color_index]``.
     **line_kwargs

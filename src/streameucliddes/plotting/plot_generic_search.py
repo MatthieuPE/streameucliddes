@@ -140,6 +140,8 @@ def plot_generic_search_residual_map(
     lon_range: tuple[float, float] | None = None,
     lat_range: tuple[float, float] | None = None,
     cmap: str = "gray_r",
+    vmin: float | None = None,
+    vmax: float | None = None,
     title: str | None = None,
     ax: Axes | None = None,
 ) -> tuple[Figure, Axes]:
@@ -168,6 +170,9 @@ def plot_generic_search_residual_map(
         Ranges of the map (deg). Default: those of the footprint.
     cmap : str, optional
         Colour map.
+    vmin, vmax : float, optional
+        Limits of the colour scale, e.g. a fixed scale for maps to compare.
+        Default: the ``DENSITY_PERCENTILES`` of the map.
     title : str, optional
         Default: the distance modulus and distance, and the isochrone.
     ax : matplotlib.axes.Axes, optional
@@ -190,7 +195,9 @@ def plot_generic_search_residual_map(
     in_panel = ax is not None
     fig, ax = (ax.figure, ax) if in_panel else plt.subplots(figsize=(10.0, 7.0))
     values = np.ma.compressed(result["residual"])
-    vmin, vmax = tuple(np.percentile(values, DENSITY_PERCENTILES)) if values.size else (None, None)
+    percentiles = tuple(np.percentile(values, DENSITY_PERCENTILES)) if values.size else (None, None)
+    vmin = percentiles[0] if vmin is None else vmin
+    vmax = percentiles[1] if vmax is None else vmax
     fig, ax = plot_2D_density_from_hp(
         np.ma.filled(np.ma.asarray(result["residual"], dtype=float), hp.UNSEEN), nest=result["nest"],
         fig=fig, ax=ax, lon_range=lon_range, lat_range=lat_range, title=MAP_PANELS[2][1],

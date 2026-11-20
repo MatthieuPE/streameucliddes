@@ -69,6 +69,11 @@ def escape_underscores(text: str) -> str:
     return text.replace("_", r"$\_$")
 
 
+def escape_text(text: str) -> str:
+    """Text as displayed: the serif font (cmr10) has no ``_``, ``<`` nor ``>`` glyph: drawn by mathtext."""
+    return escape_underscores(text).replace("<", "$<$").replace(">", "$>$")
+
+
 def format_distance_modulus(distance_modulus: float) -> str:
     """Distance modulus for titles: one decimal, two when needed (17.0, 17.25)."""
     text = f"{distance_modulus:.2f}"

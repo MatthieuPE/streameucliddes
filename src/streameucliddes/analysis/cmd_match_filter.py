@@ -4,33 +4,60 @@ Only the selection: the catalog is prepared before (columns checked, cuts,
 stream frame) by ``analysis.catalog_preparation``.
 
 A match filter is ``{"name", "reference_band": (namespace, band),
-"color_bands": [(namespace, band), ...]}``, with optional ``color_cut`` and
-``red_cap_value`` (arguments of ``streamobs.match_filter.build_match_filter``).
+"color_bands": [(namespace, band), ...]}``, with optional ``color_cut``,
+``red_cap_value``, ``color_spread`` and ``error_multiplier`` (arguments of
+``streamobs.match_filter.build_match_filter``; the width of the polygon is
+``error_multiplier`` times the photometric error plus ``color_spread``, each
+(blue side, red side); absent: those of streamobs, ``(0.05, 0.05)`` mag and
+``(2, 2)``; ``DEFAULT_MATCH_FILTER`` sets its own ``error_multiplier`` and
+``red_cap_value``), and ``vis_photometry``, the photometry of the Euclid VIS magnitudes:
+``"psf"`` or ``"templfit"`` (default: ``catalogs.euclid_catalog.DEFAULT_VIS_PHOTOMETRY``),
+the template-fitting magnitude of VIS PSF-matched to the other band of each colour
+(``catalogs.euclid_catalog.vis_band``; VIS - H uses ``VIS_TO_H``, DR1 only: a Q1 match
+filter or a colour with a band other than Y, J, H needs ``"psf"``). The isochrone and the polygons do not depend
+on it: only the catalog columns do (``match_filter_cmd_columns``). Injected stars
+have one simulated VIS, copied to their ``VIS_TO_<band>`` columns
+(``injection.inject.add_vis_templfit_magnitudes``).
+Its polygons are built for an isochrone ``{"age", "metallicity"}`` with an
+optional ``"isochrone_model"``, the name of the ugali isochrone model
+(``"Dotter2016"``, ``"Marigo2017"``...; by default
+``unit_conversions.DEFAULT_ISOCHRONE_MODEL``; read with
+``unit_conversions.get_isochrone_model``; ``catalogs.isochrone_parameters``).
+ugali builds from that name a ugali isochrone (``ugali_isochrone``, an
+instance of the ugali class of that name).
 A star is selected when it is inside the polygon of every colour
 ``reference_band - color_band``, the magnitude axis being ``reference_band``.
 Magnitudes are the ``<namespace>_<band>_obs`` columns of
 ``catalogs.euclid_catalog`` (the streamobs convention), used as they are:
-the catalog magnitudes are already dereddened.
+the catalog magnitudes are already dereddened. The columns of each colour come
+from ``match_filter_cmd_columns``.
 
 Also the colour-magnitude diagrams of a set of stars, computed here and drawn
 by ``plotting.plot_cmd``: 2D histograms of colour ``mag_cols[0] -
 mag_cols[1]`` and magnitude ``mag_cols[0]`` (``hess_diagram``), per deg²
 for a region of known area, and the on - off difference of two regions
-(``difference_hess``, Shipp et al. 2018, Sect. 5); and the isochrone track
-in the bands of a match filter (``isochrone_cmd_track``).
+(``difference_hess``, Shipp et al. 2018, Sect. 5); the isochrone track
+in the bands of a match filter (``isochrone_cmd_track``); and the mean
+photometric errors (median or mean) of a set of stars, each band per bin of its own magnitude
+(``photometric_errors_by_magnitude``, error columns ``<namespace>_<band>_err``:
+``error_column``).
 """
 
 from __future__ import annotations
 
 import functools
+import warnings
 from typing import TYPE_CHECKING
 
 import numpy as np
 import pandas as pd
+from scipy.stats import binned_statistic
 from streamobs.match_filter import _isochrone_locus, build_match_filter, is_in_match_filter
+from ugali.isochrone import factory as isochrone_factory
 
-from streameucliddes.catalogs.isochrone_parameters import default_isochrone_grid
-from streameucliddes.unit_conversions import convert_FeH_to_z
+from streameucliddes.catalogs.euclid_catalog import DEFAULT_VIS_PHOTOMETRY, vis_band
+from streameucliddes.catalogs.isochrone_parameters import get_isochrone
+from streameucliddes.unit_conversions import convert_FeH_to_z, get_isochrone_model
 
 if TYPE_CHECKING:
     from collections.abc import Mapping, Sequence
@@ -38,11 +65,16 @@ if TYPE_CHECKING:
 
     from numpy.typing import ArrayLike, NDArray
 
-# Euclid VIS vs VIS - H
+# Euclid DR1 VIS vs VIS - H: the default match filter, read through get_match_filter; VIS the template-fitting
+# magnitude of DEFAULT_VIS_PHOTOMETRY (VIS_TO_H, DR1 only). Its width and red cap: the best SNR
+# on Aliqa Uma in Euclid DR1 (notebooks/optimization/stream_optimization.ipynb), error_multiplier 3 instead of the 2
+# of streamobs and red_cap_value 0.55 mag of VIS - H instead of color_max - 0.25 = 0.75 (Euclid colours only)
 DEFAULT_MATCH_FILTER = {
     "name": "default_euclid_vis_h",
-    "reference_band": ("euclid_q1", "VIS"),
-    "color_bands": [("euclid_q1", "H")],
+    "reference_band": ("euclid_dr1", "VIS"),
+    "color_bands": [("euclid_dr1", "H")],
+    "error_multiplier": (3.0, 3.0),
+    "red_cap_value": 0.55,
 }
 # DES g vs g - r, as the DES search of Shipp et al. 2018
 DES_GR_MATCH_FILTER = {
@@ -50,8 +82,6 @@ DES_GR_MATCH_FILTER = {
     "reference_band": ("des_yr6", "g"),
     "color_bands": [("des_yr6", "r")],
 }
-# ugali isochrone model of the polygons (default of build_match_filter): Marigo et al. 2017 (PARSEC)
-ISOCHRONE_MODEL = "Marigo2017"
 
 # Hess diagrams: default bins (mag). Bin sizes of celestial_currents hess.py; ranges of the
 # VIS - H CMDs of notebooks/known_stream_search_example.ipynb
@@ -59,14 +89,31 @@ DEFAULT_COLOR_BIN = 0.04
 DEFAULT_MAG_BIN = 1 / 6
 DEFAULT_COLOR_RANGE = (-1.0, 1.5)
 DEFAULT_MAG_RANGE = (17.0, 27.0)
+# CMDs of a match filter: the extent of its polygons plus this margin (mag)
+DEFAULT_CMD_MARGIN_MAG = 0.5
+# Statistic of the photometric errors per bin of magnitude (photometric_errors_by_magnitude): the median, robust to
+# the few stars with large errors (user choice, 2026-11-19); "mean" as an option
+DEFAULT_ERROR_STATISTIC = "median"
+ERROR_STATISTICS = ("median", "mean")
 
 
 @functools.lru_cache(maxsize=1024)
-def build_match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2, color_cut=True, red_cap_value=None):
+def build_match_filter_polygon(distance_modulus, age, metallicity, band_1, band_2, survey_1, survey_2, color_cut=True,
+                               red_cap_value=None, isochrone_model=None, color_spread=None, error_multiplier=None):
     """
     build_match_filter polygon, cached: it only depends on these parameters, which
     repeat over a scan (e.g. the same distance modulus for every surface brightness).
+    ``isochrone_model``: name of the ugali isochrone model (``"Marigo2017"``, ``"Dotter2016"``...;
+    None: ``unit_conversions.get_isochrone_model()``); a warning when its grid has no
+    isochrone near ``age`` and ``metallicity`` (``_check_isochrone_grid``).
+    ``color_spread`` (mag) and ``error_multiplier``: (blue side, red side) tuples, the
+    width of the polygon; None: the streamobs default.
     """
+    isochrone_model = get_isochrone_model(isochrone_model)
+    for survey, band in {survey_1: band_1, survey_2: band_2}.items():  # one grid per survey
+        _check_isochrone_grid(isochrone_model, age, metallicity, survey, band)
+    width = {name: list(value) for name, value in
+             {"color_spread": color_spread, "error_multiplier": error_multiplier}.items() if value is not None}
     mf_polygon = build_match_filter(
         distance_modulus=distance_modulus,
         age=age,
@@ -76,30 +123,161 @@ def build_match_filter_polygon(distance_modulus, age, metallicity, band_1, band_
         survey_1=survey_1,
         survey_2=survey_2,
         color_cut=color_cut,
-        red_cap_value=red_cap_value
+        red_cap_value=red_cap_value,
+        isochrone_model=isochrone_model,
+        **width,
     )
     mf_polygon.setflags(write=False)  # shared between calls
     return mf_polygon
 
 
+@functools.lru_cache(maxsize=256)
+def _check_isochrone_grid(
+    isochrone_model: str, age: float, metallicity: float, survey: str, band: str
+) -> tuple[float, float]:
+    """Age and Z of the isochrone ugali uses for this request (the nearest of its grid); a warning when off the grid.
+
+    ugali takes, without a warning, the file of its grid nearest to (age,
+    Z): far from the request when the grid of the isochrone model for that survey
+    does not reach it (e.g. Z below 1e-4 for Marigo2017) or is sparse (the
+    local DES Dotter2016 grid: 10 and 12 Gyr, Z 1e-4 and 2e-4). Warns when
+    the age or Z asked is farther than one grid step from the value used
+    (``_off_grid``): beyond the range of the grid, or between the values of
+    a sparse grid; not for the rounding to the nearest grid value. Cached:
+    once per request.
+    """
+    ugali_isochrone = isochrone_factory(isochrone_model, age=age, z=metallicity, survey=survey, band_1=band,
+                                        band_2=band)  # an instance of the ugali class named isochrone_model
+    used_age, used_z = (float(value) for value in ugali_isochrone.filename2params(ugali_isochrone.get_filename()))
+    if _off_grid(age, used_age, ugali_isochrone.agrid) or _off_grid(metallicity, used_z, ugali_isochrone.zgrid):
+        warnings.warn(
+            f"No {isochrone_model} isochrone near {age:g} Gyr, Z = {metallicity:.3g} for {survey}: ugali uses the "
+            f"nearest of its grid, {used_age:g} Gyr, Z = {used_z:.3g} ({ugali_isochrone.get_dirname()}).",
+            stacklevel=2,
+        )
+    return used_age, used_z
+
+
+def _off_grid(asked: float, used: float, grid_values: ArrayLike) -> bool:
+    """Whether ``asked`` is off a grid: more than one grid step from ``used`` (the grid value ugali takes).
+
+    The step is the gap between ``used`` and its nearest other grid value;
+    a grid of one value has none: off unless ``asked`` is that value.
+    """
+    values = np.unique(np.asarray(grid_values, dtype=float))
+    others = values[~np.isclose(values, used, rtol=1e-9, atol=0.0)]
+    step = np.min(np.abs(others - used)) if others.size else 0.0
+    return bool(abs(asked - used) > step * (1 + 1e-9) if step > 0 else not np.isclose(asked, used, rtol=1e-9))
+
+
 def match_filter_columns(match_filter: Mapping[str, Any] | None = None) -> list[str]:
-    """Magnitude columns read by a match filter.
+    """Magnitude columns read by a match filter, each once.
 
     Parameters
     ----------
     match_filter : mapping, optional
         Match filter (see the module docstring). Default:
-        ``DEFAULT_MATCH_FILTER``.
+        ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
 
     Returns
     -------
     columns : list of str
-        ``<namespace>_<band>_obs`` of the reference band, then of each colour
-        band.
+        The reference column of the first colour (the magnitude axis), the
+        colour-band columns, then the reference columns of the other colours
+        when they differ (VIS template fits with several colours): see
+        ``match_filter_cmd_columns``.
     """
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
-    bands = [match_filter["reference_band"], *match_filter["color_bands"]]
-    return [f"{namespace}_{band}_obs" for namespace, band in bands]
+    pairs = match_filter_cmd_columns(match_filter)
+    columns = [pairs[0][0], *(color for _, color in pairs), *(reference for reference, _ in pairs[1:])]
+    return list(dict.fromkeys(columns))
+
+
+def _magnitude_column(band: tuple[str, str], other_band: tuple[str, str], vis_photometry: str) -> str:
+    """Catalog column of the magnitude of ``band`` in a colour with ``other_band``, both ``(namespace, band)``.
+
+    A Euclid VIS band follows ``vis_photometry`` (``catalogs.euclid_catalog.vis_band``);
+    with ``"templfit"``, the other band must be a Euclid band of the same namespace.
+    """
+    namespace, name = band
+    if name == "VIS" and namespace.startswith("euclid"):
+        other_namespace, other_name = other_band
+        if vis_photometry == "templfit" and other_namespace != namespace:
+            raise ValueError(f"VIS {vis_photometry} magnitudes need a colour with a {namespace} band, "
+                             f"not {other_band}")
+        name = vis_band(other_name, vis_photometry)
+    return f"{namespace}_{name}_obs"
+
+
+def get_match_filter(match_filter: Mapping[str, Any] | None = None) -> Mapping[str, Any]:
+    """The match filter to use: the one given, else ``DEFAULT_MATCH_FILTER``.
+
+    The single place where the default is chosen: functions take
+    ``match_filter=None`` and call this. The default is shared: copy it
+    before changing it.
+
+    Parameters
+    ----------
+    match_filter : mapping, optional
+        See the module docstring.
+
+    Returns
+    -------
+    match_filter : mapping
+        ``match_filter`` itself, or ``DEFAULT_MATCH_FILTER``.
+    """
+    return DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+
+
+def error_column(magnitude_column: str) -> str:
+    """Error column of a magnitude column: ``<namespace>_<band>_obs`` -> ``<namespace>_<band>_err``."""
+    return f"{magnitude_column.removesuffix('_obs')}_err"
+
+
+def match_filter_cmd_columns(match_filter: Mapping[str, Any] | None = None) -> list[tuple[str, str]]:
+    """Magnitude columns of the CMDs of a match filter: (reference band, colour band), one per colour band.
+
+    Colour ``reference - colour band``, magnitude ``reference``: the
+    convention of the polygons, and the ``mag_cols`` of ``hess_diagram``.
+    ``<namespace>_<band>_obs`` columns, the Euclid VIS one following the
+    ``vis_photometry`` of the match filter: with ``"templfit"``, the reference
+    VIS of the colour VIS - H is ``<namespace>_VIS_TO_H_obs``.
+
+    Parameters
+    ----------
+    match_filter : mapping, optional
+        Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
+
+    Returns
+    -------
+    pairs : list of tuple of str
+    """
+    match_filter = get_match_filter(match_filter)
+    vis_photometry = match_filter.get("vis_photometry", DEFAULT_VIS_PHOTOMETRY)
+    reference = match_filter["reference_band"]
+    return [(_magnitude_column(reference, color, vis_photometry), _magnitude_column(color, reference, vis_photometry))
+            for color in match_filter["color_bands"]]
+
+
+def match_filter_cmd_limits(
+    distance_modulus: float,
+    isochrone: Mapping[str, float] | None = None,
+    match_filter: Mapping[str, Any] | None = None,
+    *,
+    margin_mag: float = DEFAULT_CMD_MARGIN_MAG,
+) -> list[tuple[tuple[float, float], tuple[float, float]]]:
+    """Colour and magnitude ranges of the CMDs of a match filter: the extent of each polygon plus ``margin_mag``.
+
+    Returns
+    -------
+    limits : list of ((color_min, color_max), (mag_bright, mag_faint))
+        One per colour band (``match_filter_polygons``).
+    """
+    limits = []
+    for polygon in match_filter_polygons(distance_modulus, isochrone, match_filter):
+        color, mag = polygon[:, 0], polygon[:, 1]
+        limits.append(((float(color.min() - margin_mag), float(color.max() + margin_mag)),
+                       (float(mag.min() - margin_mag), float(mag.max() + margin_mag))))
+    return limits
 
 
 def match_filter_polygons(
@@ -116,10 +294,12 @@ def match_filter_polygons(
     distance_modulus : float
         Distance modulus of the filter.
     isochrone : mapping, optional
-        ``{"age": age (Gyr), "metallicity": Z}``. Default: the first
-        isochrone of ``catalogs.isochrone_parameters.default_isochrone_grid``.
+        ``{"age": age (Gyr), "metallicity": Z}``, with an optional
+        ``"isochrone_model"`` (name of the ugali isochrone model, read with
+        ``unit_conversions.get_isochrone_model``; Z on its scale). Default:
+        ``catalogs.isochrone_parameters.get_isochrone()``.
     match_filter : mapping, optional
-        See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
+        See the module docstring. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
 
     Returns
     -------
@@ -129,8 +309,8 @@ def match_filter_polygons(
         magnitude ``reference_band`` (``streamobs.match_filter.build_match_filter``).
         Read-only: shared between calls.
     """
-    isochrone = default_isochrone_grid()[0] if isochrone is None else isochrone
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    isochrone = get_isochrone(isochrone)
+    match_filter = get_match_filter(match_filter)
     namespace_1, band_1 = match_filter["reference_band"]
     return [
         build_match_filter_polygon(
@@ -143,9 +323,20 @@ def match_filter_polygons(
             _isochrone_survey(namespace_2),
             color_cut=match_filter.get("color_cut", True),
             red_cap_value=match_filter.get("red_cap_value", None),
+            isochrone_model=get_isochrone_model(isochrone),
+            color_spread=_width_tuple(match_filter.get("color_spread")),
+            error_multiplier=_width_tuple(match_filter.get("error_multiplier")),
         )
         for namespace_2, band_2 in match_filter["color_bands"]
     ]
+
+
+def _width_tuple(value: ArrayLike | None) -> tuple[float, float] | None:
+    """A ``color_spread`` or ``error_multiplier`` of a match filter as a (blue side, red side) tuple (cache key)."""
+    if value is None:
+        return None
+    blue, red = (float(v) for v in value)  # ValueError unless two values
+    return blue, red
 
 
 def select_stars_in_match_filter(
@@ -171,10 +362,10 @@ def select_stars_in_match_filter(
     distance_modulus : float
         Distance modulus of the filter.
     isochrone : mapping, optional
-        ``{"age": age (Gyr), "metallicity": Z}``. Default: the first
-        isochrone of ``catalogs.isochrone_parameters.default_isochrone_grid``.
+        ``{"age": age (Gyr), "metallicity": Z}``. Default:
+        ``catalogs.isochrone_parameters.get_isochrone()``.
     match_filter : mapping, optional
-        See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
+        See the module docstring. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     mask : array_like of bool, optional
         Stars to consider (e.g. the observed ones); the others are not
         selected.
@@ -189,16 +380,15 @@ def select_stars_in_match_filter(
     Rockosi et al. 2002, AJ 124, 349. Grillmair 2009, ApJ 693, 1118.
     Shipp et al. 2018, ApJ 862, 114.
     """
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
-    reference_column, *color_columns = match_filter_columns(match_filter)
+    match_filter = get_match_filter(match_filter)
     polygons = match_filter_polygons(distance_modulus, isochrone, match_filter)
 
     selected = np.ones(len(catalog), dtype=bool) if mask is None else np.array(mask, dtype=bool)
-    reference_mag = catalog[reference_column].to_numpy()
-    for polygon, color_column in zip(polygons, color_columns):
+    for polygon, (reference_column, color_column) in zip(polygons, match_filter_cmd_columns(match_filter)):
         idx = np.flatnonzero(selected)
         selected[idx] = is_in_match_filter(
-            reference_mag[idx], catalog[color_column].to_numpy()[idx], polygon_vertices=polygon
+            catalog[reference_column].to_numpy()[idx], catalog[color_column].to_numpy()[idx],
+            polygon_vertices=polygon,
         )
     return selected
 
@@ -211,11 +401,12 @@ def isochrone_cmd_track(
     feh: float | None = None,
     match_filter: Mapping[str, Any] | None = None,
     color_index: int = 0,
+    isochrone_model: str | None = None,
 ) -> dict[str, Any]:
     """Colour and magnitude of an isochrone in the bands of a match filter.
 
     The isochrone locus of ``streamobs.match_filter._isochrone_locus``, the
-    one ``build_match_filter`` uses (ugali, model ``ISOCHRONE_MODEL``), with
+    one ``build_match_filter`` uses (the ugali isochrone named ``isochrone_model``), with
     the surveys and bands of the polygons (``match_filter_polygons``): colour
     ``reference_band - color_bands[color_index]``, magnitude
     ``reference_band`` plus ``distance_modulus``. The track and the polygon
@@ -229,23 +420,26 @@ def isochrone_cmd_track(
     age : float
         Age (Gyr).
     metallicity : float, optional
-        Z, on the Marigo et al. 2017 scale. Exactly one of ``metallicity``
-        and ``feh``.
+        Z, on the scale of the isochrone model. Exactly one of
+        ``metallicity`` and ``feh``.
     feh : float, optional
-        [Fe/H], converted to Z with ``unit_conversions.convert_FeH_to_z``
-        (Bressan et al. 2012).
+        [Fe/H], converted to Z on the scale of the isochrone model
+        (``unit_conversions.convert_FeH_to_z``).
     match_filter : mapping, optional
-        See the module docstring. Default: ``DEFAULT_MATCH_FILTER``.
+        See the module docstring. Default: ``get_match_filter()`` (``DEFAULT_MATCH_FILTER``).
     color_index : int, optional
         Colour band: ``match_filter["color_bands"][color_index]``.
+    isochrone_model : str, optional
+        Name of the ugali isochrone model, e.g. ``"Dotter2016"``. None:
+        ``unit_conversions.get_isochrone_model()``.
 
     Returns
     -------
     track : dict
-        ``{"color", "mag", "age", "metallicity", "feh", "distance_modulus"}``:
-        ``color`` and ``mag`` arrays (mag) along the isochrone;
+        ``{"color", "mag", "age", "metallicity", "feh", "distance_modulus",
+        "isochrone_model"}``: ``color`` and ``mag`` arrays (mag) along the isochrone;
         ``metallicity`` the Z used, ``feh`` the [Fe/H] given (None when Z was
-        given).
+        given), ``isochrone_model`` the name of the isochrone model used.
 
     Raises
     ------
@@ -258,23 +452,37 @@ def isochrone_cmd_track(
     """
     if (metallicity is None) == (feh is None):
         raise ValueError("Give exactly one of metallicity (Z) and feh.")
-    z = float(convert_FeH_to_z(feh)) if feh is not None else float(metallicity)
-    match_filter = DEFAULT_MATCH_FILTER if match_filter is None else match_filter
+    isochrone_model = get_isochrone_model(isochrone_model)
+    z = convert_FeH_to_z(feh, isochrone_model) if feh is not None else float(metallicity)
+    match_filter = get_match_filter(match_filter)
     namespace_1, band_1 = match_filter["reference_band"]
     namespace_2, band_2 = match_filter["color_bands"][color_index]
-    color, absolute_mag = _isochrone_locus(
-        ISOCHRONE_MODEL, float(age), z, band_1, _isochrone_survey(namespace_1), band_2, _isochrone_survey(namespace_2)
-    )
+    survey_1, survey_2 = _isochrone_survey(namespace_1), _isochrone_survey(namespace_2)
+    for survey, band in {survey_1: band_1, survey_2: band_2}.items():  # one grid per survey
+        _check_isochrone_grid(isochrone_model, float(age), z, survey, band)
+    color, absolute_mag = _isochrone_locus(isochrone_model, float(age), z, band_1, survey_1, band_2, survey_2)
     return {
         "color": np.asarray(color, dtype=float), "mag": np.asarray(absolute_mag, dtype=float) + distance_modulus,
         "age": float(age), "metallicity": z, "feh": None if feh is None else float(feh),
-        "distance_modulus": float(distance_modulus),
+        "distance_modulus": float(distance_modulus), "isochrone_model": isochrone_model,
     }
 
 
 def _isochrone_survey(namespace: str) -> str:
     """ugali survey of a column namespace: "des_yr6" -> "des", "euclid_dr1" -> "euclid"."""
     return namespace.split("_")[0]
+
+
+def default_hess_bins() -> tuple[NDArray[np.float64], NDArray[np.float64]]:
+    """Colour and magnitude bin edges (mag) of every Hess diagram without given bins.
+
+    ``DEFAULT_COLOR_RANGE`` every ``DEFAULT_COLOR_BIN`` and ``DEFAULT_MAG_RANGE``
+    every ``DEFAULT_MAG_BIN``: the same pixels in every figure, so that diagrams
+    of different selections or match filters compare bin by bin.
+    """
+    color_bins = np.arange(DEFAULT_COLOR_RANGE[0], DEFAULT_COLOR_RANGE[1] + DEFAULT_COLOR_BIN / 2, DEFAULT_COLOR_BIN)
+    mag_bins = np.arange(DEFAULT_MAG_RANGE[0], DEFAULT_MAG_RANGE[1] + DEFAULT_MAG_BIN / 2, DEFAULT_MAG_BIN)
+    return color_bins, mag_bins
 
 
 def hess_diagram(
@@ -307,9 +515,8 @@ def hess_diagram(
         Area of the region (deg²): density per deg². None: counts only
         (``density`` = ``counts``).
     color_bins, mag_bins : array_like, optional
-        Bin edges (mag). Default: ``DEFAULT_COLOR_RANGE`` and
-        ``DEFAULT_MAG_RANGE`` every ``DEFAULT_COLOR_BIN`` and
-        ``DEFAULT_MAG_BIN``. Give the same bins to the on and off diagrams.
+        Bin edges (mag). Default: ``default_hess_bins()``, the same for
+        every Hess diagram. Give the same bins to the on and off diagrams.
 
     Returns
     -------
@@ -332,10 +539,9 @@ def hess_diagram(
     if area_deg2 is not None and area_deg2 <= 0:
         raise ValueError(f"area_deg2 must be > 0, not {area_deg2}.")
     mag_column, color_column = mag_cols
-    if color_bins is None:
-        color_bins = np.arange(DEFAULT_COLOR_RANGE[0], DEFAULT_COLOR_RANGE[1] + DEFAULT_COLOR_BIN / 2, DEFAULT_COLOR_BIN)
-    if mag_bins is None:
-        mag_bins = np.arange(DEFAULT_MAG_RANGE[0], DEFAULT_MAG_RANGE[1] + DEFAULT_MAG_BIN / 2, DEFAULT_MAG_BIN)
+    default_color_bins, default_mag_bins = default_hess_bins()
+    color_bins = default_color_bins if color_bins is None else color_bins
+    mag_bins = default_mag_bins if mag_bins is None else mag_bins
     magnitude = pd.to_numeric(stars[mag_column], errors="coerce").to_numpy(dtype=float)
     other = pd.to_numeric(stars[color_column], errors="coerce").to_numpy(dtype=float)
     keep = np.isfinite(magnitude) & np.isfinite(other)
@@ -350,6 +556,136 @@ def hess_diagram(
         "color_edges": color_edges, "mag_edges": mag_edges, "area_deg2": None if area_deg2 is None else scale,
         "n_stars": int(counts.sum()),
         "color_label": f"{_band_name(mag_column)} - {_band_name(color_column)}", "mag_label": _band_name(mag_column),
+    }
+
+
+def on_off_hess(
+    stars: pd.DataFrame,
+    mag_cols: Sequence[str],
+    on_mask: ArrayLike,
+    on_area_deg2: float,
+    off_masks: Sequence[ArrayLike],
+    off_areas_deg2: Sequence[float],
+    *,
+    color_bins: ArrayLike | None = None,
+    mag_bins: ArrayLike | None = None,
+) -> tuple[dict[str, Any], dict[str, Any], dict[str, Any]]:
+    """On, off and on - off Hess diagrams of one region against one or two off regions.
+
+    ``hess_diagram`` of the stars of each region over its area. With two off
+    regions (e.g. below and above a stream track), the off diagram is the
+    mean of theirs (``mean_off_hess``; one with no area is left out); with
+    one (e.g. an annulus around an object), its own. Then ``difference_hess``.
+
+    Parameters
+    ----------
+    stars : pandas.DataFrame
+        Stars, with the ``mag_cols`` columns. Not copied.
+    mag_cols : sequence of two str
+        Colour ``mag_cols[0] - mag_cols[1]``, magnitude ``mag_cols[0]``.
+    on_mask : array_like of bool
+        Stars of the on region (and of any selection).
+    on_area_deg2 : float
+        Its area (deg²).
+    off_masks : sequence of array_like of bool
+        Stars of each off region: one or two.
+    off_areas_deg2 : sequence of float
+        Their areas (deg²).
+    color_bins, mag_bins : array_like, optional
+        Bin edges, the same for every diagram. Default: those of ``hess_diagram``.
+
+    Returns
+    -------
+    on_hess, off_hess, difference : dict
+        See ``hess_diagram``, ``mean_off_hess`` and ``difference_hess``.
+
+    Raises
+    ------
+    ValueError
+        Not one or two off regions.
+    """
+    if len(off_masks) not in (1, 2) or len(off_masks) != len(off_areas_deg2):
+        raise ValueError(f"One or two off regions, each with its area: {len(off_masks)} masks, "
+                         f"{len(off_areas_deg2)} areas.")
+    bins = {"color_bins": color_bins, "mag_bins": mag_bins}
+    on_hess = hess_diagram(stars, mag_cols, mask=on_mask, area_deg2=on_area_deg2, **bins)
+    off_hess = [hess_diagram(stars, mag_cols, mask=mask, area_deg2=area if area > 0 else None, **bins)
+                for mask, area in zip(off_masks, off_areas_deg2)]
+    off_hess = off_hess[0] if len(off_hess) == 1 else mean_off_hess(*off_hess)
+    return on_hess, off_hess, difference_hess(on_hess, off_hess)
+
+
+def photometric_errors_by_magnitude(
+    stars: pd.DataFrame,
+    mag_cols: Sequence[str],
+    *,
+    mask: ArrayLike | None = None,
+    mag_bins: ArrayLike | None = None,
+    statistic: str = DEFAULT_ERROR_STATISTIC,
+) -> dict[str, Any]:
+    """Median (or mean) photometric error of each band per bin of its own magnitude, e.g. in the on region.
+
+    The stars (``mask``) with finite magnitudes in both columns, as
+    ``hess_diagram``. For each band (``mag_cols``: the reference band, VIS,
+    and the colour band, e.g. H), its error (``error_column``) per bin of
+    its own magnitude: the VIS error against VIS, the H error against H; in
+    each bin, the ``statistic`` over the stars with a finite error. The same
+    bin edges for both bands.
+
+    Parameters
+    ----------
+    stars : pandas.DataFrame
+        Stars with the ``mag_cols`` columns and their error columns. Not copied.
+    mag_cols : sequence of two str
+        Magnitude columns (reference, colour band), e.g.
+        ``match_filter_cmd_columns(match_filter)[color_index]``.
+    mask : array_like of bool, optional
+        Stars used. Default: all.
+    mag_bins : array_like, optional
+        Bin edges of the magnitudes (mag), for both bands. Default: those of
+        ``default_hess_bins()``, as the Hess diagrams.
+    statistic : {"median", "mean"}, optional
+        Statistic of the errors in each bin (``ERROR_STATISTICS``).
+
+    Returns
+    -------
+    errors : dict
+        ``{"mag_edges", "mag_centres", "statistic", "bands", "error",
+        "n_stars", "magnitude_columns", "error_columns"}``: ``bands`` the
+        band names (reference first, e.g. ``("VIS", "H")``); ``error`` and
+        ``n_stars``, by band name, one value per bin of that band's
+        magnitude: the error (mag; NaN in a bin without star) and the stars
+        with a finite error; ``magnitude_columns`` and ``error_columns`` by
+        band name.
+
+    Raises
+    ------
+    KeyError
+        An error column missing.
+    ValueError
+        ``statistic`` not in ``ERROR_STATISTICS``, or two bands of the same name.
+    """
+    if statistic not in ERROR_STATISTICS:
+        raise ValueError(f"statistic must be one of {ERROR_STATISTICS}, not {statistic!r}.")
+    bands = tuple(_band_name(column) for column in mag_cols)
+    if len(set(bands)) != len(bands):
+        raise ValueError(f"Two bands of the same name: {bands}.")
+    mag_bins = default_hess_bins()[1] if mag_bins is None else np.asarray(mag_bins, dtype=float)
+    magnitudes = [pd.to_numeric(stars[column], errors="coerce").to_numpy(dtype=float) for column in mag_cols]
+    keep = np.logical_and.reduce([np.isfinite(magnitude) for magnitude in magnitudes])
+    if mask is not None:
+        keep &= np.asarray(mask, dtype=bool)
+    error, n_stars, error_columns = {}, {}, {}
+    for band, column, magnitude in zip(bands, mag_cols, magnitudes):
+        error_columns[band] = error_column(column)
+        values = pd.to_numeric(stars[error_columns[band]], errors="coerce").to_numpy(dtype=float)
+        used = keep & np.isfinite(values)
+        error[band] = binned_statistic(magnitude[used], values[used], statistic=statistic, bins=mag_bins).statistic
+        n_stars[band] = np.histogram(magnitude[used], bins=mag_bins)[0]
+    return {
+        "mag_edges": mag_bins, "mag_centres": (mag_bins[:-1] + mag_bins[1:]) / 2, "statistic": statistic,
+        "bands": bands, "error": error, "n_stars": n_stars,
+        "magnitude_columns": dict(zip(bands, mag_cols)), "error_columns": error_columns,
     }
 
 
@@ -380,8 +716,32 @@ def mean_off_density(
     n_regions : numpy.ndarray of int
         Number of off regions in the mean: 2, 1 (one has no area) or 0.
     """
-    densities = np.stack([np.asarray(density_below, dtype=float), np.asarray(density_above, dtype=float)])
-    errors = np.stack([np.asarray(error_below, dtype=float), np.asarray(error_above, dtype=float)])
+    return mean_density_of_off_parts([density_below, density_above], [error_below, error_above])
+
+
+def mean_density_of_off_parts(
+    densities: Sequence[ArrayLike], errors: Sequence[ArrayLike]
+) -> tuple[NDArray[np.float64], NDArray[np.float64], NDArray[np.int64]]:
+    """Off density: the mean of the densities of any number of off regions (``mean_off_density`` for two).
+
+    One region (an annulus around an object): its density. Regions with no
+    area (density NaN) are left out of the mean.
+
+    Parameters
+    ----------
+    densities, errors : sequence of array_like
+        Density and Poisson error (stars/deg²) of each off region, all of the
+        same shape; NaN where a region has no area.
+
+    Returns
+    -------
+    density, error : numpy.ndarray
+        The mean and its error; NaN where no region has an area.
+    n_regions : numpy.ndarray of int
+        Number of off regions in the mean.
+    """
+    densities = np.stack([np.asarray(density, dtype=float) for density in densities])
+    errors = np.stack([np.asarray(error, dtype=float) for error in errors])
     with_area = np.isfinite(densities)
     n_regions = with_area.sum(axis=0)
     with np.errstate(divide="ignore", invalid="ignore"):
@@ -469,5 +829,5 @@ def difference_hess(on_hess: Mapping[str, Any], off_hess: Mapping[str, Any]) -> 
 
 
 def _band_name(column: str) -> str:
-    """Band of a magnitude column: "euclid_dr1_VIS_obs" -> "VIS"."""
-    return column.removesuffix("_obs").rsplit("_", 1)[-1]
+    """Band of a magnitude column: "euclid_dr1_VIS_obs" -> "VIS", "euclid_dr1_VIS_TO_H_obs" -> "VIS"."""
+    return column.removesuffix("_obs").split("_TO_")[0].rsplit("_", 1)[-1]

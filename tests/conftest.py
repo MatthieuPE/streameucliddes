@@ -14,6 +14,7 @@ import pandas as pd
 import pytest
 from numpy.polynomial import polynomial
 
+from streameucliddes.injection.inject import add_vis_templfit_magnitudes
 from streameucliddes.catalogs import overlapped_objects
 
 LVDB_COLUMNS = ["key", "name", "ra", "dec", "rhalf", "ellipticity", "position_angle", "distance", "confirmed_real"]
@@ -41,6 +42,19 @@ def empty_lvdb(tmp_path_factory):
         patch.setattr(overlapped_objects, "LVDB_DIR", lvdb_dir)
         patch.setattr(overlapped_objects, "SGA_DIR", sga_dir)
         patch.setattr(overlapped_objects.urllib.request, "urlopen", no_download)
+        yield
+
+
+@pytest.fixture(scope="session", autouse=True)
+def no_masked_streams(tmp_path_factory):
+    """No galstreams track and no listed candidate in the stream masks of CandidateInvestigation, unless a test
+    sets its own (the local candidate list and the galstreams library are never read)."""
+    from streameucliddes.analysis import candidate_investigation
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(candidate_investigation, "galstreams_mask_tracks", lambda *args, **kwargs: [])
+        patch.setattr(candidate_investigation, "DEFAULT_CANDIDATES_PATH",
+                      tmp_path_factory.mktemp("candidates") / "no_candidates.csv")
         yield
 
 NSIDE = 64
@@ -324,12 +338,12 @@ def candidate_catalog():
     rng = np.random.default_rng(3)
     n = 50_000
     vis = rng.uniform(18.0, 26.0, n)
-    return pd.DataFrame({
+    return add_vis_templfit_magnitudes(pd.DataFrame({
         "ra": rng.uniform(58.0, 90.0, n),
         "dec": np.degrees(np.arcsin(rng.uniform(*np.sin(np.radians([-52.0, -30.0])), n))),
-        "euclid_q1_VIS_obs": vis, "euclid_q1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
-        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
-    })
+        "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - rng.uniform(-1.0, 1.5, n),
+        "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
+    }))
 
 
 @pytest.fixture
@@ -374,8 +388,24 @@ def candidate_stream_catalog(candidate_endpoints, candidate_catalog):
         h_try = vis_try - rng.uniform(-1.0, 1.5, 20 * n)
         inside = is_in_match_filter(vis_try, h_try, polygon_vertices=polygon)
         vis, h = np.append(vis, vis_try[inside]), np.append(h, h_try[inside])
-    stream = pd.DataFrame({
-        "ra": ra, "dec": dec, "euclid_q1_VIS_obs": vis[:n], "euclid_q1_H_obs": h[:n],
-        "euclid_q1_VIS_err": np.full(n, 0.02), "euclid_q1_H_err": np.full(n, 0.02),
-    })
+    stream = add_vis_templfit_magnitudes(pd.DataFrame({
+        "ra": ra, "dec": dec, "euclid_dr1_VIS_obs": vis[:n], "euclid_dr1_H_obs": h[:n],
+        "euclid_dr1_VIS_err": np.full(n, 0.02), "euclid_dr1_H_err": np.full(n, 0.02),
+    }))
     return pd.concat([candidate_catalog, stream], ignore_index=True)
+
+
+# ===================================================
+# Photometric errors (cmd_match_filter, candidate_investigation)
+# ===================================================
+
+
+@pytest.fixture
+def stars_with_errors():
+    """Six stars in three VIS bins (20-21, 21-22, 22-23) and one without magnitude; one VIS error missing."""
+    vis = np.array([20.1, 20.2, 20.3, 21.4, 21.6, 22.5, np.nan])
+    return pd.DataFrame({
+        "euclid_dr1_VIS_obs": vis, "euclid_dr1_H_obs": vis - 0.5,
+        "euclid_dr1_VIS_err": [0.01, 0.03, np.nan, 0.05, 0.07, 0.2, 0.1],
+        "euclid_dr1_H_err": [0.02, 0.02, 0.02, 0.1, 0.1, 0.3, 0.1],
+    })

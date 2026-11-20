@@ -3,6 +3,7 @@
 
 import io
 
+import healpy as hp
 import numpy as np
 import pandas as pd
 import pytest
@@ -13,14 +14,20 @@ from streameucliddes.catalogs.overlapped_objects import (
     GLOBULAR_CLUSTER_TABLES,
     OBJECT_COLUMNS,
     SGA_COLUMNS,
+    OBJECT_TYPES,
+    add_in_catalog,
     extract_sga_bright_galaxies,
+    find_object,
     get_dwarf_galaxies,
     get_galaxies,
     get_globular_clusters,
     get_lmc,
+    get_objects,
     get_smc,
     load_lvdb_table,
     load_sga_bright_galaxies,
+    make_object,
+    objects_near_distance_modulus,
 )
 
 pytestmark = pytest.mark.overlapped_objects
@@ -34,6 +41,8 @@ def _table(keys, confirmed, rhalf=None):
         "name": [key.upper() for key in keys], "host": "mw", "confirmed_real": confirmed,
         "rhalf": np.linspace(1.0, 2.0, n) if rhalf is None else rhalf, "ellipticity": np.linspace(0.1, 0.5, n),
         "position_angle": np.linspace(10.0, 170.0, n), "distance": np.linspace(30.0, 90.0, n),
+        "apparent_magnitude_v": np.linspace(8.0, 16.0, n), "distance_modulus": np.linspace(17.0, 19.0, n),
+        "metallicity": np.linspace(-2.5, -1.0, n), "age": np.linspace(10.0, 13.0, n),
     })
 
 
@@ -103,7 +112,7 @@ def test_magellanic_clouds_and_dwarfs(lvdb_dir):
     assert list(dwarfs["key"]) == ["fornax_1"]
 
 
-# The globular clusters: the confirmed ones of every table, positions, radii and distances as in LVDB
+# The globular clusters: the confirmed ones of every table, positions, radii, distances, V, [Fe/H] and age as in LVDB
 def test_globular_clusters(lvdb_dir):
     clusters = get_globular_clusters()
     expected = [f"{GLOBULAR_CLUSTER_TABLES[0]}_a", f"{GLOBULAR_CLUSTER_TABLES[0]}_b"]
@@ -111,8 +120,10 @@ def test_globular_clusters(lvdb_dir):
     assert list(clusters["key"]) == expected
     source = _table(["x", "y"], [1, 1])
     np.testing.assert_array_equal(
-        clusters[["ra", "dec", "radius_arcmin", "ellipticity", "position_angle", "distance_kpc"]].to_numpy()[:2],
-        source[["ra", "dec", "rhalf", "ellipticity", "position_angle", "distance"]].to_numpy(),
+        clusters[["ra", "dec", "radius_arcmin", "ellipticity", "position_angle", "distance_kpc",
+                  "apparent_magnitude_v", "distance_modulus", "feh", "age_gyr"]].to_numpy()[:2],
+        source[["ra", "dec", "rhalf", "ellipticity", "position_angle", "distance", "apparent_magnitude_v",
+                "distance_modulus", "metallicity", "age"]].to_numpy(),
     )
 
 
@@ -199,3 +210,83 @@ def test_get_galaxies(tmp_path, sga_dir):
     np.testing.assert_allclose(galaxies["ellipticity"], 1 - sga["BA"])
     np.testing.assert_allclose(galaxies["position_angle"], sga["PA"])
     assert galaxies["distance_kpc"].isna().all()
+
+
+# An LVDB table without V, [Fe/H], age nor distance modulus: V, [Fe/H] and age unknown (NaN), the distance modulus
+# from the distance
+def test_without_optional_columns(lvdb_dir):
+    path = lvdb_dir / overlapped_objects.LVDB_VERSION / f"{overlapped_objects.DWARF_TABLE}.csv"
+    table = pd.read_csv(path)
+    table.drop(columns=["apparent_magnitude_v", "metallicity", "age", "distance_modulus"]).to_csv(path, index=False)
+    dwarfs = get_dwarf_galaxies()
+    assert dwarfs[["apparent_magnitude_v", "feh", "age_gyr"]].isna().all().all()
+    distance_kpc = table.set_index("key").loc["fornax_1", "distance"]
+    assert dwarfs["distance_modulus"].tolist() == pytest.approx([5 * np.log10(distance_kpc * 1e3) - 5])
+
+
+# ===================================================
+# Test get_objects, find_object, objects_near_distance_modulus
+# ===================================================
+
+
+# The objects of the types asked, with their type; an unknown type refused
+def test_get_objects(lvdb_dir):
+    objects = get_objects(("lmc", "dwarfs", "gc"))
+    assert list(objects.columns) == ["type", *OBJECT_COLUMNS]
+    assert objects.groupby("type", sort=False).size().to_dict() == {
+        "lmc": 1, "dwarfs": 1, "gc": len(get_globular_clusters())}
+    assert get_objects(("galaxies",)).empty  # the session's empty atlas
+    assert set(OBJECT_TYPES) == {"lmc", "smc", "dwarfs", "gc", "galaxies"}
+    with pytest.raises(ValueError, match="sagittarius"):
+        get_objects(("sagittarius",))
+
+
+# By key or name, whatever the case, spaces, underscores and hyphens; an unknown name lists close ones
+@pytest.mark.parametrize("name", ["fornax_1", "FORNAX_1", "Fornax-1", "fornax1"])
+def test_find_object(lvdb_dir, name):
+    assert find_object(name)["key"] == "fornax_1"
+
+
+def test_find_object_unknown(lvdb_dir):
+    with pytest.raises(KeyError, match="(?i)fornax_1"):
+        find_object("fornax_2")
+    with pytest.raises(KeyError):
+        find_object("candidate")  # not confirmed
+
+
+# Within max_offset, sorted by |offset|; in_catalog from the point map of the catalog
+def test_objects_near_distance_modulus(lvdb_dir, monkeypatch):
+    near = objects_near_distance_modulus(17.0, 0.5)
+    expected = [f"{table}_a" for table in GLOBULAR_CLUSTER_TABLES]  # their first rows: distance modulus 17
+    assert near["key"].tolist() == expected
+    assert (near["dm_offset"] == 0.0).all() and "in_catalog" not in near
+    assert objects_near_distance_modulus(17.4, 0.5, object_types=("dwarfs",))["key"].tolist() == ["fornax_1"]
+
+    nside = 16
+    counts = np.zeros(hp.nside2npix(nside))
+    first = near.iloc[0]
+    counts[hp.ang2pix(nside, first["ra"], first["dec"], nest=True, lonlat=True)] = 7
+    monkeypatch.setattr(overlapped_objects, "catalog_point_map", lambda catalog, data_path=None: counts)
+    near = objects_near_distance_modulus(17.0, 0.5, catalog="euclid_dr1")
+    assert near["n_sources_at_centre"].tolist() == [7, 7, 7]  # the same position in every mock table
+    assert near["in_catalog"].all()
+
+    # Any table: an object elsewhere has no source; the input is not changed
+    away = pd.DataFrame({"ra": [first["ra"], first["ra"] + 90.0], "dec": [first["dec"], first["dec"]]})
+    checked = add_in_catalog(away, "euclid_dr1")
+    assert checked["n_sources_at_centre"].tolist() == [7, 0] and checked["in_catalog"].tolist() == [True, False]
+    assert list(away.columns) == ["ra", "dec"]
+
+
+# An object given by hand: a row of get_objects, unknown values NaN, the distance from the distance modulus
+def test_make_object():
+    obj = make_object("Ursa Minor II", 196.1542, 75.5724, 2.25, ellipticity=0.2, position_angle=162.0,
+                      distance_modulus=16.5, feh=-2.2)
+    assert list(obj.index) == ["type", *OBJECT_COLUMNS]
+    assert (obj["type"], obj["key"], obj["name"]) == ("dwarfs", "custom_ursaminorii", "Ursa Minor II")
+    assert obj["distance_kpc"] == pytest.approx(10 ** (16.5 / 5 + 1) / 1e3)
+    assert np.isnan(obj["age_gyr"]) and np.isnan(obj["apparent_magnitude_v"])
+    assert np.isnan(make_object("x", 0.0, 0.0, 1.0)["distance_kpc"])
+    assert make_object("x", 0.0, 0.0, 1.0, object_type="gc", key="my_key")[["type", "key"]].tolist() == ["gc", "my_key"]
+    with pytest.raises(ValueError, match="not in"):
+        make_object("x", 0.0, 0.0, 1.0, object_type="star")

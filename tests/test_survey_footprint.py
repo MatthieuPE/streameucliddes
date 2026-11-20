@@ -15,6 +15,9 @@ import pytest
 from streameucliddes.catalogs import survey_footprint
 from streameucliddes.catalogs.survey_footprint import (
     convert_footprint_healpix_mask,
+    footprint_mask_from_stars,
+    in_healpix_mask,
+    phi12_area_pieces,
     star_count_nside,
     survey_footprint_healpix_mask,
     survey_footprint_phi12_mask,
@@ -341,3 +344,38 @@ def test_star_count_nside(rng):
         n_pixels = np.count_nonzero(~survey_footprint_healpix_mask(ra, dec, value, nest=False))
         assert (ra.size / n_pixels >= 10) == expected
 
+
+# ===================================================
+# Test footprint_mask_from_stars, in_healpix_mask, phi12_area_pieces
+# ===================================================
+
+
+# The footprint at star_count_nside, trimmed of its edge
+def test_footprint_mask_from_stars(rng):
+    ra, dec = rng.uniform(40.0, 60.0, 50_000), rng.uniform(-30.0, -10.0, 50_000)
+    nside = star_count_nside(ra, dec, 256)
+    expected = trim_footprint_edge(survey_footprint_healpix_mask(ra, dec, nside, nest=False), nest=False)
+    np.testing.assert_array_equal(footprint_mask_from_stars(ra, dec, 256), expected)
+
+
+# The value of the mask at each point, in either ordering; points without finite coordinates are not in it
+@pytest.mark.parametrize("nest", [False, True])
+def test_in_healpix_mask(rng, nest):
+    mask = rng.random(hp.nside2npix(NSIDE)) < 0.5
+    ra, dec = rng.uniform(0.0, 360.0, 1000), rng.uniform(-90.0, 90.0, 1000)
+    ra[:3] = np.nan
+    inside = in_healpix_mask(ra, dec, mask, nest=nest)
+    finite = np.isfinite(ra)
+    np.testing.assert_array_equal(inside[finite], mask[hp.ang2pix(NSIDE, ra[finite], dec[finite], lonlat=True,
+                                                                  nest=nest)])
+    assert not inside[:3].any()
+
+
+# The pieces add up to the exact area of each cell, and fall in their cell
+def test_phi12_area_pieces():
+    phi1_edges, phi2_edges = [-8.0, 0.0, 8.0], [20.0, 40.0, 60.0]
+    phi1, phi2, area, cell = phi12_area_pieces(phi1_edges, phi2_edges, step_deg=0.5)
+    sums = np.bincount(cell, weights=area, minlength=4).reshape(2, 2)
+    np.testing.assert_allclose(sums[:, 0], _band_area_deg2((0.0, 8.0), (20.0, 40.0)), rtol=1e-10)
+    np.testing.assert_allclose(sums[:, 1], _band_area_deg2((0.0, 8.0), (40.0, 60.0)), rtol=1e-10)
+    np.testing.assert_array_equal(cell, (phi1 > 0).astype(int) * 2 + (phi2 > 40).astype(int))
