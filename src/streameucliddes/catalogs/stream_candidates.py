@@ -20,6 +20,8 @@ The file is in ``data/candidates/`` (local, gitignored with the rest of
 ``add_candidate`` adds one and writes the file (``CandidateInvestigation.from_candidate_id``
 starts the investigation of a listed one); ``plotting.plot_candidate_investigation.plot_candidates`` draws them on a
 sky map, and ``EndpointPicker`` gives the endpoints from clicks on the map.
+``write_candidate_width`` writes the width fit of a candidate in the fits
+file (``CANDIDATE_FITS_PATH``, ``candidate_fits.csv``).
 """
 
 from __future__ import annotations
@@ -48,6 +50,10 @@ CANDIDATE_WIDTH_COLUMN = "sigma_deg"
 STATUS_COLUMN = "status"
 CANDIDATE_STATUSES = ("strong", "good", "bad")
 BAD_STATUS = "bad"
+# Fitted values of the candidates (mu, age, z, N with their errors, the width): one row per "candidate" id
+CANDIDATE_FITS_PATH = CANDIDATES_DIR / "candidate_fits.csv"
+# Width fit (CandidateInvestigation.fit_width) written to the fits file by write_candidate_width: sigma and its error
+WIDTH_FIT_COLUMNS = ("sigma_deg", "sigma_deg_err")
 
 
 def load_candidates(
@@ -179,6 +185,52 @@ def write_candidates(candidates: pd.DataFrame, path: str | Path = DEFAULT_CANDID
     path.parent.mkdir(parents=True, exist_ok=True)
     candidates.to_csv(path, index=False)
     return candidates
+
+
+def write_candidate_width(
+    candidate_id: int,
+    width_fit: dict,
+    path: str | Path = CANDIDATE_FITS_PATH,
+    *,
+    force: bool = False,
+) -> pd.DataFrame:
+    """Write the width of a candidate (``WIDTH_FIT_COLUMNS``) in its row of the fits file and return the file.
+
+    The other columns and rows are kept; the columns are added if needed,
+    and a row for a candidate not yet in the file (its other values empty).
+    A width already in the file is kept (nothing written) unless ``force``.
+
+    Parameters
+    ----------
+    candidate_id : int
+        Its ``candidate`` id in the file.
+    width_fit : dict
+        ``CandidateInvestigation.width_fit`` (``fit_stream_width``):
+        ``sigma`` and ``errors["sigma"]``, deg.
+    path : str or pathlib.Path, optional
+        CSV file of the fits, created if needed.
+    force : bool, optional
+        Replace a width already in the file.
+
+    Returns
+    -------
+    fits : pandas.DataFrame
+        The file as written (as it was when its width is kept).
+    """
+    path = Path(path)
+    fits = pd.read_csv(path) if path.exists() else pd.DataFrame({"candidate": pd.Series(dtype=int)})
+    rows = fits["candidate"] == int(candidate_id)
+    if not rows.any():
+        fits = pd.concat([fits, pd.DataFrame({"candidate": [int(candidate_id)]})], ignore_index=True)
+        rows = fits["candidate"] == int(candidate_id)
+    sigma_column, error_column = WIDTH_FIT_COLUMNS
+    if not force and sigma_column in fits and fits.loc[rows, sigma_column].notna().any():
+        return fits
+    fits.loc[rows, sigma_column] = float(width_fit["sigma"])
+    fits.loc[rows, error_column] = float(width_fit["errors"]["sigma"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fits.to_csv(path, index=False)
+    return fits
 
 
 def candidate_best_dm(candidate: pd.Series) -> float:
