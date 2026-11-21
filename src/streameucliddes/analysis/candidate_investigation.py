@@ -128,10 +128,15 @@ from streameucliddes.catalogs.euclid_catalog import DEFAULT_DUST_CORRECTION, LOA
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, isochrone_from_feh
 from streameucliddes.catalogs.stream_candidates import (
     BEST_DM_COLUMN,
+    CANDIDATE_FITS_FILENAME,
     DEFAULT_CANDIDATES_PATH,
+    FIT_DISTANCE_MODULUS_COLUMN,
+    WIDTH_FIT_COLUMNS,
     candidate_best_dm,
     candidate_endpoints,
+    candidate_fit_endpoints,
     get_candidate,
+    get_candidate_fit,
     load_candidates,
     write_candidates,
 )
@@ -169,6 +174,10 @@ OTHER_TRACK_STEP_DEG = 0.05  # points along the other streams and candidates dra
 CANDIDATE_FIGURES_DIR = Path(__file__).resolve().parents[3] / "figures" / "outputs" / "candidates"
 UNNAMED_FIGURE_FOLDER = "unnamed"
 CROSS_CHECK_FOLDER = "cross_check"  # subfolder of figure_folder: the cross-checks (depth and dust maps)
+# Values of a listed candidate in from_candidate_id: those of its fits first (fitted endpoints, mu), else those of the
+# list (endpoints picked by eye, best_dm); or only those of the list
+CANDIDATE_VALUE_SOURCES = ("fitted", "by_eye")
+SPLIT_HALF_FOLDER = "split_half"  # subfolder of figure_folder: the two halves of the candidate (phi1 < 0, phi1 > 0)
 CATALOG_EDGE_TOLERANCE_DEG = 0.1  # window outline beyond the outermost stars by less than this: still inside
 # A stream whose band covers more of the track between the endpoints than this is not masked (warned): it is the
 # candidate itself (e.g. one of the list investigated from its endpoints) or a stream along it
@@ -206,7 +215,7 @@ INPUT_RESULTS = {
                     ("sky_map", "zoom_map", "maps", *DISTANCE_MODULUS_RESULTS)),
     "match_filter": ("sky_map", *FRAME_RESULTS, "isochrone_track"),
     "prepare_kwargs": FRAME_RESULTS,
-    **dict.fromkeys(("on_n_sigma", "off_n_sigma"), REGION_RESULTS),
+    **dict.fromkeys(("on_n_sigma", "off_n_sigma", "fitted_sigma_deg"), REGION_RESULTS),
     **dict.fromkeys(("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg",
                      "always_masked_streams"),
                     EXCLUDED_MASK_RESULTS),
@@ -745,6 +754,13 @@ class CandidateInvestigation:
     include_bad_candidates : bool, optional
         Mask and draw (``other_tracks_phi12``) the other candidates of
         status ``bad`` too (``load_candidates``); by default they are ignored.
+    fitted_sigma_deg : float, optional
+        Width (Gaussian sigma in phi2, deg) of a track already fitted, at
+        phi2 = 0 between the endpoints (the endpoints moved onto it): without
+        ``width_fit``, ``define_regions`` uses phi2 = 0 and this sigma, no
+        width fit needed. Set by ``from_candidate_id`` (``source="fitted"``)
+        from the fits file when it has both the fitted endpoints and the
+        sigma.
 
     Attributes
     ----------
@@ -841,6 +857,7 @@ class CandidateInvestigation:
     candidate_id: int | None = None
     candidates_path: str | Path | None = None
     include_bad_candidates: bool = False
+    fitted_sigma_deg: float | None = None
     # Results, None until computed
     stream_frame: Any = None
     window: tuple | None = None
@@ -925,13 +942,21 @@ class CandidateInvestigation:
         *,
         path: str | Path = DEFAULT_CANDIDATES_PATH,
         name: str | None = None,
+        source: str = "fitted",
+        fits_path: str | Path | None = None,
         **inputs: Any,
     ) -> CandidateInvestigation:
         """Investigation of a candidate of the list (``catalogs.stream_candidates``), from its id.
 
-        Its endpoints and its distance modulus (``candidate_best_dm``:
-        ``best_dm``, the one of its largest SNR, else ``best_dm_by_eye``) come
-        from the list, its figures go to ``CANDIDATE_FIGURES_DIR / "<id>"``
+        Its endpoints and its distance modulus: with ``source="fitted"``,
+        those of its fits (``fits_path``: the endpoints on the fitted track,
+        ``write_candidate_fit_endpoints``, and ``mu``) where written, else,
+        and with ``source="by_eye"``, those of the list (the endpoints picked
+        by eye, and ``candidate_best_dm``: ``best_dm``, the one of its largest
+        SNR, else ``best_dm_by_eye``), a warning logged when fitted
+        endpoints are asked for and missing. With the fitted endpoints and
+        the fitted sigma (``sigma_deg``), that sigma in ``fitted_sigma_deg``:
+        the regions then need no width fit (``define_regions``). Its figures go to ``CANDIDATE_FIGURES_DIR / "<id>"``
         (``figure_folder``); it is left out of the stream mask
         (``candidate_id``), the other candidates of ``path`` masked
         (``candidates_path``); the other inputs are those of the class. For a candidate
@@ -945,6 +970,11 @@ class CandidateInvestigation:
             CSV file of the list.
         name : str, optional
             Default: ``"candidate_<id>"``.
+        source : {"fitted", "by_eye"}, optional
+            Fitted values first, or only those of the list.
+        fits_path : str or pathlib.Path, optional
+            CSV file of the fits. Default: ``CANDIDATE_FITS_FILENAME`` in the
+            folder of ``path``.
         **inputs
             Other inputs of the class (``age``, ``metallicity`` or ``feh``,
             ``match_filter``, ``distance_moduli``...); a ``distance_modulus``
@@ -957,11 +987,29 @@ class CandidateInvestigation:
         Raises
         ------
         ValueError
-            No candidate with this id (``get_candidate``).
+            No candidate with this id (``get_candidate``), or ``source``
+            unknown.
         """
+        if source not in CANDIDATE_VALUE_SOURCES:
+            raise ValueError(f"source must be one of {CANDIDATE_VALUE_SOURCES}, not {source!r}.")
         candidate = get_candidate(candidate_id, path)
         endpoint_1, endpoint_2 = candidate_endpoints(candidate)
-        inputs.setdefault("distance_modulus", candidate_best_dm(candidate))
+        distance_modulus = candidate_best_dm(candidate)
+        if source == "fitted":
+            fits_path = Path(path).parent / CANDIDATE_FITS_FILENAME if fits_path is None else Path(fits_path)
+            fit = get_candidate_fit(candidate_id, fits_path)
+            fitted_endpoints = None if fit is None else candidate_fit_endpoints(fit)
+            if fitted_endpoints is None:
+                LOGGER.warning("candidate %d: no fitted endpoints in %s, those of the list (by eye)", candidate_id,
+                               fits_path)
+            else:
+                endpoint_1, endpoint_2 = fitted_endpoints
+                sigma = fit.get(WIDTH_FIT_COLUMNS[0], np.nan)
+                if pd.notna(sigma):  # the track at phi2 = 0 between the fitted endpoints, its width fitted
+                    inputs.setdefault("fitted_sigma_deg", float(sigma))
+            if fit is not None and pd.notna(fit.get(FIT_DISTANCE_MODULUS_COLUMN, np.nan)):
+                distance_modulus = float(fit[FIT_DISTANCE_MODULUS_COLUMN])
+        inputs.setdefault("distance_modulus", distance_modulus)
         inputs.setdefault("figure_folder", CANDIDATE_FIGURES_DIR / str(int(candidate["id"])))
         inputs.setdefault("candidate_id", int(candidate["id"]))
         inputs.setdefault("candidates_path", path)
@@ -993,6 +1041,15 @@ class CandidateInvestigation:
         list. Not created here.
         """
         return Path(self.figure_folder) / CROSS_CHECK_FOLDER
+
+    @property
+    def split_half_folder(self) -> Path:
+        """Folder of the files of the two halves (phi1 < 0, phi1 > 0): ``figure_folder / SPLIT_HALF_FOLDER``.
+
+        ``figures/outputs/candidates/<id>/split_half`` for a candidate of the
+        list. Not created here.
+        """
+        return Path(self.figure_folder) / SPLIT_HALF_FOLDER
 
     def _set_frame_and_window(self) -> None:
         """Frame from the endpoints, window around them, (ra, dec) box of the window."""
@@ -1527,7 +1584,8 @@ class CandidateInvestigation:
         phi1_range : tuple of float, optional
             Default: the phi1 of the endpoints.
         phi2_centre, sigma : float, optional
-            Default: from ``width_fit``.
+            Default: from ``width_fit``; without it, 0 and
+            ``fitted_sigma_deg`` (the track already fitted, at phi2 = 0).
         on_phi2_offset_deg, off_phi2_offsets_deg : optional
             phi2 shifts of the on region and of the off regions (below, above)
             (deg), see ``stream_regions``; e.g. on region and top off region
@@ -1542,17 +1600,24 @@ class CandidateInvestigation:
         Raises
         ------
         ValueError
-            ``prepare`` not done; ``phi2_centre`` or ``sigma`` not given and
-            ``fit_width`` not done; ``distance_modulus`` not set; or the
+            ``prepare`` not done; ``phi2_centre`` or ``sigma`` not given,
+            ``fit_width`` not done and no ``fitted_sigma_deg``;
+            ``distance_modulus`` not set; or the
             regions leave the window (make it wider: ``min_phi2_half_width_deg``).
         """
         self._require("search", "prepare")
-        if (phi2_centre is None or sigma is None) and self.width_fit is None:
+        default_centre = default_sigma = None
+        if self.width_fit is not None:
+            default_centre, default_sigma = self.width_fit["phi2_centre"], self.width_fit["sigma"]
+        elif self.fitted_sigma_deg is not None:  # the track already fitted: at phi2 = 0, its sigma
+            default_centre, default_sigma = 0.0, float(self.fitted_sigma_deg)
+        elif phi2_centre is None or sigma is None:
             cleared_by = self.__dict__.get("_cleared_by", {}).get("width_fit")
             reason = "" if cleared_by is None else f" (cleared because {cleared_by})"
-            raise ValueError(f"No width_fit{reason}: call fit_width() first, or give phi2_centre and sigma.")
-        phi2_centre = self.width_fit["phi2_centre"] if phi2_centre is None else phi2_centre
-        sigma = self.width_fit["sigma"] if sigma is None else sigma
+            raise ValueError(f"No width_fit{reason}: call fit_width() first, give phi2_centre and sigma, or set "
+                             "fitted_sigma_deg.")
+        phi2_centre = default_centre if phi2_centre is None else phi2_centre
+        sigma = default_sigma if sigma is None else sigma
         phi1_range = self._endpoints_phi1_range() if phi1_range is None else tuple(phi1_range)
         regions = stream_regions(phi1_range, phi2_centre, sigma, on_n_sigma=self.on_n_sigma,
                                  off_n_sigma=self.off_n_sigma, on_phi2_offset_deg=on_phi2_offset_deg,
@@ -2084,7 +2149,7 @@ def update_candidate_best_dm(
     """Fill the ``best_dm`` column of the list: the distance modulus of the largest SNR of each candidate.
 
     For each candidate without ``best_dm`` (each one with ``replace_force``):
-    ``CandidateInvestigation.from_candidate_id`` at its ``best_dm_by_eye``,
+    ``CandidateInvestigation.from_candidate_id`` (``source="by_eye"``: the endpoints of the list) at its ``best_dm_by_eye``,
     ``prepare`` with ``catalog``, ``fit_width`` and ``define_regions`` there
     (as the candidate notebook), then ``snr_against_distance_modulus`` over
     ``distance_moduli``: ``best_dm`` is the distance modulus of the largest
@@ -2146,8 +2211,8 @@ def update_candidate_best_dm(
             continue
         LOGGER.info("candidate %d (%d/%d): SNR against the distance modulus, regions at best_dm_by_eye %.2f",
                     candidate_id, index, len(ids), by_eye)
-        cand = CandidateInvestigation.from_candidate_id(candidate_id, path=path, distance_modulus=float(by_eye),
-                                                        **inputs)
+        cand = CandidateInvestigation.from_candidate_id(candidate_id, path=path, source="by_eye",
+                                                        distance_modulus=float(by_eye), **inputs)
         cand.prepare(catalog, footprint_mask=footprint_mask, nest=nest)
         try:
             cand.fit_width().define_regions()

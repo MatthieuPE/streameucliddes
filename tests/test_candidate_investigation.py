@@ -1,6 +1,8 @@
 """Tests of analysis/candidate_investigation.py, on a synthetic catalog
 (conftest.py: uniform stars around the endpoints of the example candidate)."""
 
+import logging
+
 import healpy as hp
 import numpy as np
 import pandas as pd
@@ -37,9 +39,11 @@ from streameucliddes.analysis.cmd_match_filter import (
     photometric_errors_by_magnitude,
 )
 from streameucliddes.catalogs.stream_candidates import (
+    CANDIDATE_FITS_FILENAME,
     STATUS_COLUMN,
     add_candidate,
     load_candidates,
+    write_candidate_fit_endpoints,
     write_candidates,
 )
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
@@ -61,6 +65,7 @@ from streameucliddes.stream_frames import (
     in_phi12_window,
     phi12_to_radec,
     radec_to_phi12,
+    shift_endpoints_phi2,
     stream_frame_from_endpoints,
 )
 from streameucliddes.unit_conversions import convert_FeH_to_z, convert_metallicity, get_isochrone_model
@@ -679,6 +684,30 @@ def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate
         cand.define_regions(on_phi2_offset_deg=cand.window[3])  # on region beyond the top of the window
 
 
+# fitted_sigma_deg (a track already fitted, at phi2 = 0): regions without a width fit at phi2 = 0 and that sigma; a
+# change clears the regions; a width fit done takes over; neither: the ValueError names both
+def test_define_regions_fitted_sigma(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, fitted_sigma_deg=0.3,
+                                  distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    cand.prepare(candidate_stream_catalog)
+    cand.define_regions()
+    assert cand.width_fit is None
+    assert cand.regions == stream_regions(cand._endpoints_phi1_range(), 0.0, 0.3, on_n_sigma=cand.on_n_sigma,
+                                          off_n_sigma=cand.off_n_sigma)
+    cand.define_regions(phi1_range=(-1.0, 0.0))  # a part of the track: the same centre and sigma
+    assert (cand.regions["phi1_range"], cand.regions["phi2_centre"], cand.regions["sigma"]) == ((-1.0, 0.0), 0.0, 0.3)
+    cand.fitted_sigma_deg = 0.25
+    assert cand.regions is None
+    cand.fit_width().define_regions()
+    assert cand.regions["sigma"] == cand.width_fit["sigma"] != 0.25
+    cand.fitted_sigma_deg = None
+    cand.width_fit = None
+    with pytest.raises(ValueError, match="fitted_sigma_deg"):
+        cand.define_regions()
+
+
+
 # A footprint hole across half of the bottom off region, no stream: define_regions leaves the hole out of the
 # off area (the on area untouched), so the off density of the uniform field stays that of the on region (on - off
 # consistent with 0); divided by the full off area, it would be too low
@@ -1090,6 +1119,41 @@ def test_from_candidate_id(tmp_path, candidate_endpoints):
         CandidateInvestigation.from_candidate_id(5, path=path)
 
 
+# source="fitted" (default): the fitted endpoints and mu of the fits file next to the list, else those of the list
+# (a warning when the endpoints are missing), and the fitted sigma only with the fitted endpoints; "by_eye": those of
+# the list; an explicit fits_path; a distance_modulus given still wins
+def test_from_candidate_id_fitted(tmp_path, candidate_endpoints, caplog):
+    path = tmp_path / "candidates.csv"
+    add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
+    add_candidate(*candidate_endpoints, 17.5, path=path)
+    fitted = shift_endpoints_phi2(*candidate_endpoints, 0.2)
+    fits_path = tmp_path / CANDIDATE_FITS_FILENAME
+    pd.DataFrame({"candidate": [1, 2], "mu": [np.nan, 16.8]}).to_csv(fits_path, index=False)
+    write_candidate_fit_endpoints(2, *fitted, fits_path)
+    cand = CandidateInvestigation.from_candidate_id(2, path=path)
+    np.testing.assert_allclose((cand.endpoint_1, cand.endpoint_2), fitted)
+    assert cand.distance_modulus == 16.8 and cand.fitted_sigma_deg is None  # no sigma in the fits
+    fits = pd.read_csv(fits_path)
+    fits["sigma_deg"] = [0.5, 0.3]  # candidate 1: a sigma without fitted endpoints, not used (an offset track)
+    fits.to_csv(fits_path, index=False)
+    assert CandidateInvestigation.from_candidate_id(2, path=path).fitted_sigma_deg == 0.3
+    assert CandidateInvestigation.from_candidate_id(2, path=path, source="by_eye").fitted_sigma_deg is None
+    by_eye = CandidateInvestigation.from_candidate_id(2, path=path, source="by_eye")
+    assert (by_eye.endpoint_1, by_eye.endpoint_2) == candidate_endpoints and by_eye.distance_modulus == 17.5
+    assert CandidateInvestigation.from_candidate_id(2, path=path, distance_modulus=18.0).distance_modulus == 18.0
+    with caplog.at_level(logging.WARNING, logger=candidate_investigation_module.LOGGER.name):
+        unfitted = CandidateInvestigation.from_candidate_id(1, path=path)  # in the fits, no endpoints nor mu
+    assert (unfitted.endpoint_1, unfitted.endpoint_2) == ((45.5, -45.0), (44.0, -51.0))
+    assert unfitted.distance_modulus == 17.0 and unfitted.fitted_sigma_deg is None and "no fitted endpoints" in caplog.text
+    moved = tmp_path / "elsewhere" / "fits.csv"
+    moved.parent.mkdir()
+    fits_path.rename(moved)
+    assert CandidateInvestigation.from_candidate_id(2, path=path).endpoint_1 == candidate_endpoints[0]  # no fits file
+    assert CandidateInvestigation.from_candidate_id(2, path=path, fits_path=moved).endpoint_1 == pytest.approx(fitted[0])
+    with pytest.raises(ValueError, match="source must be"):
+        CandidateInvestigation.from_candidate_id(2, path=path, source="eye")
+
+
 # The isochrone model: in the isochrone and the track; changing it clears the maps
 def test_isochrone_model(candidate_endpoints):
     cand = CandidateInvestigation("test", *candidate_endpoints, feh=-1.5, isochrone_model="Dotter2016")
@@ -1184,8 +1248,11 @@ def test_compute_depth_dust_maps(candidate_endpoints, candidate_with_maps, synth
     assert cand.depth_dust_maps is None
 
 
-# The cross-checks in the subfolder CROSS_CHECK_FOLDER of the figure folder of the candidate (not created)
+# The cross-checks in the subfolder CROSS_CHECK_FOLDER of the figure folder of the candidate, the two halves in
+# SPLIT_HALF_FOLDER (not created)
 def test_cross_check_folder(candidate_endpoints, tmp_path):
     cand = CandidateInvestigation("test", *candidate_endpoints, figure_folder=tmp_path / "7")
     assert cand.cross_check_folder == tmp_path / "7" / candidate_investigation_module.CROSS_CHECK_FOLDER
     assert not cand.cross_check_folder.exists()
+    assert cand.split_half_folder == tmp_path / "7" / candidate_investigation_module.SPLIT_HALF_FOLDER
+    assert not cand.split_half_folder.exists()

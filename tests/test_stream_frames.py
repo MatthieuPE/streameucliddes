@@ -15,6 +15,7 @@ from streameucliddes.stream_frames import (
     phi12_window_radec_box,
     frame_centred_on_point,
     radec_to_phi12,
+    shift_endpoints_phi2,
     stream_frame_from_endpoints,
 )
 
@@ -262,6 +263,25 @@ def test_frame_from_endpoints(rng, gc_frame):
 def test_frame_from_endpoints_rejects_degenerate(endpoint_2):
     with pytest.raises(ValueError, match="no single great circle"):
         stream_frame_from_endpoints((42.0, -20.0), endpoint_2)
+
+
+# Endpoints moved by an offset in phi2: at (their phi1, offset) in the old frame; the old line at phi2 = offset departs
+# from the new great circle most at the middle, by the expected amount; no offset: the same endpoints
+@pytest.mark.parametrize("offset", [0.3, -0.05])
+def test_shift_endpoints_phi2(offset):
+    old_frame = stream_frame_from_endpoints(*STREAM_ENDS)
+    (ra_ends, dec_ends) = np.transpose(STREAM_ENDS)
+    old_phi1, _ = radec_to_phi12(ra_ends, dec_ends, old_frame)
+    endpoint_1, endpoint_2 = shift_endpoints_phi2(*STREAM_ENDS, offset)
+    np.testing.assert_allclose(radec_to_phi12(*np.transpose([endpoint_1, endpoint_2]), old_frame),
+                               (old_phi1, [offset, offset]), atol=1e-8)
+    new_frame = stream_frame_from_endpoints(endpoint_1, endpoint_2)
+    track_phi1 = np.linspace(*old_phi1, 21)
+    _, new_phi2 = radec_to_phi12(*phi12_to_radec(track_phi1, offset, old_frame), new_frame)
+    half_arc = np.radians(old_phi1[1] - old_phi1[0]) / 2
+    middle = np.degrees(np.arctan(np.tan(np.radians(offset)) / np.cos(half_arc))) - offset  # the largest departure
+    assert np.max(np.abs(new_phi2)) == pytest.approx(abs(middle), rel=1e-6)
+    np.testing.assert_allclose(shift_endpoints_phi2(*STREAM_ENDS, 0.0), STREAM_ENDS, atol=1e-8)
 
 
 # ===================================================

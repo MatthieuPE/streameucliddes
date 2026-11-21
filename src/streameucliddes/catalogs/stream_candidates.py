@@ -51,9 +51,14 @@ STATUS_COLUMN = "status"
 CANDIDATE_STATUSES = ("strong", "good", "bad")
 BAD_STATUS = "bad"
 # Fitted values of the candidates (mu, age, z, N with their errors, the width): one row per "candidate" id
-CANDIDATE_FITS_PATH = CANDIDATES_DIR / "candidate_fits.csv"
+CANDIDATE_FITS_FILENAME = "candidate_fits.csv"  # next to the list (CandidateInvestigation.from_candidate_id)
+CANDIDATE_FITS_PATH = CANDIDATES_DIR / CANDIDATE_FITS_FILENAME
+FIT_DISTANCE_MODULUS_COLUMN = "mu"  # fitted distance modulus in the fits file
 # Width fit (CandidateInvestigation.fit_width) written to the fits file by write_candidate_width: sigma and its error
 WIDTH_FIT_COLUMNS = ("sigma_deg", "sigma_deg_err")
+# Endpoints moved onto the fitted track (write_candidate_fit_endpoints), in the fits file: the endpoints of the list
+# (candidates_info.csv) stay those picked by eye. The same names as there, so candidate_endpoints reads both
+FIT_ENDPOINT_COLUMNS = ("endpoint_1_ra", "endpoint_1_dec", "endpoint_2_ra", "endpoint_2_dec")
 
 
 def load_candidates(
@@ -231,6 +236,94 @@ def write_candidate_width(
     path.parent.mkdir(parents=True, exist_ok=True)
     fits.to_csv(path, index=False)
     return fits
+
+
+def write_candidate_fit_endpoints(
+    candidate_id: int,
+    endpoint_1: Sequence[float],
+    endpoint_2: Sequence[float],
+    path: str | Path = CANDIDATE_FITS_PATH,
+) -> pd.DataFrame:
+    """Write the endpoints of the fitted track of a candidate (``FIT_ENDPOINT_COLUMNS``) in its row of the fits file.
+
+    E.g. the endpoints of the list moved onto the track fitted in their frame
+    (``stream_frames.shift_endpoints_phi2`` with the phi2 centre of the width
+    fit): in the frame of the new endpoints the track is at phi2 = 0. The
+    endpoints of the list (picked by eye) are not changed. Endpoints already
+    in the file are replaced; the other columns and rows are kept, the
+    columns added if needed, and a row for a candidate not yet in the file
+    (its other values empty).
+
+    Parameters
+    ----------
+    candidate_id : int
+        Its ``candidate`` id in the file.
+    endpoint_1, endpoint_2 : sequence of float
+        (ra, dec) (deg), endpoint_1 at negative phi1. ra is written in
+        [0, 360).
+    path : str or pathlib.Path, optional
+        CSV file of the fits, created if needed.
+
+    Returns
+    -------
+    fits : pandas.DataFrame
+        The file as written.
+
+    Raises
+    ------
+    ValueError
+        A dec outside [-90, 90], or the two endpoints at the same position.
+    """
+    (ra_1, dec_1), (ra_2, dec_2) = (_radec(endpoint) for endpoint in (endpoint_1, endpoint_2))
+    if np.isclose(ra_1, ra_2) and np.isclose(dec_1, dec_2):
+        raise ValueError(f"The two endpoints are at the same position ({ra_1:g}, {dec_1:g}) deg.")
+    path = Path(path)
+    fits = pd.read_csv(path) if path.exists() else pd.DataFrame({"candidate": pd.Series(dtype=int)})
+    rows = fits["candidate"] == int(candidate_id)
+    if not rows.any():
+        fits = pd.concat([fits, pd.DataFrame({"candidate": [int(candidate_id)]})], ignore_index=True)
+        rows = fits["candidate"] == int(candidate_id)
+    for column, value in zip(FIT_ENDPOINT_COLUMNS, (ra_1, dec_1, ra_2, dec_2)):
+        fits.loc[rows, column] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fits.to_csv(path, index=False)
+    return fits
+
+
+def get_candidate_fit(candidate_id: int, path: str | Path = CANDIDATE_FITS_PATH) -> pd.Series | None:
+    """The row of a candidate in the fits file, None when the file or the row is missing.
+
+    Parameters
+    ----------
+    candidate_id : int
+        Its ``candidate`` id in the file.
+    path : str or pathlib.Path, optional
+        CSV file of the fits.
+
+    Returns
+    -------
+    fit : pandas.Series or None
+        Its values (``mu``, ``age``, ``z``, ``sigma_deg``, the fitted
+        endpoints...; NaN where not written), indexed by column.
+    """
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    fits = pd.read_csv(path)
+    rows = fits[fits["candidate"] == int(candidate_id)]
+    return None if rows.empty else rows.iloc[0]
+
+
+def candidate_fit_endpoints(fit: pd.Series) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Endpoints of the fitted track of a candidate (a row of the fits file), None when not written.
+
+    ``candidate_endpoints`` of the row when its ``FIT_ENDPOINT_COLUMNS`` are
+    all there (``write_candidate_fit_endpoints``); None otherwise: use those
+    of the list.
+    """
+    if not all(column in fit.index and pd.notna(fit[column]) for column in FIT_ENDPOINT_COLUMNS):
+        return None
+    return candidate_endpoints(fit)
 
 
 def candidate_best_dm(candidate: pd.Series) -> float:

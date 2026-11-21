@@ -8,12 +8,15 @@ from streameucliddes.catalogs.stream_candidates import (
     BEST_DM_COLUMN,
     CANDIDATE_COLUMNS,
     STATUS_COLUMN,
+    FIT_ENDPOINT_COLUMNS,
     WIDTH_FIT_COLUMNS,
     add_candidate,
     candidate_best_dm,
     candidate_endpoints,
+    candidate_fit_endpoints,
     get_candidate,
     load_candidates,
+    write_candidate_fit_endpoints,
     write_candidate_width,
     write_candidates,
 )
@@ -157,3 +160,22 @@ def test_write_candidate_width(tmp_path):
     assert pd.read_csv(path).set_index("candidate").loc[2, [sigma_column, error_column]].tolist() == [0.3, 0.05]
     write_candidate_width(2, {"sigma": 0.4, "errors": {"sigma": 0.06}}, path, force=True)  # forced: replaced
     assert pd.read_csv(path).set_index("candidate").loc[2, [sigma_column, error_column]].tolist() == [0.4, 0.06]
+
+
+# Endpoints of the fitted track in the fits file (ra in [0, 360)), replaced when written again; other columns and rows
+# kept, a row added for a new candidate; read back as None until written
+def test_write_candidate_fit_endpoints(tmp_path):
+    path = tmp_path / "candidate_fits.csv"
+    pd.DataFrame({"candidate": [1, 2], "mu": [17.0, 18.0], "sigma_deg": [0.3, 0.2]}).to_csv(path, index=False)
+    assert candidate_fit_endpoints(pd.read_csv(path).set_index("candidate").loc[2]) is None
+    write_candidate_fit_endpoints(2, (-0.5, -45.1), (44.1, -51.2), path)
+    write_candidate_fit_endpoints(5, (10.0, 0.0), (12.0, 1.0), path)
+    fits = pd.read_csv(path).set_index("candidate")
+    assert fits.index.tolist() == [1, 2, 5]
+    assert candidate_fit_endpoints(fits.loc[2]) == ((359.5, -45.1), (44.1, -51.2))
+    assert fits.loc[2, "mu"] == 18.0 and fits.loc[2, "sigma_deg"] == 0.2 and pd.isna(fits.loc[5, "mu"])
+    assert candidate_fit_endpoints(fits.loc[1]) is None and fits.loc[1, list(FIT_ENDPOINT_COLUMNS)].isna().all()
+    write_candidate_fit_endpoints(2, (0.5, -45.0), (44.0, -51.0), path)  # replaced
+    assert candidate_fit_endpoints(pd.read_csv(path).set_index("candidate").loc[2]) == ((0.5, -45.0), (44.0, -51.0))
+    with pytest.raises(ValueError, match="same position"):
+        write_candidate_fit_endpoints(2, (10.0, 1.0), (370.0, 1.0), path)
