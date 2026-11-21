@@ -1,6 +1,8 @@
 """Tests of analysis/candidate_investigation.py, on a synthetic catalog
 (conftest.py: uniform stars around the endpoints of the example candidate)."""
 
+import logging
+
 import healpy as hp
 import numpy as np
 import pandas as pd
@@ -36,9 +38,17 @@ from streameucliddes.analysis.cmd_match_filter import (
     match_filter_cmd_columns,
     photometric_errors_by_magnitude,
 )
-from streameucliddes.catalogs.stream_candidates import add_candidate, load_candidates
+from streameucliddes.catalogs.stream_candidates import (
+    CANDIDATE_FITS_FILENAME,
+    STATUS_COLUMN,
+    add_candidate,
+    load_candidates,
+    write_candidate_fit_endpoints,
+    write_candidates,
+)
 from streameucliddes.analysis.generic_stream_search import generic_search_single_dm
 from streameucliddes.analysis.stream_frame_search import prepare_search, stream_frame_search_single_dm
+from streameucliddes.catalogs.euclid_catalog import LOADED_BOX_ATTR
 from streameucliddes.catalogs.isochrone_parameters import (
     DEFAULT_FEHS,
     isochrone_from_feh,
@@ -55,6 +65,7 @@ from streameucliddes.stream_frames import (
     in_phi12_window,
     phi12_to_radec,
     radec_to_phi12,
+    shift_endpoints_phi2,
     stream_frame_from_endpoints,
 )
 from streameucliddes.unit_conversions import convert_FeH_to_z, convert_metallicity, get_isochrone_model
@@ -453,13 +464,127 @@ def test_prepare_leaves_out_streams_covering_the_candidate(tmp_path, candidate_e
     assert not caplog.text and cand.summary()["masked_streams"] == [] and cand.overlapping_streams == []
 
 
+# The other candidates masked and drawn: not the candidate itself, not the bad ones unless include_bad_candidates
+def test_other_candidates_without_bad_ones(tmp_path, candidate_endpoints):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, 17.0, path=path)
+    add_candidate((77.0, -39.5), (70.0, -42.5), 17.0, path=path)
+    candidates = add_candidate((76.0, -38.5), (70.0, -41.5), 17.0, path=path)
+    candidates[STATUS_COLUMN] = ["strong", "bad", "good"]
+    write_candidates(candidates, path)
+    cand = CandidateInvestigation.from_candidate_id(1, path=path)
+    assert [track["name"] for track in cand._other_candidate_tracks()] == ["candidate_3"]
+    cand.include_bad_candidates = True
+    assert [track["name"] for track in cand._other_candidate_tracks()] == ["candidate_2", "candidate_3"]
+    bad = CandidateInvestigation.from_candidate_id(2, path=path)  # a bad one asked for by its id
+    assert bad.candidate_id == 2
+    assert [track["name"] for track in bad._other_candidate_tracks()] == ["candidate_1", "candidate_3"]
+
+
+# Another candidate crossing the window at dm 19 is masked at dm 17 by candidate_mask_max_dm_difference, not by
+# stream_mask_max_dm_difference (that of the known streams); a change of it applies the mask again at once
+def test_candidate_mask_max_dm_difference(tmp_path, candidate_endpoints, candidate_catalog, no_object_masks,
+                                          monkeypatch):
+    path = tmp_path / "candidates.csv"
+    add_candidate((73.5, -48.0), (73.5, -35.0), 19.0, path=path)  # id 1, across the window
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", lambda *args, **kwargs: [])
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0, candidates_path=path,
+                                  stream_mask_max_dm_difference=1.5, candidate_mask_max_dm_difference=2.5,
+                                  prepare_kwargs={"bin_size_deg": BIN})
+    cand.prepare(candidate_catalog)
+    assert cand.masked_streams == ["candidate_1"] and cand.stream_healpix_mask.any()
+    cand.candidate_mask_max_dm_difference = 1.5
+    assert cand.masked_streams == [] and not cand.stream_healpix_mask.any()
+    cand.stream_mask_max_dm_difference = 2.5  # the known streams only
+    assert cand.masked_streams == []
+
+
+# always_masked_streams: masked whatever their distance modulus (a known stream or a candidate), but not when too
+# wide; the others only near the distance modulus; a change applies the mask again at once
+def test_always_masked_streams(tmp_path, candidate_endpoints, candidate_catalog, no_object_masks, monkeypatch):
+    def crossing(name, ra, dm, width=0.2):
+        return {"name": f"{name}-T00", "stream_name": name, "ra": np.array([ra, ra]), "dec": np.array([-48.0, -35.0]),
+                "stream_frame": stream_frame_from_endpoints((ra, -48.0), (ra, -35.0)), "width_deg": width,
+                "dm_min": dm, "dm_max": dm}
+
+    known = [crossing("Near", 72.5, 17.0), crossing("FarSeen", 73.5, 20.0), crossing("FarUnseen", 74.5, 20.0),
+             crossing("WideSeen", 75.0, 20.0, width=3.0)]
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", lambda *args, **kwargs: known)
+    path = tmp_path / "candidates.csv"
+    add_candidate((71.5, -48.0), (71.5, -35.0), 20.0, path=path)  # id 1, far in distance modulus
+    cand = CandidateInvestigation("test", *candidate_endpoints, distance_modulus=17.0, candidates_path=path,
+                                  stream_mask_max_dm_difference=1.5, candidate_mask_max_dm_difference=1.5,
+                                  stream_mask_max_width_deg=1.0, prepare_kwargs={"bin_size_deg": BIN})
+    cand.prepare(candidate_catalog)
+    assert cand.masked_streams == ["Near-T00"]
+    before = cand.excluded_healpix_mask.copy()
+    cand.always_masked_streams = ["FarSeen", "WideSeen-T00", "candidate_1"]
+    assert cand.masked_streams == ["Near-T00", "FarSeen-T00", "candidate_1"]
+    assert (cand.excluded_healpix_mask >= before).all() and (cand.excluded_healpix_mask & ~before).any()
+
+
 # No catalog given nor kept, or a window beyond the stars: ValueError
+# The other tracks for the maps: the galstreams tracks (never-masked ones asked for too) and the other candidates
+# with points in the window, not the candidate itself nor one outside; NaN outside the window, points at most
+# step_deg apart; before prepare: ValueError
+def test_other_tracks_phi12(tmp_path, candidate_endpoints, candidate_catalog, no_object_masks, monkeypatch):
+    path = tmp_path / "candidates.csv"
+    add_candidate(*candidate_endpoints, 17.0, path=path)  # id 1: the candidate
+    add_candidate((77.0, -39.5), (70.0, -42.5), 19.0, path=path)  # id 2: along it, 0.5 deg north
+    add_candidate((120.0, 10.0), (125.0, 12.0), 17.0, path=path)  # id 3: far away
+    crossing = {"name": "Cross-T00", "stream_name": "Cross", "ra": np.array([73.5, 73.5]),
+                "dec": np.array([-48.0, -35.0]), "stream_frame": stream_frame_from_endpoints((73.5, -48.0),
+                                                                                             (73.5, -35.0)),
+                "width_deg": 0.2, "dm_min": 17.0, "dm_max": 17.0}
+    calls = []
+
+    def galstreams_tracks(*args, **kwargs):
+        calls.append(kwargs)
+        return [crossing]
+
+    monkeypatch.setattr(candidate_investigation_module, "galstreams_mask_tracks", galstreams_tracks)
+    cand = CandidateInvestigation.from_candidate_id(1, path=path, prepare_kwargs={"bin_size_deg": BIN,
+                                                                                  **no_object_masks})
+    with pytest.raises(ValueError, match="prepare"):
+        cand.other_tracks_phi12()
+    cand.prepare(candidate_catalog)
+    step_deg = 0.1
+    tracks = cand.other_tracks_phi12(step_deg=step_deg)
+    assert calls[-1]["never_masked"] == ()
+    assert [name for name, _, _ in tracks] == ["Cross-T00", "candidate_2"]
+    phi1_min, phi1_max, phi2_min, phi2_max = cand.window
+    for _, phi1, phi2 in tracks:
+        shown = np.isfinite(phi1)
+        np.testing.assert_array_equal(shown, np.isfinite(phi2))
+        assert shown.sum() > 10
+        assert np.all((phi1[shown] >= phi1_min) & (phi1[shown] <= phi1_max))
+        assert np.all((phi2[shown] >= phi2_min) & (phi2[shown] <= phi2_max))
+        assert np.hypot(np.diff(phi1[shown]), np.diff(phi2[shown])).max() <= 1.01 * step_deg  # flat, not on the sphere
+    assert not np.isfinite(tracks[0][1]).all()  # the crossing track goes beyond the window
+    assert 0.3 < abs(np.nanmedian(tracks[1][2])) < 0.55  # candidate 2: 0.5 deg in dec, across the inclined track
+
+
 def test_prepare_errors(candidate_endpoints, candidate_catalog):
     with pytest.raises(ValueError, match="compute_sky_map"):
         CandidateInvestigation("test", *candidate_endpoints).prepare()
     east = candidate_catalog[candidate_catalog["ra"] > 75.0]
     with pytest.raises(ValueError, match="load a larger box"):
         CandidateInvestigation("test", *candidate_endpoints).prepare(east)
+
+
+
+# A catalog read in a box (attrs[LOADED_BOX_ATTR], get_euclid_stars): a window beyond its stars but inside the box
+# (a survey edge) is prepared; one beyond the box: ValueError naming the box
+def test_prepare_window_beyond_survey_edge(candidate_endpoints, candidate_catalog, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    (ra_min, ra_max), (dec_min, dec_max) = cand.radec_box
+    north = candidate_catalog[candidate_catalog["dec"] > 0.5 * (dec_min + dec_max)].copy()  # survey edge in the window
+    north.attrs[LOADED_BOX_ATTR] = ((ra_min - 1.0, ra_max + 1.0), (dec_min - 1.0, dec_max + 1.0))
+    cand.prepare(north)
+    assert cand.search is not None and len(cand.search.stars) > 0
+    north.attrs[LOADED_BOX_ATTR] = (None, (0.5 * (dec_min + dec_max), dec_max + 1.0))  # the box cuts the window
+    with pytest.raises(ValueError, match="leaves the loaded box"):
+        CandidateInvestigation("test", *candidate_endpoints).prepare(north)
 
 
 # The map of stream_frame_search_single_dm on the prepared stars, at the distance modulus of the sky
@@ -518,6 +643,24 @@ def test_set_endpoints_outside_catalog(candidate_with_maps):
     assert all(a is b for a, b in zip(before, after))
 
 
+# A window field set after construction (cand.padding_phi2_deg = ...): the window and box of an object built with it;
+# with stars, prepared again in the new window, and beyond the loaded stars a ValueError, the object unchanged
+def test_window_field_set_after_construction(candidate_endpoints, candidate_with_maps):
+    cand = CandidateInvestigation("test", *candidate_endpoints)
+    cand.padding_phi2_deg = 9.0
+    built_with = CandidateInvestigation("test", *candidate_endpoints, padding_phi2_deg=9.0)
+    assert cand.padding_phi2_deg == 9.0 and cand.window == pytest.approx(built_with.window)
+    np.testing.assert_allclose(cand.radec_box, built_with.radec_box)
+    cand = candidate_with_maps
+    old_window = cand.window
+    cand.min_phi2_half_width_deg = 3.0
+    assert cand.window != old_window and cand.search.window == cand.window and cand.zoom_map is None
+    before = (cand.window, cand.search, cand.padding_phi1_deg)
+    with pytest.raises(ValueError, match="load a larger box"):
+        cand.padding_phi1_deg = 30.0
+    assert (cand.window, cand.search, cand.padding_phi1_deg) == before
+
+
 # Without a catalog: only the frame, window and box
 def test_set_endpoints_without_catalog(candidate_endpoints):
     cand = CandidateInvestigation("test", *candidate_endpoints)
@@ -557,6 +700,32 @@ def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate
     assert cand.regions["on_phi2_offset_deg"] == 1.0 and cand.regions["off_phi2_offsets_deg"] == (0.0, 1.0)
     with pytest.raises(ValueError, match="leave the window"):
         cand.define_regions(on_phi2_offset_deg=cand.window[3])  # on region beyond the top of the window
+
+
+# fitted_sigma_deg (a track already fitted, at phi2 = 0): regions without a width fit at phi2 = 0 and that sigma; a
+# change clears the regions; a width fit in this frame is not used while it is set; neither: the ValueError names both
+def test_define_regions_fitted_sigma(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
+    cand = CandidateInvestigation("test", *candidate_endpoints, fitted_sigma_deg=0.3,
+                                  distance_modulus=candidate_stream["distance_modulus"],
+                                  prepare_kwargs={"bin_size_deg": BIN, **no_object_masks})
+    cand.prepare(candidate_stream_catalog)
+    cand.define_regions()
+    assert cand.width_fit is None
+    assert cand.regions == stream_regions(cand._endpoints_phi1_range(), 0.0, 0.3, on_n_sigma=cand.on_n_sigma,
+                                          off_n_sigma=cand.off_n_sigma)
+    cand.define_regions(phi1_range=(-1.0, 0.0))  # a part of the track: the same centre and sigma
+    assert (cand.regions["phi1_range"], cand.regions["phi2_centre"], cand.regions["sigma"]) == ((-1.0, 0.0), 0.0, 0.3)
+    cand.fitted_sigma_deg = 0.25
+    assert cand.regions is None
+    cand.fit_width().define_regions()  # not refitted: the fitted sigma, at phi2 = 0
+    assert (cand.regions["phi2_centre"], cand.regions["sigma"]) == (0.0, 0.25) and cand.width_fit["sigma"] != 0.25
+    cand.fitted_sigma_deg = None
+    cand.define_regions()  # without it, the width fit
+    assert (cand.regions["phi2_centre"], cand.regions["sigma"]) == (cand.width_fit["phi2_centre"], cand.width_fit["sigma"])
+    cand.width_fit = None
+    with pytest.raises(ValueError, match="fitted_sigma_deg"):
+        cand.define_regions()
+
 
 
 # A footprint hole across half of the bottom off region, no stream: define_regions leaves the hole out of the
@@ -970,6 +1139,41 @@ def test_from_candidate_id(tmp_path, candidate_endpoints):
         CandidateInvestigation.from_candidate_id(5, path=path)
 
 
+# source="fitted" (default): the fitted endpoints and mu of the fits file next to the list, else those of the list
+# (a warning when the endpoints are missing), and the fitted sigma only with the fitted endpoints; "by_eye": those of
+# the list; an explicit fits_path; a distance_modulus given still wins
+def test_from_candidate_id_fitted(tmp_path, candidate_endpoints, caplog):
+    path = tmp_path / "candidates.csv"
+    add_candidate((45.5, -45.0), (44.0, -51.0), 17.0, path=path)
+    add_candidate(*candidate_endpoints, 17.5, path=path)
+    fitted = shift_endpoints_phi2(*candidate_endpoints, 0.2)
+    fits_path = tmp_path / CANDIDATE_FITS_FILENAME
+    pd.DataFrame({"candidate": [1, 2], "mu": [np.nan, 16.8]}).to_csv(fits_path, index=False)
+    write_candidate_fit_endpoints(2, *fitted, fits_path)
+    cand = CandidateInvestigation.from_candidate_id(2, path=path)
+    np.testing.assert_allclose((cand.endpoint_1, cand.endpoint_2), fitted)
+    assert cand.distance_modulus == 16.8 and cand.fitted_sigma_deg is None  # no sigma in the fits
+    fits = pd.read_csv(fits_path)
+    fits["sigma_deg"] = [0.5, 0.3]  # candidate 1: a sigma without fitted endpoints, not used (an offset track)
+    fits.to_csv(fits_path, index=False)
+    assert CandidateInvestigation.from_candidate_id(2, path=path).fitted_sigma_deg == 0.3
+    assert CandidateInvestigation.from_candidate_id(2, path=path, source="by_eye").fitted_sigma_deg is None
+    by_eye = CandidateInvestigation.from_candidate_id(2, path=path, source="by_eye")
+    assert (by_eye.endpoint_1, by_eye.endpoint_2) == candidate_endpoints and by_eye.distance_modulus == 17.5
+    assert CandidateInvestigation.from_candidate_id(2, path=path, distance_modulus=18.0).distance_modulus == 18.0
+    with caplog.at_level(logging.WARNING, logger=candidate_investigation_module.LOGGER.name):
+        unfitted = CandidateInvestigation.from_candidate_id(1, path=path)  # in the fits, no endpoints nor mu
+    assert (unfitted.endpoint_1, unfitted.endpoint_2) == ((45.5, -45.0), (44.0, -51.0))
+    assert unfitted.distance_modulus == 17.0 and unfitted.fitted_sigma_deg is None and "no fitted endpoints" in caplog.text
+    moved = tmp_path / "elsewhere" / "fits.csv"
+    moved.parent.mkdir()
+    fits_path.rename(moved)
+    assert CandidateInvestigation.from_candidate_id(2, path=path).endpoint_1 == candidate_endpoints[0]  # no fits file
+    assert CandidateInvestigation.from_candidate_id(2, path=path, fits_path=moved).endpoint_1 == pytest.approx(fitted[0])
+    with pytest.raises(ValueError, match="source must be"):
+        CandidateInvestigation.from_candidate_id(2, path=path, source="eye")
+
+
 # The isochrone model: in the isochrone and the track; changing it clears the maps
 def test_isochrone_model(candidate_endpoints):
     cand = CandidateInvestigation("test", *candidate_endpoints, feh=-1.5, isochrone_model="Dotter2016")
@@ -1043,3 +1247,32 @@ def test_hess_error_table(stars_with_errors):
     many_bins = photometric_errors_by_magnitude(stars, mag_cols, mag_bins=np.arange(20.0, 23.01, 0.25))  # 12 bins
     table = hess_error_table(on, off, many_bins)
     assert len(table) == 12 and table["mag_centre"][6:].isna().all() and table["error_mag_centre_H"].notna().all()
+
+
+# Depth and dust maps on the grid of the maps in the frame (that of the zoom map); prepare needed; cleared with the
+# frame (set_endpoints)
+def test_compute_depth_dust_maps(candidate_endpoints, candidate_with_maps, synthetic_depth_dust_maps):
+    with pytest.raises(ValueError, match="prepare"):
+        CandidateInvestigation("test", *candidate_endpoints).compute_depth_dust_maps()
+    cand = candidate_with_maps
+    assert cand.compute_depth_dust_maps(dust_correction="SFD98") is cand
+    assert list(cand.depth_dust_maps) == ["MAGLIM_VIS", "MAGLIM_H", "EBV"]
+    for map_values in cand.depth_dust_maps.values():
+        assert map_values["phi1_centres"] == pytest.approx(cand.zoom_map["phi1_centres"])
+        assert map_values["phi2_centres"] == pytest.approx(cand.zoom_map["phi2_centres"])
+        assert map_values["values"].shape == np.shape(cand.zoom_map["density"])
+    assert cand.depth_dust_maps["EBV"]["dust_correction"] == "SFD98"
+    cand.compute_depth_dust_maps(dust_correction=None, bands=["H"], depth_quantities=("FRACDET",))
+    assert list(cand.depth_dust_maps) == ["FRACDET_H"]
+    cand.set_endpoints((76.0, -41.0), (69.0, -44.0))
+    assert cand.depth_dust_maps is None
+
+
+# The cross-checks in the subfolder CROSS_CHECK_FOLDER of the figure folder of the candidate, the two halves in
+# SPLIT_HALF_FOLDER (not created)
+def test_cross_check_folder(candidate_endpoints, tmp_path):
+    cand = CandidateInvestigation("test", *candidate_endpoints, figure_folder=tmp_path / "7")
+    assert cand.cross_check_folder == tmp_path / "7" / candidate_investigation_module.CROSS_CHECK_FOLDER
+    assert not cand.cross_check_folder.exists()
+    assert cand.split_half_folder == tmp_path / "7" / candidate_investigation_module.SPLIT_HALF_FOLDER
+    assert not cand.split_half_folder.exists()

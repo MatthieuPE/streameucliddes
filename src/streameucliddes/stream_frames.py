@@ -341,6 +341,38 @@ def stream_frame_from_endpoints(
     return gc.GreatCircleICRSFrame.from_endpoints(point_1, point_2)
 
 
+def shift_endpoints_phi2(
+    endpoint_1: tuple[float, float], endpoint_2: tuple[float, float], phi2_offset_deg: float
+) -> tuple[tuple[float, float], tuple[float, float]]:
+    """The two endpoints moved by the same phi2 in their own frame (``stream_frame_from_endpoints``).
+
+    Each endpoint goes to (its phi1, ``phi2_offset_deg``): e.g. with the phi2
+    centre of a width fit, the endpoints on the fitted track, so that in the
+    frame of the new endpoints the track is at phi2 = 0. The new great
+    circle passes through the two new points, at phi2 = ``phi2_offset_deg``
+    of the old frame there, and departs from that line between them, most
+    at the middle, by ``arctan(tan(phi2_offset_deg) / cos(L / 2)) -
+    phi2_offset_deg`` (``L`` the arc between the endpoints): 4e-4 deg for an
+    offset of 0.1 deg over 10 deg.
+
+    Parameters
+    ----------
+    endpoint_1, endpoint_2 : tuple of float
+        (ra, dec) (deg).
+    phi2_offset_deg : float
+        Shift in phi2 (deg), positive to larger phi2.
+
+    Returns
+    -------
+    endpoint_1, endpoint_2 : tuple of float
+        The moved (ra, dec) (deg), ra in [0, 360).
+    """
+    frame = stream_frame_from_endpoints(endpoint_1, endpoint_2)
+    phi1, _ = radec_to_phi12([endpoint_1[0], endpoint_2[0]], [endpoint_1[1], endpoint_2[1]], frame)
+    ra, dec = phi12_to_radec(phi1, float(phi2_offset_deg), frame)
+    return (float(ra[0]), float(dec[0])), (float(ra[1]), float(dec[1]))
+
+
 def frame_centred_on_point(
     ra: float, dec: float, *, phi1_position_angle: float = 90.0
 ) -> coord.BaseCoordinateFrame:

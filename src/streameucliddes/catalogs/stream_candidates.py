@@ -8,6 +8,11 @@ on the maps (``best_dm_by_eye``): the inputs of
 distance modulus of its largest SNR, is computed by
 ``analysis.candidate_investigation.update_candidate_best_dm`` (empty until
 then); ``candidate_best_dm`` gives it, else the one by eye.
+The optional column ``status`` (``STATUS_COLUMN``, added by hand) rates
+each candidate ``strong``, ``good`` or ``bad`` (``CANDIDATE_STATUSES``);
+``load_candidates`` leaves the bad ones out unless
+``include_bad_candidates`` (so do the masks of the other candidates and the
+plots, which read the list through it), empty: not bad.
 The file is in ``data/candidates/`` (local, gitignored with the rest of
 ``data/``). Columns added by hand are kept when a candidate is added.
 
@@ -15,6 +20,8 @@ The file is in ``data/candidates/`` (local, gitignored with the rest of
 ``add_candidate`` adds one and writes the file (``CandidateInvestigation.from_candidate_id``
 starts the investigation of a listed one); ``plotting.plot_candidate_investigation.plot_candidates`` draws them on a
 sky map, and ``EndpointPicker`` gives the endpoints from clicks on the map.
+``write_candidate_width`` writes the width fit of a candidate in the fits
+file (``CANDIDATE_FITS_PATH``, ``candidate_fits.csv``).
 """
 
 from __future__ import annotations
@@ -38,15 +45,36 @@ BEST_DM_COLUMN = "best_dm"
 # Optional column, added by hand: Gaussian sigma in phi2 of a candidate (deg), the width of its mask when another
 # candidate is investigated (analysis.build_masks.candidate_mask_tracks)
 CANDIDATE_WIDTH_COLUMN = "sigma_deg"
+# Optional column, added by hand: how good a candidate looks, one of CANDIDATE_STATUSES (empty: not rated). The bad
+# ones are left out of the list (load_candidates), of the masks and of the plots unless include_bad_candidates
+STATUS_COLUMN = "status"
+CANDIDATE_STATUSES = ("strong", "good", "bad")
+BAD_STATUS = "bad"
+# Fitted values of the candidates (mu, age, z, N with their errors, the width): one row per "candidate" id
+CANDIDATE_FITS_FILENAME = "candidate_fits.csv"  # next to the list (CandidateInvestigation.from_candidate_id)
+CANDIDATE_FITS_PATH = CANDIDATES_DIR / CANDIDATE_FITS_FILENAME
+FIT_DISTANCE_MODULUS_COLUMN = "mu"  # fitted distance modulus in the fits file
+# Width fit (CandidateInvestigation.fit_width) written to the fits file by write_candidate_width: sigma and its error
+WIDTH_FIT_COLUMNS = ("sigma_deg", "sigma_deg_err")
+# Endpoints moved onto the fitted track (write_candidate_fit_endpoints), in the fits file: the endpoints of the list
+# (candidates_info.csv) stay those picked by eye. The same names as there, so candidate_endpoints reads both
+FIT_ENDPOINT_COLUMNS = ("endpoint_1_ra", "endpoint_1_dec", "endpoint_2_ra", "endpoint_2_dec")
 
 
-def load_candidates(path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.DataFrame:
-    """The candidates of the CSV file.
+def load_candidates(
+    path: str | Path = DEFAULT_CANDIDATES_PATH,
+    *,
+    include_bad_candidates: bool = False,
+) -> pd.DataFrame:
+    """The candidates of the CSV file, without the bad ones unless ``include_bad_candidates``.
 
     Parameters
     ----------
     path : str or pathlib.Path, optional
         CSV file. Missing or empty: no candidate.
+    include_bad_candidates : bool, optional
+        Keep the candidates whose ``STATUS_COLUMN`` is ``BAD_STATUS``
+        (always kept without the column).
 
     Returns
     -------
@@ -54,14 +82,15 @@ def load_candidates(path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.DataFrame:
         ``CANDIDATE_COLUMNS``, ``BEST_DM_COLUMN`` (NaN where not computed,
         all NaN when the file has no such column), then any column added by
         hand; ``id`` as integers. Empty, with these columns, when there is
-        no candidate.
+        no candidate. The index is that of the rows of the file.
 
     Raises
     ------
     ValueError
         A column of ``CANDIDATE_COLUMNS`` missing from the file (a file of
         the former format, ``best_dm`` by eye and no ``best_dm_by_eye``: a
-        message to rename it).
+        message to rename it), or a ``STATUS_COLUMN`` value not in
+        ``CANDIDATE_STATUSES``.
     """
     path = Path(path)
     if not path.exists() or path.stat().st_size == 0:
@@ -77,6 +106,14 @@ def load_candidates(path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.DataFrame:
     candidates["id"] = candidates["id"].astype(int)
     if BEST_DM_COLUMN not in candidates.columns:
         candidates[BEST_DM_COLUMN] = np.nan
+    if STATUS_COLUMN in candidates.columns:
+        status = candidates[STATUS_COLUMN]
+        unknown = sorted(set(status.dropna()) - set(CANDIDATE_STATUSES))
+        if unknown:
+            raise ValueError(f"{path}: {STATUS_COLUMN!r} {unknown} of no known status; the statuses are "
+                             f"{CANDIDATE_STATUSES} (or empty).")
+        if not include_bad_candidates:
+            candidates = candidates[status != BAD_STATUS]
     return _ordered(candidates)
 
 
@@ -100,14 +137,15 @@ def add_candidate(
         ``BEST_DM_COLUMN`` is left empty (``update_candidate_best_dm``).
     candidate_id : int, optional
         Default: one more than the largest ``id`` of the file (1 for the
-        first candidate).
+        first candidate, bad ones included).
     path : str or pathlib.Path, optional
         CSV file.
 
     Returns
     -------
     candidates : pandas.DataFrame
-        The list with the new candidate, as written.
+        The list with the new candidate, as written (the bad candidates
+        included; the new one without a status).
 
     Raises
     ------
@@ -119,7 +157,7 @@ def add_candidate(
     if np.isclose(ra_1, ra_2) and np.isclose(dec_1, dec_2):
         raise ValueError(f"The two endpoints are at the same position ({ra_1:g}, {dec_1:g}) deg.")
     path = Path(path)
-    candidates = load_candidates(path)
+    candidates = load_candidates(path, include_bad_candidates=True)  # written back: the bad ones kept
     if candidate_id is None:
         candidate_id = int(candidates["id"].max()) + 1 if len(candidates) else 1
     elif int(candidate_id) in set(candidates["id"]):
@@ -154,6 +192,140 @@ def write_candidates(candidates: pd.DataFrame, path: str | Path = DEFAULT_CANDID
     return candidates
 
 
+def write_candidate_width(
+    candidate_id: int,
+    width_fit: dict,
+    path: str | Path = CANDIDATE_FITS_PATH,
+    *,
+    force: bool = False,
+) -> pd.DataFrame:
+    """Write the width of a candidate (``WIDTH_FIT_COLUMNS``) in its row of the fits file and return the file.
+
+    The other columns and rows are kept; the columns are added if needed,
+    and a row for a candidate not yet in the file (its other values empty).
+    A width already in the file is kept (nothing written) unless ``force``.
+
+    Parameters
+    ----------
+    candidate_id : int
+        Its ``candidate`` id in the file.
+    width_fit : dict
+        ``CandidateInvestigation.width_fit`` (``fit_stream_width``):
+        ``sigma`` and ``errors["sigma"]``, deg.
+    path : str or pathlib.Path, optional
+        CSV file of the fits, created if needed.
+    force : bool, optional
+        Replace a width already in the file.
+
+    Returns
+    -------
+    fits : pandas.DataFrame
+        The file as written (as it was when its width is kept).
+    """
+    path = Path(path)
+    fits = pd.read_csv(path) if path.exists() else pd.DataFrame({"candidate": pd.Series(dtype=int)})
+    rows = fits["candidate"] == int(candidate_id)
+    if not rows.any():
+        fits = pd.concat([fits, pd.DataFrame({"candidate": [int(candidate_id)]})], ignore_index=True)
+        rows = fits["candidate"] == int(candidate_id)
+    sigma_column, error_column = WIDTH_FIT_COLUMNS
+    if not force and sigma_column in fits and fits.loc[rows, sigma_column].notna().any():
+        return fits
+    fits.loc[rows, sigma_column] = float(width_fit["sigma"])
+    fits.loc[rows, error_column] = float(width_fit["errors"]["sigma"])
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fits.to_csv(path, index=False)
+    return fits
+
+
+def write_candidate_fit_endpoints(
+    candidate_id: int,
+    endpoint_1: Sequence[float],
+    endpoint_2: Sequence[float],
+    path: str | Path = CANDIDATE_FITS_PATH,
+) -> pd.DataFrame:
+    """Write the endpoints of the fitted track of a candidate (``FIT_ENDPOINT_COLUMNS``) in its row of the fits file.
+
+    E.g. the endpoints of the list moved onto the track fitted in their frame
+    (``stream_frames.shift_endpoints_phi2`` with the phi2 centre of the width
+    fit): in the frame of the new endpoints the track is at phi2 = 0. The
+    endpoints of the list (picked by eye) are not changed. Endpoints already
+    in the file are replaced; the other columns and rows are kept, the
+    columns added if needed, and a row for a candidate not yet in the file
+    (its other values empty).
+
+    Parameters
+    ----------
+    candidate_id : int
+        Its ``candidate`` id in the file.
+    endpoint_1, endpoint_2 : sequence of float
+        (ra, dec) (deg), endpoint_1 at negative phi1. ra is written in
+        [0, 360).
+    path : str or pathlib.Path, optional
+        CSV file of the fits, created if needed.
+
+    Returns
+    -------
+    fits : pandas.DataFrame
+        The file as written.
+
+    Raises
+    ------
+    ValueError
+        A dec outside [-90, 90], or the two endpoints at the same position.
+    """
+    (ra_1, dec_1), (ra_2, dec_2) = (_radec(endpoint) for endpoint in (endpoint_1, endpoint_2))
+    if np.isclose(ra_1, ra_2) and np.isclose(dec_1, dec_2):
+        raise ValueError(f"The two endpoints are at the same position ({ra_1:g}, {dec_1:g}) deg.")
+    path = Path(path)
+    fits = pd.read_csv(path) if path.exists() else pd.DataFrame({"candidate": pd.Series(dtype=int)})
+    rows = fits["candidate"] == int(candidate_id)
+    if not rows.any():
+        fits = pd.concat([fits, pd.DataFrame({"candidate": [int(candidate_id)]})], ignore_index=True)
+        rows = fits["candidate"] == int(candidate_id)
+    for column, value in zip(FIT_ENDPOINT_COLUMNS, (ra_1, dec_1, ra_2, dec_2)):
+        fits.loc[rows, column] = value
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fits.to_csv(path, index=False)
+    return fits
+
+
+def get_candidate_fit(candidate_id: int, path: str | Path = CANDIDATE_FITS_PATH) -> pd.Series | None:
+    """The row of a candidate in the fits file, None when the file or the row is missing.
+
+    Parameters
+    ----------
+    candidate_id : int
+        Its ``candidate`` id in the file.
+    path : str or pathlib.Path, optional
+        CSV file of the fits.
+
+    Returns
+    -------
+    fit : pandas.Series or None
+        Its values (``mu``, ``age``, ``z``, ``sigma_deg``, the fitted
+        endpoints...; NaN where not written), indexed by column.
+    """
+    path = Path(path)
+    if not path.exists() or path.stat().st_size == 0:
+        return None
+    fits = pd.read_csv(path)
+    rows = fits[fits["candidate"] == int(candidate_id)]
+    return None if rows.empty else rows.iloc[0]
+
+
+def candidate_fit_endpoints(fit: pd.Series) -> tuple[tuple[float, float], tuple[float, float]] | None:
+    """Endpoints of the fitted track of a candidate (a row of the fits file), None when not written.
+
+    ``candidate_endpoints`` of the row when its ``FIT_ENDPOINT_COLUMNS`` are
+    all there (``write_candidate_fit_endpoints``); None otherwise: use those
+    of the list.
+    """
+    if not all(column in fit.index and pd.notna(fit[column]) for column in FIT_ENDPOINT_COLUMNS):
+        return None
+    return candidate_endpoints(fit)
+
+
 def candidate_best_dm(candidate: pd.Series) -> float:
     """Distance modulus of a candidate (a row of ``load_candidates``): ``BEST_DM_COLUMN`` when computed, else by eye."""
     best_dm = candidate.get(BEST_DM_COLUMN, np.nan)
@@ -161,7 +333,7 @@ def candidate_best_dm(candidate: pd.Series) -> float:
 
 
 def get_candidate(candidate_id: int, path: str | Path = DEFAULT_CANDIDATES_PATH) -> pd.Series:
-    """The candidate of an id, a row of ``load_candidates``.
+    """The candidate of an id, a row of ``load_candidates``, a bad one too (asked for by its id).
 
     Parameters
     ----------
@@ -180,7 +352,7 @@ def get_candidate(candidate_id: int, path: str | Path = DEFAULT_CANDIDATES_PATH)
     ValueError
         No candidate with this id (the ids of the file are listed).
     """
-    candidates = load_candidates(path)
+    candidates = load_candidates(path, include_bad_candidates=True)
     rows = candidates[candidates["id"] == int(candidate_id)]
     if rows.empty:
         raise ValueError(f"No candidate with id {candidate_id} in {path}; the ids are {candidates['id'].tolist()}.")

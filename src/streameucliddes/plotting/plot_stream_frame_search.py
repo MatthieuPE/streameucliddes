@@ -34,6 +34,8 @@ COLORBAR_BOUNDS = (1.01, 0.0, 0.015, 1.0)  # single-dm maps: colour bar, in map 
 # single-dm maps: decimals of the colour-bar labels, fixed so that the labels, and so the
 # map, keep their size from one frame of a gif to the next
 COLORBAR_DECIMALS = 2
+COLORBAR_FORMAT = f"%.{COLORBAR_DECIMALS}f"
+DENSITY_COLORBAR_LABEL = "Counts (smoothed)"
 INK = "0.15"  # text
 # Positions tried for a label, as fractions along the part of the track inside the footprint
 LABEL_FRACTIONS = (0.5, 0.35, 0.65, 0.2, 0.8, 0.1, 0.9)
@@ -51,6 +53,8 @@ def plot_stream_frame_search_single_dm(
     phi2_range: tuple[float, float] | None = None,
     cmap: str = "gray_r",
     title: str | None = None,
+    colorbar_label: str = DENSITY_COLORBAR_LABEL,
+    colorbar_format: str = COLORBAR_FORMAT,
 ) -> tuple[Figure, Axes]:
     """Map of a search in a stream frame at one distance modulus.
 
@@ -90,6 +94,9 @@ def plot_stream_frame_search_single_dm(
     title : str, optional
         Default: the track, the distance modulus and distance (or the offset
         along the track), and the isochrone.
+    colorbar_label, colorbar_format : str, optional
+        Label and number format of the colour bar, e.g. for another map on
+        the same grid (a depth or dust map).
 
     Returns
     -------
@@ -126,7 +133,7 @@ def plot_stream_frame_search_single_dm(
                       aspect="equal", interpolation="nearest")
     # inset of the map: the height of the map, and seen by constrained layout (no crop when saved)
     colorbar_ax = ax.inset_axes(COLORBAR_BOUNDS)
-    fig.colorbar(image, cax=colorbar_ax, label="Counts (smoothed)", format=f"%.{COLORBAR_DECIMALS}f")
+    fig.colorbar(image, cax=colorbar_ax, label=colorbar_label, format=colorbar_format)
 
     if track_phi12 is not None:
         draw_stream_track(ax, *track_phi12, label=result.get("track_name") or "Track")
@@ -264,7 +271,7 @@ def _single_dm_title(result: Mapping[str, Any]) -> str:
     """Track, distance modulus (or offset along the track) and isochrone of a map."""
     parts = [result["track_name"]] if result.get("track_name") else []
     if "distance_modulus" in result:
-        parts.append(f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.2f} kpc)")
+        parts.append(f"dm {format_distance_modulus(result['distance_modulus'])} ({result['distance_kpc']:.1f} kpc)")
     else:
         parts.append(f"dm along the track {result['dm_offset']:+.1f}")
     isochrone = result["isochrone"]

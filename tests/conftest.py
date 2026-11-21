@@ -57,6 +57,17 @@ def no_masked_streams(tmp_path_factory):
                       tmp_path_factory.mktemp("candidates") / "no_candidates.csv")
         yield
 
+
+@pytest.fixture(scope="session", autouse=True)
+def no_known_stream_files(tmp_path_factory):
+    """No file of known streams (galstreams_catalog.load_known_streams): the local ones in data/known_streams/ are
+    never read, the stream masks leave out build_masks.NEVER_MASKED_STREAMS, unless a test sets its own folder."""
+    from streameucliddes.catalogs import galstreams_catalog
+
+    with pytest.MonkeyPatch.context() as patch:
+        patch.setattr(galstreams_catalog, "KNOWN_STREAMS_DIR", tmp_path_factory.mktemp("known_streams"))
+        yield
+
 NSIDE = 64
 LON0, LAT0 = 50.0, -25.0  # patch centre (deg)
 HALF_WIDTH = (20.0, 15.0)  # patch half-size in projected x, y (deg)
@@ -409,3 +420,54 @@ def stars_with_errors():
         "euclid_dr1_VIS_err": [0.01, 0.03, np.nan, 0.05, 0.07, 0.2, 0.1],
         "euclid_dr1_H_err": [0.02, 0.02, 0.02, 0.1, 0.1, 0.3, 0.1],
     })
+
+
+# ===================================================
+# Depth and dust maps (catalogs.depth_dust_maps)
+# ===================================================
+
+DEPTH_TEST_NSIDE = 16
+DEPTH_TEST_RA_MAX = 75.0  # the synthetic depth maps cover the pixels of ra < this only
+
+
+def synthetic_maglim(band, ra, dec):
+    """MAGLIM of the synthetic depth maps (``synthetic_depth_dust_maps``) at (ra, dec) (deg): pixel centre values."""
+    return 25.0 + 0.01 * np.asarray(dec) - (1.0 if band == "H" else 0.0)
+
+
+def synthetic_ebv(ra, dec):
+    """E(B-V) of the fake dust query of ``synthetic_depth_dust_maps``."""
+    return 0.01 + 0.001 * (np.asarray(ra) - 70.0)
+
+
+@pytest.fixture
+def synthetic_depth_dust_maps(tmp_path, monkeypatch):
+    """Depth maps of VIS and H in a temporary DEPTH_MAP_DIR, and a fake dust query (no real map read).
+
+    Explicit-index HEALPix tables (RING, nside ``DEPTH_TEST_NSIDE``) of the pixels of ra < ``DEPTH_TEST_RA_MAX``
+    only, as the Euclid depth maps: MAGLIM ``synthetic_maglim`` at the pixel centre, FRACDET 0.5. The dust query of
+    every dust correction gives ``synthetic_ebv``. Returns the folder of the depth maps.
+    """
+    import healpy as hp
+    from astropy.io import fits
+
+    from streameucliddes.catalogs import depth_dust_maps
+
+    folder = tmp_path / "depth_maps"
+    folder.mkdir()
+    pixels = np.arange(hp.nside2npix(DEPTH_TEST_NSIDE))
+    ra, dec = hp.pix2ang(DEPTH_TEST_NSIDE, pixels, lonlat=True)
+    covered = ra < DEPTH_TEST_RA_MAX
+    for band in ("vis", "h"):
+        table = fits.BinTableHDU.from_columns([
+            fits.Column("PIXEL", "K", array=pixels[covered]),
+            fits.Column("MAGLIM", "E", array=synthetic_maglim(band.upper(), ra[covered], dec[covered])),
+            fits.Column("FRACDET", "E", array=np.full(covered.sum(), 0.5)),
+        ])
+        table.header.update({"PIXTYPE": "HEALPIX", "ORDERING": "RING", "NSIDE": DEPTH_TEST_NSIDE,
+                             "INDXSCHM": "EXPLICIT", "OBJECT": "PARTIAL"})
+        table.writeto(folder / f"{depth_dust_maps.DEPTH_MAP_PREFIX}{band}_nside{DEPTH_TEST_NSIDE}.fits")
+    monkeypatch.setattr(depth_dust_maps, "DEPTH_MAP_DIR", folder)
+    monkeypatch.setattr(depth_dust_maps, "_dust_query",
+                        lambda name: lambda coords: synthetic_ebv(coords.ra.deg, coords.dec.deg))
+    return folder

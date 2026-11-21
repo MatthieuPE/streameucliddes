@@ -7,11 +7,17 @@ import pytest
 from streameucliddes.catalogs.stream_candidates import (
     BEST_DM_COLUMN,
     CANDIDATE_COLUMNS,
+    STATUS_COLUMN,
+    FIT_ENDPOINT_COLUMNS,
+    WIDTH_FIT_COLUMNS,
     add_candidate,
     candidate_best_dm,
     candidate_endpoints,
+    candidate_fit_endpoints,
     get_candidate,
     load_candidates,
+    write_candidate_fit_endpoints,
+    write_candidate_width,
     write_candidates,
 )
 
@@ -105,3 +111,71 @@ def test_get_candidate(tmp_path):
     assert candidate_endpoints(candidate) == ((77.0, -40.5), (70.0, -44.5))
     with pytest.raises(ValueError, match=r"\[1, 2\]"):
         get_candidate(3, path)
+
+
+def _list_with_statuses(path, statuses):
+    """A list of len(statuses) candidates (ids 1, 2, ...) with these statuses (None: empty)."""
+    for index, _ in enumerate(statuses):
+        candidates = add_candidate((45.0 + index, -45.0), (44.0 + index, -51.0), 17.0, path=path)
+    candidates[STATUS_COLUMN] = statuses
+    write_candidates(candidates, path)
+
+
+# The bad candidates left out unless include_bad_candidates, an empty status kept; a file without the column: all
+# kept; an unknown status: ValueError
+def test_load_candidates_status(tmp_path):
+    path = tmp_path / "candidates.csv"
+    _list_with_statuses(path, ["strong", "bad", "good", None])
+    assert load_candidates(path)["id"].tolist() == [1, 3, 4]
+    assert load_candidates(path, include_bad_candidates=True)["id"].tolist() == [1, 2, 3, 4]
+    pd.read_csv(path).drop(columns=STATUS_COLUMN).to_csv(path, index=False)
+    assert load_candidates(path)["id"].tolist() == [1, 2, 3, 4]
+    _list_with_statuses(tmp_path / "unknown.csv", ["strong", "maybe"])
+    with pytest.raises(ValueError, match="maybe"):
+        load_candidates(tmp_path / "unknown.csv")
+
+
+# Writing the file keeps the bad candidates: add_candidate after them (next id), get_candidate finds one by its id
+def test_bad_candidates_kept_in_the_file(tmp_path):
+    path = tmp_path / "candidates.csv"
+    _list_with_statuses(path, ["strong", "bad"])
+    candidates = add_candidate((10.0, 0.0), (12.0, 1.0), 16.0, path=path)
+    assert candidates["id"].tolist() == [1, 2, 3] and candidates[STATUS_COLUMN].tolist()[:2] == ["strong", "bad"]
+    assert pd.isna(candidates[STATUS_COLUMN].iloc[2])
+    assert get_candidate(2, path)[STATUS_COLUMN] == "bad"
+
+
+# The width goes in the row of its candidate, the other columns and rows kept; a new candidate gets its own row
+def test_write_candidate_width(tmp_path):
+    path = tmp_path / "candidate_fits.csv"
+    pd.DataFrame({"candidate": [1, 2], "mu": [17.0, 18.0]}).to_csv(path, index=False)
+    sigma_column, error_column = WIDTH_FIT_COLUMNS
+    write_candidate_width(2, {"sigma": 0.3, "errors": {"sigma": 0.05}}, path)
+    write_candidate_width(5, {"sigma": 0.2, "errors": {"sigma": 0.01}}, path)
+    fits = pd.read_csv(path).set_index("candidate")
+    assert fits.index.tolist() == [1, 2, 5]
+    assert fits.loc[2, "mu"] == 18.0 and fits.loc[2, sigma_column] == 0.3 and fits.loc[2, error_column] == 0.05
+    assert pd.isna(fits.loc[1, sigma_column]) and pd.isna(fits.loc[5, "mu"]) and fits.loc[5, sigma_column] == 0.2
+    write_candidate_width(2, {"sigma": 0.4, "errors": {"sigma": 0.06}}, path)  # already there: kept
+    assert pd.read_csv(path).set_index("candidate").loc[2, [sigma_column, error_column]].tolist() == [0.3, 0.05]
+    write_candidate_width(2, {"sigma": 0.4, "errors": {"sigma": 0.06}}, path, force=True)  # forced: replaced
+    assert pd.read_csv(path).set_index("candidate").loc[2, [sigma_column, error_column]].tolist() == [0.4, 0.06]
+
+
+# Endpoints of the fitted track in the fits file (ra in [0, 360)), replaced when written again; other columns and rows
+# kept, a row added for a new candidate; read back as None until written
+def test_write_candidate_fit_endpoints(tmp_path):
+    path = tmp_path / "candidate_fits.csv"
+    pd.DataFrame({"candidate": [1, 2], "mu": [17.0, 18.0], "sigma_deg": [0.3, 0.2]}).to_csv(path, index=False)
+    assert candidate_fit_endpoints(pd.read_csv(path).set_index("candidate").loc[2]) is None
+    write_candidate_fit_endpoints(2, (-0.5, -45.1), (44.1, -51.2), path)
+    write_candidate_fit_endpoints(5, (10.0, 0.0), (12.0, 1.0), path)
+    fits = pd.read_csv(path).set_index("candidate")
+    assert fits.index.tolist() == [1, 2, 5]
+    assert candidate_fit_endpoints(fits.loc[2]) == ((359.5, -45.1), (44.1, -51.2))
+    assert fits.loc[2, "mu"] == 18.0 and fits.loc[2, "sigma_deg"] == 0.2 and pd.isna(fits.loc[5, "mu"])
+    assert candidate_fit_endpoints(fits.loc[1]) is None and fits.loc[1, list(FIT_ENDPOINT_COLUMNS)].isna().all()
+    write_candidate_fit_endpoints(2, (0.5, -45.0), (44.0, -51.0), path)  # replaced
+    assert candidate_fit_endpoints(pd.read_csv(path).set_index("candidate").loc[2]) == ((0.5, -45.0), (44.0, -51.0))
+    with pytest.raises(ValueError, match="same position"):
+        write_candidate_fit_endpoints(2, (10.0, 1.0), (370.0, 1.0), path)

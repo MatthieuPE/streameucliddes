@@ -59,10 +59,15 @@ Steps of ``CandidateInvestigation``, in order:
 Systematics, after ``define_regions`` (not in ``run_all_steps``):
 ``compute_photometric_errors``, the median photometric error of each band of
 the stars of the on region per bin of its magnitude
-(``analysis.cmd_match_filter.photometric_errors_by_magnitude``).
+(``analysis.cmd_match_filter.photometric_errors_by_magnitude``); after
+``prepare``: ``compute_depth_dust_maps``, the depth maps of each band and
+the dust map on the grid of the maps in the frame
+(``catalogs.depth_dust_maps.depth_dust_phi12_maps``), to compare with them.
 
 ``run_all_steps`` does them all. The figures take the object
-(``plotting.plot_candidate_investigation``).
+(``plotting.plot_candidate_investigation``); ``other_tracks_phi12`` gives
+them the known streams and the other candidates in the window (e.g. the
+distance-modulus scan GIF, ``plot_candidate_investigation.build_gif``).
 
 References
 ----------
@@ -83,12 +88,14 @@ import numpy as np
 import pandas as pd
 
 from streameucliddes.analysis.build_masks import (
+    CANDIDATE_MASK_MAX_DM_DIFFERENCE,
     STREAM_MASK_MAX_DM_DIFFERENCE,
     STREAM_MASK_MAX_WIDTH_DEG,
     candidate_mask_tracks,
     excluded_healpix_mask,
     fraction_on_stream_band,
     galstreams_mask_tracks,
+    points_along_track,
     streams_healpix_mask,
     streams_near_distance_modulus,
     streams_not_wider_than,
@@ -116,13 +123,20 @@ from streameucliddes.analysis.stream_frame_search import (
     stream_frame_search_dm_scan,
     stream_frame_search_single_dm,
 )
+from streameucliddes.catalogs.depth_dust_maps import DEFAULT_DEPTH_QUANTITIES, depth_dust_phi12_maps
+from streameucliddes.catalogs.euclid_catalog import DEFAULT_DUST_CORRECTION, LOADED_BOX_ATTR
 from streameucliddes.catalogs.isochrone_parameters import DEFAULT_AGES_GYR, isochrone_from_feh
 from streameucliddes.catalogs.stream_candidates import (
     BEST_DM_COLUMN,
+    CANDIDATE_FITS_FILENAME,
     DEFAULT_CANDIDATES_PATH,
+    FIT_DISTANCE_MODULUS_COLUMN,
+    WIDTH_FIT_COLUMNS,
     candidate_best_dm,
     candidate_endpoints,
+    candidate_fit_endpoints,
     get_candidate,
+    get_candidate_fit,
     load_candidates,
     write_candidates,
 )
@@ -154,10 +168,16 @@ DEFAULT_PHI1_BIN_DEG = 0.5  # bins of the phi1 profile
 DEFAULT_WIDTH_MAP_BINS_DEG = (0.5, 0.2)  # (phi1, phi2) cells of the 2D map of the width fit
 DEFAULT_FOOTPRINT_NSIDE = 512  # footprint from the stars (finest nside; coarser for sparse stars)
 DEFAULT_TRACK_POINTS = 100
+OTHER_TRACK_STEP_DEG = 0.05  # points along the other streams and candidates drawn on the maps (other_tracks_phi12)
 # Figures of the candidates: figures/outputs/ of the repository (gitignored), one folder per candidate,
 # "unnamed" for one given by its endpoints, its id for one of the list (from_candidate_id)
 CANDIDATE_FIGURES_DIR = Path(__file__).resolve().parents[3] / "figures" / "outputs" / "candidates"
 UNNAMED_FIGURE_FOLDER = "unnamed"
+CROSS_CHECK_FOLDER = "cross_check"  # subfolder of figure_folder: the cross-checks (depth and dust maps)
+# Values of a listed candidate in from_candidate_id: those of its fits first (fitted endpoints, mu), else those of the
+# list (endpoints picked by eye, best_dm); or only those of the list
+CANDIDATE_VALUE_SOURCES = ("fitted", "by_eye")
+SPLIT_HALF_FOLDER = "split_half"  # subfolder of figure_folder: the two halves of the candidate (phi1 < 0, phi1 > 0)
 CATALOG_EDGE_TOLERANCE_DEG = 0.1  # window outline beyond the outermost stars by less than this: still inside
 # A stream whose band covers more of the track between the endpoints than this is not masked (warned): it is the
 # candidate itself (e.g. one of the list investigated from its endpoints) or a stream along it
@@ -170,7 +190,7 @@ WINDOW_FIELDS = ("padding_phi1_deg", "padding_phi2_deg", "min_phi2_half_width_de
 # Results that depend on the frame: cleared by prepare and set_endpoints (not sky_map nor isochrone_track)
 FRAME_RESULTS = ("search", "footprint_and_objects_mask", "excluded_healpix_mask", "stars_not_excluded", "zoom_map",
                  "maps", "phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
-                 "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test")
+                 "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test", "depth_dust_maps")
 # Results computed from the distance modulus (the stars in the match filter, from fit_width on)
 DISTANCE_MODULUS_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "band_regions", "areas", "phi1_profile",
                             "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test", "isochrone_track")
@@ -184,7 +204,9 @@ EXCLUDED_MASK_RESULTS = ("phi2_profile", "width_fit", "width_map", "regions", "b
                          "on_hess", "off_hess", "diff_hess", "photometric_errors", "null_test")
 # Inputs of the stream mask: a change applies it again at once (_apply_stream_mask), no new prepare needed
 STREAM_MASK_INPUTS = ("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg",
-                      "unmasked_streams", "candidate_id", "candidates_path")
+                      "always_masked_streams",
+                      "unmasked_streams", "candidate_id", "candidates_path", "include_bad_candidates",
+                      "candidate_mask_max_dm_difference")
 # Results cleared when an input changes after a step: those computed from it (the maps and the zoom map carry their
 # own distance modulus; prepare_search keeps the isochrone only as a default the candidate never uses)
 INPUT_RESULTS = {
@@ -193,10 +215,12 @@ INPUT_RESULTS = {
                     ("sky_map", "zoom_map", "maps", *DISTANCE_MODULUS_RESULTS)),
     "match_filter": ("sky_map", *FRAME_RESULTS, "isochrone_track"),
     "prepare_kwargs": FRAME_RESULTS,
-    **dict.fromkeys(("on_n_sigma", "off_n_sigma"), REGION_RESULTS),
-    **dict.fromkeys(("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg"),
+    **dict.fromkeys(("on_n_sigma", "off_n_sigma", "fitted_sigma_deg"), REGION_RESULTS),
+    **dict.fromkeys(("mask_streams", "stream_mask_max_dm_difference", "stream_mask_max_width_deg",
+                     "always_masked_streams"),
                     EXCLUDED_MASK_RESULTS),
-    **dict.fromkeys(("unmasked_streams", "candidate_id", "candidates_path"),
+    **dict.fromkeys(("unmasked_streams", "candidate_id", "candidates_path", "include_bad_candidates",
+                     "candidate_mask_max_dm_difference"),
                     (*STREAM_MASK_RESULTS, *EXCLUDED_MASK_RESULTS)),
 }
 
@@ -679,19 +703,25 @@ class CandidateInvestigation:
         Folder of the figures of the candidate. Default:
         ``CANDIDATE_FIGURES_DIR / "unnamed"`` (``figures/outputs/candidates/unnamed``);
         from ``from_candidate_id``, ``CANDIDATE_FIGURES_DIR / "<id>"``. Not
-        created here.
+        created here. The figures of the cross-checks go to its subfolder
+        ``cross_check_folder``.
     mask_streams : bool, optional
         Exclude the other streams (``excluded_healpix_mask``): the galstreams
         tracks crossing the footprint of the catalog
         (``galstreams_mask_tracks``: one per stream, no Ibata et al. 2024
-        track, none of ``build_masks.NEVER_MASKED_STREAMS``) and the listed
+        track, none of status ``not_masked`` in ``data/known_streams/``:
+        ``catalogs.galstreams_catalog.load_known_streams``) and the listed
         candidates but this one
         (``candidate_mask_tracks``) not wider than
         ``stream_mask_max_width_deg`` (``build_masks.streams_not_wider_than``:
         a broad stream is a smooth background over the regions, subtracted
         by the off regions) and whose distance modulus comes within
         ``stream_mask_max_dm_difference`` of ``distance_modulus``
-        (``build_masks.streams_near_distance_modulus``; all of them while
+        (``candidate_mask_max_dm_difference`` for the candidates, from their
+        best distance modulus), or whatever their distance modulus for those
+        of ``always_masked_streams`` (but still not wider than
+        ``stream_mask_max_width_deg``;
+        ``build_masks.streams_near_distance_modulus``; all of them while
         ``distance_modulus`` is None), but those covering more than
         ``OWN_TRACK_OVERLAP_FRACTION`` of the track between the endpoints
         (the candidate itself, or a stream along it: ``overlapping_streams``,
@@ -703,14 +733,35 @@ class CandidateInvestigation:
         again at once (no new ``prepare``).
     stream_mask_max_dm_difference, stream_mask_max_width_deg : float, optional
         See ``mask_streams``.
+    candidate_mask_max_dm_difference : float, optional
+        The other listed candidates are masked only when their best
+        distance modulus (``candidate_best_dm``) comes within this of
+        ``distance_modulus``; see ``mask_streams``.
     unmasked_streams : sequence of str, optional
         Names of streams not masked (a track name, a stream name or
         ``"candidate_<id>"``), e.g. the known stream the candidate is.
+    always_masked_streams : sequence of str, optional
+        Names of streams (as ``unmasked_streams``) masked whatever their
+        distance modulus: one far from that of the candidate whose stars
+        could still leak into its Hess diagrams, e.g. a known stream seen in
+        the maps (``catalogs.galstreams_catalog.observed_known_streams``) or
+        another candidate.
     candidate_id : int, optional
         Id of the candidate in the list, left out of the stream mask; set by
         ``from_candidate_id``.
     candidates_path : str or pathlib.Path, optional
         CSV list of the candidates masked. Default: ``DEFAULT_CANDIDATES_PATH``.
+    include_bad_candidates : bool, optional
+        Mask and draw (``other_tracks_phi12``) the other candidates of
+        status ``bad`` too (``load_candidates``); by default they are ignored.
+    fitted_sigma_deg : float, optional
+        Width (Gaussian sigma in phi2, deg) of a track already fitted, at
+        phi2 = 0 between the endpoints (the endpoints moved onto it):
+        ``define_regions`` uses phi2 = 0 and this sigma, not a width fit in
+        this frame (the width is fitted once, with a free centre, in the frame
+        of the endpoints picked by eye). Set by ``from_candidate_id`` (``source="fitted"``)
+        from the fits file when it has both the fitted endpoints and the
+        sigma.
 
     Attributes
     ----------
@@ -738,7 +789,8 @@ class CandidateInvestigation:
         The tracks of the streams that can be masked (galstreams crossing the
         footprint and the other candidates), built once per footprint.
     masked_streams : list of str
-        Names of those masked (near ``distance_modulus``).
+        Names of those masked (near ``distance_modulus``, or in
+        ``always_masked_streams``).
     overlapping_streams : list of str
         Names of those not masked because they cover the track of the
         candidate: their stars stay in its regions.
@@ -775,6 +827,8 @@ class CandidateInvestigation:
         Hess diagrams and SNR.
     isochrone_track : dict
         ``isochrone_cmd_track`` result.
+    depth_dust_maps : dict
+        ``depth_dust_phi12_maps`` result (``compute_depth_dust_maps``).
     """
 
     # Inputs
@@ -797,10 +851,14 @@ class CandidateInvestigation:
     figure_folder: str | Path | None = None
     mask_streams: bool = True
     stream_mask_max_dm_difference: float = STREAM_MASK_MAX_DM_DIFFERENCE
+    candidate_mask_max_dm_difference: float = CANDIDATE_MASK_MAX_DM_DIFFERENCE
     stream_mask_max_width_deg: float = STREAM_MASK_MAX_WIDTH_DEG
     unmasked_streams: Sequence[str] = ()
+    always_masked_streams: Sequence[str] = ()
     candidate_id: int | None = None
     candidates_path: str | Path | None = None
+    include_bad_candidates: bool = False
+    fitted_sigma_deg: float | None = None
     # Results, None until computed
     stream_frame: Any = None
     window: tuple | None = None
@@ -832,6 +890,7 @@ class CandidateInvestigation:
     null_test: dict | None = None
     photometric_errors: dict | None = None
     isochrone_track: dict | None = None
+    depth_dust_maps: dict | None = None
 
     def __post_init__(self) -> None:
         """Frame, window and (ra, dec) box from the endpoints (``stream_frames``).
@@ -854,11 +913,18 @@ class CandidateInvestigation:
         E.g. a new ``distance_modulus`` after ``define_regions`` clears the
         width, the regions and the Hess diagrams: ``summary`` and the plots
         never mix results of different inputs (a step asking for a cleared
-        result names the change). The endpoints and the window change with
-        ``set_endpoints``. A changed ``distance_modulus`` (with
+        result names the change). The endpoints change with
+        ``set_endpoints``; a changed window field (``WINDOW_FIELDS``, e.g.
+        ``cand.padding_phi2_deg = 7``) goes through it too: new window and
+        box, the stars of the window prepared again when there is a catalog
+        (a ValueError if the window leaves it, the object unchanged). A
+        changed ``distance_modulus`` (with
         ``mask_streams``) or input of the stream mask (``STREAM_MASK_INPUTS``)
         applies the stream mask again, once the stars are prepared.
         """
+        if name in WINDOW_FIELDS and self.__dict__.get("_track_inputs") and _changed(self.__dict__.get(name), value):
+            self.set_endpoints(self.endpoint_1, self.endpoint_2, **{name: value})  # the window computed again
+            return
         cleared_by = self.__dict__.get("_cleared_by")
         changed = bool(self.__dict__.get("_track_inputs")) and name in INPUT_RESULTS and _changed(
             self.__dict__.get(name), value)
@@ -884,13 +950,21 @@ class CandidateInvestigation:
         *,
         path: str | Path = DEFAULT_CANDIDATES_PATH,
         name: str | None = None,
+        source: str = "fitted",
+        fits_path: str | Path | None = None,
         **inputs: Any,
     ) -> CandidateInvestigation:
         """Investigation of a candidate of the list (``catalogs.stream_candidates``), from its id.
 
-        Its endpoints and its distance modulus (``candidate_best_dm``:
-        ``best_dm``, the one of its largest SNR, else ``best_dm_by_eye``) come
-        from the list, its figures go to ``CANDIDATE_FIGURES_DIR / "<id>"``
+        Its endpoints and its distance modulus: with ``source="fitted"``,
+        those of its fits (``fits_path``: the endpoints on the fitted track,
+        ``write_candidate_fit_endpoints``, and ``mu``) where written, else,
+        and with ``source="by_eye"``, those of the list (the endpoints picked
+        by eye, and ``candidate_best_dm``: ``best_dm``, the one of its largest
+        SNR, else ``best_dm_by_eye``), a warning logged when fitted
+        endpoints are asked for and missing. With the fitted endpoints and
+        the fitted sigma (``sigma_deg``), that sigma in ``fitted_sigma_deg``:
+        the regions then need no width fit (``define_regions``). Its figures go to ``CANDIDATE_FIGURES_DIR / "<id>"``
         (``figure_folder``); it is left out of the stream mask
         (``candidate_id``), the other candidates of ``path`` masked
         (``candidates_path``); the other inputs are those of the class. For a candidate
@@ -904,6 +978,11 @@ class CandidateInvestigation:
             CSV file of the list.
         name : str, optional
             Default: ``"candidate_<id>"``.
+        source : {"fitted", "by_eye"}, optional
+            Fitted values first, or only those of the list.
+        fits_path : str or pathlib.Path, optional
+            CSV file of the fits. Default: ``CANDIDATE_FITS_FILENAME`` in the
+            folder of ``path``.
         **inputs
             Other inputs of the class (``age``, ``metallicity`` or ``feh``,
             ``match_filter``, ``distance_moduli``...); a ``distance_modulus``
@@ -916,11 +995,29 @@ class CandidateInvestigation:
         Raises
         ------
         ValueError
-            No candidate with this id (``get_candidate``).
+            No candidate with this id (``get_candidate``), or ``source``
+            unknown.
         """
+        if source not in CANDIDATE_VALUE_SOURCES:
+            raise ValueError(f"source must be one of {CANDIDATE_VALUE_SOURCES}, not {source!r}.")
         candidate = get_candidate(candidate_id, path)
         endpoint_1, endpoint_2 = candidate_endpoints(candidate)
-        inputs.setdefault("distance_modulus", candidate_best_dm(candidate))
+        distance_modulus = candidate_best_dm(candidate)
+        if source == "fitted":
+            fits_path = Path(path).parent / CANDIDATE_FITS_FILENAME if fits_path is None else Path(fits_path)
+            fit = get_candidate_fit(candidate_id, fits_path)
+            fitted_endpoints = None if fit is None else candidate_fit_endpoints(fit)
+            if fitted_endpoints is None:
+                LOGGER.warning("candidate %d: no fitted endpoints in %s, those of the list (by eye)", candidate_id,
+                               fits_path)
+            else:
+                endpoint_1, endpoint_2 = fitted_endpoints
+                sigma = fit.get(WIDTH_FIT_COLUMNS[0], np.nan)
+                if pd.notna(sigma):  # the track at phi2 = 0 between the fitted endpoints, its width fitted
+                    inputs.setdefault("fitted_sigma_deg", float(sigma))
+            if fit is not None and pd.notna(fit.get(FIT_DISTANCE_MODULUS_COLUMN, np.nan)):
+                distance_modulus = float(fit[FIT_DISTANCE_MODULUS_COLUMN])
+        inputs.setdefault("distance_modulus", distance_modulus)
         inputs.setdefault("figure_folder", CANDIDATE_FIGURES_DIR / str(int(candidate["id"])))
         inputs.setdefault("candidate_id", int(candidate["id"]))
         inputs.setdefault("candidates_path", path)
@@ -943,6 +1040,24 @@ class CandidateInvestigation:
         """
         return isochrone_from_feh(self.age, feh=self.feh, metallicity=self.metallicity,
                                   isochrone_model=self.isochrone_model)
+
+    @property
+    def cross_check_folder(self) -> Path:
+        """Folder of the figures of the cross-checks (e.g. the depth and dust maps): ``figure_folder / CROSS_CHECK_FOLDER``.
+
+        ``figures/outputs/candidates/<id>/cross_check`` for a candidate of the
+        list. Not created here.
+        """
+        return Path(self.figure_folder) / CROSS_CHECK_FOLDER
+
+    @property
+    def split_half_folder(self) -> Path:
+        """Folder of the files of the two halves (phi1 < 0, phi1 > 0): ``figure_folder / SPLIT_HALF_FOLDER``.
+
+        ``figures/outputs/candidates/<id>/split_half`` for a candidate of the
+        list. Not created here.
+        """
+        return Path(self.figure_folder) / SPLIT_HALF_FOLDER
 
     def _set_frame_and_window(self) -> None:
         """Frame from the endpoints, window around them, (ra, dec) box of the window."""
@@ -1112,7 +1227,7 @@ class CandidateInvestigation:
         previous = {name: getattr(self, name) for name in ("endpoint_1", "endpoint_2", *WINDOW_FIELDS)}
         self.endpoint_1, self.endpoint_2 = endpoint_1, endpoint_2
         for name, value in window_kwargs.items():
-            setattr(self, name, value)
+            object.__setattr__(self, name, value)  # not through __setattr__, which calls set_endpoints for them
         old_frame = (self.stream_frame, self.window, self.radec_box)
         self._set_frame_and_window()
         if self.catalog is not None:
@@ -1120,7 +1235,7 @@ class CandidateInvestigation:
                 self._check_window_in_catalog(self.catalog)
             except ValueError:  # leave the object as it was
                 for name, value in previous.items():
-                    setattr(self, name, value)
+                    object.__setattr__(self, name, value)
                 self.stream_frame, self.window, self.radec_box = old_frame
                 raise
             self._prepare_stars(None if self.search is None else self.search.object_healpix_mask)
@@ -1192,19 +1307,20 @@ class CandidateInvestigation:
         self.stars_not_excluded = ~in_healpix_mask(stars["ra"].to_numpy(), stars["dec"].to_numpy(), mask, nest=False)
 
     def _stream_healpix_mask(self, nside: int) -> NDArray[np.bool_]:
-        """Mask of the other streams near ``distance_modulus`` at ``nside`` (RING); the tracks kept, the mask built
-        again when the streams masked or the nside change."""
+        """Mask of the other streams near ``distance_modulus``, and of those of ``always_masked_streams``, at ``nside``
+        (RING); the tracks kept, the mask built again when the streams masked or the nside change."""
         if self.stream_mask_tracks is None:
-            path = DEFAULT_CANDIDATES_PATH if self.candidates_path is None else self.candidates_path
             tracks = galstreams_mask_tracks(self.footprint_mask, nest=self.footprint_nest)
-            tracks += candidate_mask_tracks(load_candidates(path),
-                                            exclude_ids=() if self.candidate_id is None else (self.candidate_id,))
+            tracks += self._other_candidate_tracks()
             unmasked = set(self.unmasked_streams)
             self.stream_mask_tracks = [track for track in tracks
                                        if track["name"] not in unmasked and track["stream_name"] not in unmasked]
         narrow = streams_not_wider_than(self.stream_mask_tracks, self.stream_mask_max_width_deg)
         near = streams_near_distance_modulus(narrow, self.distance_modulus,
                                              max_dm_difference=self.stream_mask_max_dm_difference)
+        near_names, always = {track["name"] for track in near}, set(self.always_masked_streams)
+        near += [track for track in narrow if track["name"] not in near_names
+                 and (track["name"] in always or track["stream_name"] in always)]
         phi1 = np.linspace(*self._endpoints_phi1_range(), DEFAULT_TRACK_POINTS)
         own_ra, own_dec = phi12_to_radec(phi1, np.zeros(phi1.size), self.stream_frame)
         masked, overlapping = [], []
@@ -1223,6 +1339,14 @@ class CandidateInvestigation:
             self.stream_healpix_mask = streams_healpix_mask(masked, nside, nest=False)
             self.masked_streams = names
         return self.stream_healpix_mask
+
+    def _other_candidate_tracks(self) -> list[dict]:
+        """The listed candidates of ``candidates_path`` but this one (``candidate_id``) and, unless
+        ``include_bad_candidates``, the bad ones, as tracks (``candidate_mask_tracks``)."""
+        path = DEFAULT_CANDIDATES_PATH if self.candidates_path is None else self.candidates_path
+        return candidate_mask_tracks(load_candidates(path, include_bad_candidates=self.include_bad_candidates),
+                                     exclude_ids=() if self.candidate_id is None else (self.candidate_id,),
+                                     max_dm_difference=self.candidate_mask_max_dm_difference)
 
     def _endpoints_phi1_range(self) -> tuple[float, float]:
         """phi1 of endpoint_1 and endpoint_2 (deg): negative, then positive."""
@@ -1275,7 +1399,12 @@ class CandidateInvestigation:
 
         Range of the stars around the ra of the window centre (no jump at ra =
         0/360); window outline from ``phi12_window_radec_box`` without margin.
-        A window containing a pole is not checked.
+        A window containing a pole is not checked. When the catalog says in
+        which box it was read (``attrs[euclid_catalog.LOADED_BOX_ATTR]``, set
+        by ``get_euclid_stars``), that box is the range instead of the stars,
+        on the sides it limits: a window beyond the stars but inside the box
+        reaches past the survey edge, where there is no star to load (the
+        footprint, from the stars, masks it).
         """
         (ra_min, ra_max), (dec_min, dec_max) = phi12_window_radec_box(self.stream_frame, self.window, margin_deg=0.0)
         if (ra_min, ra_max) == (0.0, 360.0):
@@ -1287,13 +1416,23 @@ class CandidateInvestigation:
 
         star_ra = relative(catalog["ra"].to_numpy())
         star_dec = catalog["dec"].to_numpy()
+        (ra_low, ra_high), (dec_low, dec_high) = (star_ra.min(), star_ra.max()), (star_dec.min(), star_dec.max())
+        what = "stars"
+        box_ra, box_dec = catalog.attrs.get(LOADED_BOX_ATTR) or (None, None)
+        if box_ra is not None:
+            full_circle = box_ra[1] - box_ra[0] >= 360.0
+            ra_low, ra_high = (-np.inf, np.inf) if full_circle else (relative(box_ra[0]), relative(box_ra[1]))
+            what = "loaded box"
+        if box_dec is not None:
+            (dec_low, dec_high), what = box_dec, "loaded box"
         tolerance = CATALOG_EDGE_TOLERANCE_DEG
-        if (relative(ra_min) < star_ra.min() - tolerance or relative(ra_max) > star_ra.max() + tolerance
-                or dec_min < star_dec.min() - tolerance or dec_max > star_dec.max() + tolerance):
+        if (relative(ra_min) < ra_low - tolerance or relative(ra_max) > ra_high + tolerance
+                or dec_min < dec_low - tolerance or dec_max > dec_high + tolerance):
+            ra_text = ("every ra" if np.isinf(ra_low) else
+                       f"ra {(ra_low + centre_ra) % 360:.1f} to {(ra_high + centre_ra) % 360:.1f}")
             raise ValueError(
                 f"The window (ra {ra_min:.1f} to {ra_max:.1f}, dec {dec_min:.1f} to {dec_max:.1f} deg) leaves the "
-                f"stars (ra {(star_ra.min() + centre_ra) % 360:.1f} to {(star_ra.max() + centre_ra) % 360:.1f}, dec "
-                f"{star_dec.min():.1f} to {star_dec.max():.1f} deg): load a larger box."
+                f"{what} ({ra_text}, dec {dec_low:.1f} to {dec_high:.1f} deg): load a larger box."
             )
 
     def scan_distance_moduli(
@@ -1453,7 +1592,9 @@ class CandidateInvestigation:
         phi1_range : tuple of float, optional
             Default: the phi1 of the endpoints.
         phi2_centre, sigma : float, optional
-            Default: from ``width_fit``.
+            Default: 0 and ``fitted_sigma_deg`` when set (the track already
+            fitted, at phi2 = 0: a width fit in this frame is not used), else
+            from ``width_fit``.
         on_phi2_offset_deg, off_phi2_offsets_deg : optional
             phi2 shifts of the on region and of the off regions (below, above)
             (deg), see ``stream_regions``; e.g. on region and top off region
@@ -1468,17 +1609,24 @@ class CandidateInvestigation:
         Raises
         ------
         ValueError
-            ``prepare`` not done; ``phi2_centre`` or ``sigma`` not given and
-            ``fit_width`` not done; ``distance_modulus`` not set; or the
+            ``prepare`` not done; ``phi2_centre`` or ``sigma`` not given,
+            ``fit_width`` not done and no ``fitted_sigma_deg``;
+            ``distance_modulus`` not set; or the
             regions leave the window (make it wider: ``min_phi2_half_width_deg``).
         """
         self._require("search", "prepare")
-        if (phi2_centre is None or sigma is None) and self.width_fit is None:
+        default_centre = default_sigma = None
+        if self.fitted_sigma_deg is not None:  # the track already fitted: at phi2 = 0, its sigma, no refit
+            default_centre, default_sigma = 0.0, float(self.fitted_sigma_deg)
+        elif self.width_fit is not None:
+            default_centre, default_sigma = self.width_fit["phi2_centre"], self.width_fit["sigma"]
+        elif phi2_centre is None or sigma is None:
             cleared_by = self.__dict__.get("_cleared_by", {}).get("width_fit")
             reason = "" if cleared_by is None else f" (cleared because {cleared_by})"
-            raise ValueError(f"No width_fit{reason}: call fit_width() first, or give phi2_centre and sigma.")
-        phi2_centre = self.width_fit["phi2_centre"] if phi2_centre is None else phi2_centre
-        sigma = self.width_fit["sigma"] if sigma is None else sigma
+            raise ValueError(f"No width_fit{reason}: call fit_width() first, give phi2_centre and sigma, or set "
+                             "fitted_sigma_deg.")
+        phi2_centre = default_centre if phi2_centre is None else phi2_centre
+        sigma = default_sigma if sigma is None else sigma
         phi1_range = self._endpoints_phi1_range() if phi1_range is None else tuple(phi1_range)
         regions = stream_regions(phi1_range, phi2_centre, sigma, on_n_sigma=self.on_n_sigma,
                                  off_n_sigma=self.off_n_sigma, on_phi2_offset_deg=on_phi2_offset_deg,
@@ -1704,6 +1852,49 @@ class CandidateInvestigation:
         self.photometric_errors = {**errors, "in_match_filter": bool(in_match_filter), "color_index": int(color_index)}
         return self
 
+    def compute_depth_dust_maps(
+        self,
+        *,
+        dust_correction: str | None = DEFAULT_DUST_CORRECTION,
+        bands: Sequence[str] | None = None,
+        depth_quantities: Sequence[str] = DEFAULT_DEPTH_QUANTITIES,
+    ) -> CandidateInvestigation:
+        """Depth maps of each band and dust map in the frame, in ``depth_dust_maps``.
+
+        ``depth_dust_phi12_maps`` on the grid of the maps in the frame (the
+        window and bin size of ``search``): the depth or the dust can be
+        compared bin by bin with the star maps, e.g. to see whether the
+        candidate follows a fluctuation of either
+        (``plot_candidate_investigation.plot_candidate_depth_dust_maps``).
+
+        Parameters
+        ----------
+        dust_correction : str or None, optional
+            Dust map: ``"SFD98"`` or ``"PLANCK"``, that of the dust correction
+            given to ``get_euclid_stars``; None: no dust map.
+        bands : sequence of str, optional
+            Bands of the depth maps. Default: all those with a map
+            (``depth_dust_maps.depth_map_bands``).
+        depth_quantities : sequence of str, optional
+            ``"MAGLIM"`` (limiting magnitude) and/or ``"FRACDET"`` (detection
+            fraction).
+
+        Returns
+        -------
+        self : CandidateInvestigation
+
+        Raises
+        ------
+        ValueError
+            ``prepare`` not done.
+        """
+        self._require("search", "prepare")
+        self.depth_dust_maps = depth_dust_phi12_maps(
+            self.stream_frame, self.search.window, self.search.bin_size_deg, bands=bands,
+            depth_quantities=depth_quantities, dust_correction=dust_correction,
+        )
+        return self
+
     def compute_isochrone(
         self,
         *,
@@ -1845,6 +2036,56 @@ class CandidateInvestigation:
         """
         return phi12_to_radec(*self.track_phi12(n_points), self.stream_frame)
 
+    def compute_snr(self) -> float | None:
+        """SNR of the on region over the off regions, as in ``summary``."""
+        if self.regions is None or self.distance_modulus is None:
+            return None
+        band_regions = self._band_regions()
+        snr = selection_snr(band_regions, self.stars_in_match_filter())
+        self.snr = snr
+        return snr
+    
+    def other_tracks_phi12(self, step_deg: float = OTHER_TRACK_STEP_DEG) -> list[tuple[str, NDArray, NDArray]]:
+        """The known streams and the other listed candidates in the window, in the frame of the candidate.
+
+        For the maps: every galstreams track crossing the footprint
+        (``galstreams_mask_tracks``, ``build_masks.NEVER_MASKED_STREAMS``
+        included) and every listed candidate but this one
+        (``_other_candidate_tracks``), whether masked or not (wide, far in
+        distance modulus, in ``unmasked_streams``). Points at most
+        ``step_deg`` apart along each (``build_masks.points_along_track``: the
+        great circle between the endpoints of a candidate), NaN outside the
+        window, so that the line stops at its edges; a track with no point in
+        the window is left out.
+
+        Parameters
+        ----------
+        step_deg : float, optional
+            Largest distance between two points of a track (deg).
+
+        Returns
+        -------
+        tracks : list of (str, numpy.ndarray, numpy.ndarray)
+            ``(name, phi1, phi2)`` (deg): the galstreams track name or
+            ``"candidate_<id>"``.
+
+        Raises
+        ------
+        ValueError
+            ``prepare`` not done (the footprint).
+        """
+        self._require("footprint_mask", "prepare")
+        tracks = galstreams_mask_tracks(self.footprint_mask, nest=self.footprint_nest, never_masked=())
+        tracks += self._other_candidate_tracks()
+        phi1_min, phi1_max, phi2_min, phi2_max = self.window
+        in_window = []
+        for track in tracks:
+            phi1, phi2 = radec_to_phi12(*points_along_track(track, step_deg), self.stream_frame)
+            inside = (phi1 >= phi1_min) & (phi1 <= phi1_max) & (phi2 >= phi2_min) & (phi2 <= phi2_max)
+            if inside.any():
+                in_window.append((track["name"], np.where(inside, phi1, np.nan), np.where(inside, phi2, np.nan)))
+        return in_window
+
     def summary(self) -> dict[str, Any]:
         """Key numbers of the investigation, those computed so far.
 
@@ -1891,7 +2132,7 @@ class CandidateInvestigation:
             "n_on": None, "n_off": None, "n_excess": None, "n_excess_error": None, "snr": None,
         })
         if self.regions is not None and self.distance_modulus is not None:
-            snr = selection_snr(self._band_regions(), self.stars_in_match_filter())
+            snr = self.compute_snr()
             summary.update({"n_on": snr["n_on"], "n_off": snr["n_off"], "n_excess": snr["n_signal"],
                             "n_excess_error": snr["n_signal_error"], "snr": snr["snr"]})
         return summary
@@ -1909,6 +2150,7 @@ def update_candidate_best_dm(
     distance_moduli: Sequence[float] | None = None,
     path: str | Path = DEFAULT_CANDIDATES_PATH,
     replace_force: bool = False,
+    include_bad_candidates: bool = False,
     footprint_mask: NDArray | None = None,
     nest: bool = False,
     **inputs: Any,
@@ -1916,7 +2158,7 @@ def update_candidate_best_dm(
     """Fill the ``best_dm`` column of the list: the distance modulus of the largest SNR of each candidate.
 
     For each candidate without ``best_dm`` (each one with ``replace_force``):
-    ``CandidateInvestigation.from_candidate_id`` at its ``best_dm_by_eye``,
+    ``CandidateInvestigation.from_candidate_id`` (``source="by_eye"``: the endpoints of the list) at its ``best_dm_by_eye``,
     ``prepare`` with ``catalog``, ``fit_width`` and ``define_regions`` there
     (as the candidate notebook), then ``snr_against_distance_modulus`` over
     ``distance_moduli``: ``best_dm`` is the distance modulus of the largest
@@ -1929,7 +2171,8 @@ def update_candidate_best_dm(
     catalog : pandas.DataFrame
         Stars of a box containing the windows of the candidates. Not copied.
     candidate_ids : sequence of int, optional
-        Default: every candidate of the list.
+        Default: every candidate of the list, but the bad ones unless
+        ``include_bad_candidates``.
     distance_moduli : sequence of float, optional
         Grid of the SNR. Default: ``distance_moduli`` of ``inputs``, else
         the grid of ``prepare_search``.
@@ -1937,6 +2180,10 @@ def update_candidate_best_dm(
         CSV file of the list.
     replace_force : bool, optional
         Compute again the ``best_dm`` already in the file.
+    include_bad_candidates : bool, optional
+        The bad candidates (status ``bad``, ``load_candidates``) in the
+        default ``candidate_ids`` and in the masks of the others
+        (``CandidateInvestigation.include_bad_candidates``).
     footprint_mask : numpy.ndarray of bool, optional
         HEALPix footprint (True outside), see ``prepare``. Default: from the
         stars of ``catalog`` (``footprint_mask_from_stars``), computed once.
@@ -1950,10 +2197,14 @@ def update_candidate_best_dm(
     Returns
     -------
     candidates : pandas.DataFrame
-        The list, as written.
+        The list, as written (the bad candidates included).
     """
-    candidates = load_candidates(path)
-    ids = candidates["id"].tolist() if candidate_ids is None else [int(candidate_id) for candidate_id in candidate_ids]
+    candidates = load_candidates(path, include_bad_candidates=True)  # written back: the bad ones kept
+    if candidate_ids is None:
+        ids = load_candidates(path, include_bad_candidates=include_bad_candidates)["id"].tolist()
+    else:
+        ids = [int(candidate_id) for candidate_id in candidate_ids]
+    inputs["include_bad_candidates"] = include_bad_candidates
     if footprint_mask is None:
         footprint_mask = footprint_mask_from_stars(catalog["ra"].to_numpy(), catalog["dec"].to_numpy(),
                                                    DEFAULT_FOOTPRINT_NSIDE)
@@ -1969,8 +2220,8 @@ def update_candidate_best_dm(
             continue
         LOGGER.info("candidate %d (%d/%d): SNR against the distance modulus, regions at best_dm_by_eye %.2f",
                     candidate_id, index, len(ids), by_eye)
-        cand = CandidateInvestigation.from_candidate_id(candidate_id, path=path, distance_modulus=float(by_eye),
-                                                        **inputs)
+        cand = CandidateInvestigation.from_candidate_id(candidate_id, path=path, source="by_eye",
+                                                        distance_modulus=float(by_eye), **inputs)
         cand.prepare(catalog, footprint_mask=footprint_mask, nest=nest)
         try:
             cand.fit_width().define_regions()
