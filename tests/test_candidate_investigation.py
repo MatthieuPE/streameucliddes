@@ -643,6 +643,24 @@ def test_set_endpoints_outside_catalog(candidate_with_maps):
     assert all(a is b for a, b in zip(before, after))
 
 
+# A window field set after construction (cand.padding_phi2_deg = ...): the window and box of an object built with it;
+# with stars, prepared again in the new window, and beyond the loaded stars a ValueError, the object unchanged
+def test_window_field_set_after_construction(candidate_endpoints, candidate_with_maps):
+    cand = CandidateInvestigation("test", *candidate_endpoints)
+    cand.padding_phi2_deg = 9.0
+    built_with = CandidateInvestigation("test", *candidate_endpoints, padding_phi2_deg=9.0)
+    assert cand.padding_phi2_deg == 9.0 and cand.window == pytest.approx(built_with.window)
+    np.testing.assert_allclose(cand.radec_box, built_with.radec_box)
+    cand = candidate_with_maps
+    old_window = cand.window
+    cand.min_phi2_half_width_deg = 3.0
+    assert cand.window != old_window and cand.search.window == cand.window and cand.zoom_map is None
+    before = (cand.window, cand.search, cand.padding_phi1_deg)
+    with pytest.raises(ValueError, match="load a larger box"):
+        cand.padding_phi1_deg = 30.0
+    assert (cand.window, cand.search, cand.padding_phi1_deg) == before
+
+
 # Without a catalog: only the frame, window and box
 def test_set_endpoints_without_catalog(candidate_endpoints):
     cand = CandidateInvestigation("test", *candidate_endpoints)
@@ -685,7 +703,7 @@ def test_define_regions(candidate_endpoints, candidate_stream_catalog, candidate
 
 
 # fitted_sigma_deg (a track already fitted, at phi2 = 0): regions without a width fit at phi2 = 0 and that sigma; a
-# change clears the regions; a width fit done takes over; neither: the ValueError names both
+# change clears the regions; a width fit in this frame is not used while it is set; neither: the ValueError names both
 def test_define_regions_fitted_sigma(candidate_endpoints, candidate_stream_catalog, candidate_stream, no_object_masks):
     cand = CandidateInvestigation("test", *candidate_endpoints, fitted_sigma_deg=0.3,
                                   distance_modulus=candidate_stream["distance_modulus"],
@@ -699,9 +717,11 @@ def test_define_regions_fitted_sigma(candidate_endpoints, candidate_stream_catal
     assert (cand.regions["phi1_range"], cand.regions["phi2_centre"], cand.regions["sigma"]) == ((-1.0, 0.0), 0.0, 0.3)
     cand.fitted_sigma_deg = 0.25
     assert cand.regions is None
-    cand.fit_width().define_regions()
-    assert cand.regions["sigma"] == cand.width_fit["sigma"] != 0.25
+    cand.fit_width().define_regions()  # not refitted: the fitted sigma, at phi2 = 0
+    assert (cand.regions["phi2_centre"], cand.regions["sigma"]) == (0.0, 0.25) and cand.width_fit["sigma"] != 0.25
     cand.fitted_sigma_deg = None
+    cand.define_regions()  # without it, the width fit
+    assert (cand.regions["phi2_centre"], cand.regions["sigma"]) == (cand.width_fit["phi2_centre"], cand.width_fit["sigma"])
     cand.width_fit = None
     with pytest.raises(ValueError, match="fitted_sigma_deg"):
         cand.define_regions()

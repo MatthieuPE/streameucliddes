@@ -756,9 +756,10 @@ class CandidateInvestigation:
         status ``bad`` too (``load_candidates``); by default they are ignored.
     fitted_sigma_deg : float, optional
         Width (Gaussian sigma in phi2, deg) of a track already fitted, at
-        phi2 = 0 between the endpoints (the endpoints moved onto it): without
-        ``width_fit``, ``define_regions`` uses phi2 = 0 and this sigma, no
-        width fit needed. Set by ``from_candidate_id`` (``source="fitted"``)
+        phi2 = 0 between the endpoints (the endpoints moved onto it):
+        ``define_regions`` uses phi2 = 0 and this sigma, not a width fit in
+        this frame (the width is fitted once, with a free centre, in the frame
+        of the endpoints picked by eye). Set by ``from_candidate_id`` (``source="fitted"``)
         from the fits file when it has both the fitted endpoints and the
         sigma.
 
@@ -912,11 +913,18 @@ class CandidateInvestigation:
         E.g. a new ``distance_modulus`` after ``define_regions`` clears the
         width, the regions and the Hess diagrams: ``summary`` and the plots
         never mix results of different inputs (a step asking for a cleared
-        result names the change). The endpoints and the window change with
-        ``set_endpoints``. A changed ``distance_modulus`` (with
+        result names the change). The endpoints change with
+        ``set_endpoints``; a changed window field (``WINDOW_FIELDS``, e.g.
+        ``cand.padding_phi2_deg = 7``) goes through it too: new window and
+        box, the stars of the window prepared again when there is a catalog
+        (a ValueError if the window leaves it, the object unchanged). A
+        changed ``distance_modulus`` (with
         ``mask_streams``) or input of the stream mask (``STREAM_MASK_INPUTS``)
         applies the stream mask again, once the stars are prepared.
         """
+        if name in WINDOW_FIELDS and self.__dict__.get("_track_inputs") and _changed(self.__dict__.get(name), value):
+            self.set_endpoints(self.endpoint_1, self.endpoint_2, **{name: value})  # the window computed again
+            return
         cleared_by = self.__dict__.get("_cleared_by")
         changed = bool(self.__dict__.get("_track_inputs")) and name in INPUT_RESULTS and _changed(
             self.__dict__.get(name), value)
@@ -1219,7 +1227,7 @@ class CandidateInvestigation:
         previous = {name: getattr(self, name) for name in ("endpoint_1", "endpoint_2", *WINDOW_FIELDS)}
         self.endpoint_1, self.endpoint_2 = endpoint_1, endpoint_2
         for name, value in window_kwargs.items():
-            setattr(self, name, value)
+            object.__setattr__(self, name, value)  # not through __setattr__, which calls set_endpoints for them
         old_frame = (self.stream_frame, self.window, self.radec_box)
         self._set_frame_and_window()
         if self.catalog is not None:
@@ -1227,7 +1235,7 @@ class CandidateInvestigation:
                 self._check_window_in_catalog(self.catalog)
             except ValueError:  # leave the object as it was
                 for name, value in previous.items():
-                    setattr(self, name, value)
+                    object.__setattr__(self, name, value)
                 self.stream_frame, self.window, self.radec_box = old_frame
                 raise
             self._prepare_stars(None if self.search is None else self.search.object_healpix_mask)
@@ -1584,8 +1592,9 @@ class CandidateInvestigation:
         phi1_range : tuple of float, optional
             Default: the phi1 of the endpoints.
         phi2_centre, sigma : float, optional
-            Default: from ``width_fit``; without it, 0 and
-            ``fitted_sigma_deg`` (the track already fitted, at phi2 = 0).
+            Default: 0 and ``fitted_sigma_deg`` when set (the track already
+            fitted, at phi2 = 0: a width fit in this frame is not used), else
+            from ``width_fit``.
         on_phi2_offset_deg, off_phi2_offsets_deg : optional
             phi2 shifts of the on region and of the off regions (below, above)
             (deg), see ``stream_regions``; e.g. on region and top off region
@@ -1607,10 +1616,10 @@ class CandidateInvestigation:
         """
         self._require("search", "prepare")
         default_centre = default_sigma = None
-        if self.width_fit is not None:
-            default_centre, default_sigma = self.width_fit["phi2_centre"], self.width_fit["sigma"]
-        elif self.fitted_sigma_deg is not None:  # the track already fitted: at phi2 = 0, its sigma
+        if self.fitted_sigma_deg is not None:  # the track already fitted: at phi2 = 0, its sigma, no refit
             default_centre, default_sigma = 0.0, float(self.fitted_sigma_deg)
+        elif self.width_fit is not None:
+            default_centre, default_sigma = self.width_fit["phi2_centre"], self.width_fit["sigma"]
         elif phi2_centre is None or sigma is None:
             cleared_by = self.__dict__.get("_cleared_by", {}).get("width_fit")
             reason = "" if cleared_by is None else f" (cleared because {cleared_by})"

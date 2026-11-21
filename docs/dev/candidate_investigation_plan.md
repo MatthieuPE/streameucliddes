@@ -446,6 +446,25 @@ Done:
     `error_mag_centre` and the errors; a cell of the example notebook
     writes it as CSV.
 
+  - 2026-11-21, fitted candidates: the width is fitted once, with a free
+    centre, in the frame of the endpoints picked by eye; the endpoints moved
+    in phi2 by that centre (`stream_frames.shift_endpoints_phi2`) put the
+    track at phi2 = 0 in their frame, and there the width is not fitted
+    again (user choices). The fitted endpoints go to `candidate_fits.csv`
+    (`write_candidate_fit_endpoints`, same column names as the list), not
+    to `candidates_info.csv`, which keeps the endpoints picked by eye.
+    `from_candidate_id(source="fitted" | "by_eye")`, default "fitted": the
+    fitted endpoints, `mu` and, with both endpoints and `sigma_deg`,
+    `fitted_sigma_deg` (then `define_regions` uses phi2 = 0 and that sigma,
+    before any width fit), else the list (a warning); the fits file is read
+    next to the list. `candidate_fitted_isochrone.ipynb` fits and writes
+    the width and endpoints when missing (`FORCE_WIDTH_AND_ENDPOINTS`) and
+    goes on in the new frame; `investigate_fitted_candidate.ipynb`: Hess
+    diagrams and photometric errors of phi1 < 0 and phi1 > 0
+    (`cand.split_half_folder`). A window field set after construction
+    (`cand.padding_phi2_deg = 9`) now goes through `set_endpoints`: before,
+    it did not change the window.
+
 ## 4. New functions, by module
 
 Layout after the second review of the stubs (user, 2026-11-13): window code
